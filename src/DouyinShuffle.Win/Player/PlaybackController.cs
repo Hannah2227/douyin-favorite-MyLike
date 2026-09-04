@@ -433,7 +433,7 @@ public sealed class PlaybackController
                 json = sb.ToString();
             }
         }
-        _ = EvalAsync($"window.__dshQueueSlice && window.__dshQueueSlice({json},{total},{cur})");
+        _ = EvalAsync($"window.__dshQueueSlice && window.__dshQueueSlice({json},{total},{cur},{from})");
     }
 
     private async Task HandleFailAsync()

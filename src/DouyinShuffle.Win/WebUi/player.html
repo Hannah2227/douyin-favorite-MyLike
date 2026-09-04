@@ -572,6 +572,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   // 点击条目跳播(queueJump);连播/跳转后当前条在窗内只更新高亮,不在才重拉窗口定位。
   var qList = $('dsh-qlist'), qHeadTitle = $('dsh-qhead-title');
   var qPendingLocate = false;   // 本次响应到达后是否滚到当前行(仅重拉窗口用,加载更多不滚)
+  var qExpectFrom = -1;         // 最近一次请求的起点;响应起点不符 = 过期响应(期间重拉过窗口)→ 丢弃
   function escH(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -582,32 +583,48 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     if (qOpen) { qCur = -1; qList.innerHTML = ''; resetQueueWindow(Math.max(0, curIdxShown)); }
   }
   function resetQueueWindow(idx) {
+    var from = Math.max(0, (idx || 0) - 25);
     qList.innerHTML = '';
     qLoading = false;
     qPendingLocate = true;   // 重拉窗口后滚到当前行
-    post({ player: 'queueSlice', from: Math.max(0, (idx || 0) - 25), count: 120 });
+    qExpectFrom = from;
+    post({ player: 'queueSlice', from: from, count: 120 });
   }
   function loadMoreQ() {
     if (qLoading || !qOpen || qTotal === 0) return;
     if (qList.children.length >= qTotal) return;   // 已全量
     qLoading = true;
+    qExpectFrom = qList.children.length;
     post({ player: 'queueSlice', from: qList.children.length, count: 80 });
   }
-  // 切歌/跳转后点亮当前行:返回 true=行已在已加载区(已点亮);false=不在(由调用方重拉窗口)
+  // 切歌/跳转后点亮当前行并把当前行"置顶跟随"(行顶对齐列表视口顶部;首行自然停 0)。
+  // 用手动 scrollTop 计算而非 scrollIntoView:后者与"加载中的追加内容"存在位置竞态,
+  // 会滚出整段错位视口(如 115,120,1,2 拼接);手动计算只设一次目标值,稳定可控。
+  // 返回 true=行已在已加载区(已点亮);false=不在(由调用方重拉窗口)。
   function qMarkCurrent() {
     if (!qOpen) return true;
     var rows = qList.querySelectorAll('.qrow');
-    var found = false;
+    var found = false, curRow = null;
     for (var k = 0; k < rows.length; k++) {
       var hit = parseInt(rows[k].getAttribute('data-i'), 10) === curIdxShown;
       rows[k].classList.toggle('cur', hit);
-      if (hit) { found = true; rows[k].scrollIntoView({ block: 'center' }); }
+      if (hit) { found = true; curRow = rows[k]; }
+    }
+    if (found && curRow) {
+      try {
+        var lr = qList.getBoundingClientRect();
+        var rr = curRow.getBoundingClientRect();
+        var top = rr.top - lr.top + qList.scrollTop;   // 当前行在滚动内容中的 y
+        var max = qList.scrollHeight - qList.clientHeight;
+        qList.scrollTop = Math.max(0, Math.min(top, max > 0 ? max : 0));
+      } catch (e) {}
     }
     return found;
   }
-  // 宿主回传片段(__dshQueueSlice(items,total,current))
-  window.__dshQueueSlice = function (items, total, cur) {
+  // 宿主回传片段(__dshQueueSlice(items,total,current,from);from 用于丢弃过期响应)
+  window.__dshQueueSlice = function (items, total, cur, from) {
     qLoading = false;
+    if (from !== qExpectFrom) return;   // 过期响应(期间已重拉窗口)→ 丢弃,防止序号错接(如 119,120,1,2)
     qTotal = total; qCur = cur;
     if (qHeadTitle) qHeadTitle.textContent = '播放列表(' + total + ')';
     if (!qOpen) return;
@@ -625,8 +642,9 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     qList.insertAdjacentHTML('beforeend', html);
     if (qPendingLocate) {
       qPendingLocate = false;
-      var curRow = qList.querySelector('.qrow.cur');
-      if (curRow && curRow.scrollIntoView) { try { curRow.scrollIntoView({ block: 'center' }); } catch (e) {} }
+      // 新窗口定位:不调 scrollIntoView(center 会和动态内容打架);直接回顶,
+      // 窗口从 cur-25 开始,cur 总在已加载区可见(最坏情况在窗顶),用户无扰
+      qList.scrollTop = 0;
     }
     qFillMore();   // 内容不足一屏或仍贴底 → 自动续拉
   };
