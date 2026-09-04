@@ -22,6 +22,10 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 #dsh-ctrl{position:absolute;bottom:0;left:0;right:0;display:flex;gap:22px;align-items:center;justify-content:center;padding-bottom:18px;z-index:3;background:linear-gradient(to top,rgba(0,0,0,.6),transparent)}
 #dsh-ctrl button{background:transparent;border:none;color:#fff;font-size:20px;width:46px;height:46px;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center}
 #dsh-ctrl button:hover{background:rgba(255,255,255,.15)}
+#dsh-ctrl button:disabled{opacity:.3;cursor:default}
+#dsh-ctrl button:disabled:hover{background:transparent}
+#dsh-ctrl button.dng{color:#ff8da1}
+#dsh-ctrl button.dng:hover{background:rgba(254,44,85,.5);color:#fff}
 #dsh-ctrl button.on{color:var(--accent)}
 #dsh-toggle{font-size:26px !important;width:54px !important;height:54px !important}
 #dsh-page,#dsh-fs,#dsh-mute{font-size:15px !important}
@@ -66,6 +70,9 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 /* 播放页 UI 升级:顶部遮罩 / 时间码 / seek 提示 / 胶囊按钮 / 呼吸高亮 */
 #dsh-topmask{position:absolute;top:0;left:0;right:0;height:140px;background:linear-gradient(to bottom,rgba(0,0,0,.55),transparent);pointer-events:none;z-index:2}
 #dsh-tcode{position:absolute;right:26px;bottom:90px;color:rgba(255,255,255,.92);font-size:12px;text-shadow:0 1px 4px rgba(0,0,0,.85);pointer-events:none;z-index:3;font-variant-numeric:tabular-nums}
+#dsh-toast{position:absolute;top:78px;left:50%;transform:translateX(-50%);max-width:74%;background:rgba(18,18,24,.94);color:#fff;font-size:13px;line-height:1.5;padding:9px 16px;border-radius:9px;border:1px solid rgba(255,255,255,.14);box-shadow:0 4px 18px rgba(0,0,0,.35);z-index:9;opacity:0;pointer-events:none;transition:opacity .22s ease;text-align:center}
+#dsh-toast.show{opacity:1}
+#dsh-toast.err{color:#ff8da1;border-color:rgba(254,44,85,.5)}
 #dsh-seektip{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);color:#fff;font-size:36px;font-weight:700;text-shadow:0 2px 14px rgba(0,0,0,.75);letter-spacing:1px;opacity:0;pointer-events:none;z-index:5;transition:opacity .22s}
 #dsh-ctrl{gap:14px}
 #dsh-ctrl button.wbtn{width:auto;min-width:52px;height:34px;padding:0 13px;border-radius:17px;font-size:13px !important;background:rgba(255,255,255,.1);letter-spacing:.3px}
@@ -75,6 +82,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 @keyframes dshqbreath{0%,100%{background:rgba(254,44,85,.12)}50%{background:rgba(254,44,85,.34);box-shadow:inset 0 0 18px rgba(254,44,85,.22)}}
 #dsh-qpanel .qrow.cur{background:rgba(254,44,85,.16);animation:dshqbreath 2.2s ease-in-out infinite}
 #dsh-qpanel .qrow.cur::before{content:'';position:absolute;left:0;top:5px;bottom:5px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+/* 虚拟列表:行绝对定位铺在占位容器(高度=行数*行高);行高固定,勿改行内容使其变高 */
+#dsh-qlist{position:relative}
+.qsizer{position:relative;width:100%}
+#dsh-qpanel .qrow{position:absolute;left:0;right:0;top:0;height:52px;margin:0;padding:0 10px;min-height:0}
+#dsh-qpanel .qrow .idx{min-width:24px}
 #dsh-failmsg{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.75);padding:16px 24px;border-radius:10px;display:none;text-align:center;font-size:14px;z-index:4}
 #dsh-failmsg button{background:rgba(254,44,85,.85);border:none;color:#fff;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;margin-top:10px}
 #dsh-failmsg button.ghost{background:rgba(255,255,255,.15);margin-left:8px}
@@ -109,6 +121,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     <button id="dsh-auto" class="wbtn" title="自动连播:关(按 A 开启)">连播关</button>
     <button id="dsh-speed" class="wbtn" title="倍速:点击循环切换">1x</button>
     <button id="dsh-page" class="wbtn" title="打开抖音原视频页看评论,关闭后返回继续播放">评论</button>
+    <button id="dsh-unlike" class="wbtn dng" title="在抖音取消这条的点赞(不可逆),并从本地移除">取消点赞</button>
     <button id="dsh-fs" class="wbtn" title="全屏(F / 双击画面)">全屏</button>
     <button id="dsh-qbtn" class="wbtn" title="播放列表(Q):查看/跳转队列">播放列表</button>
   </div>
@@ -116,6 +129,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   <div id="dsh-topmask"></div>
   <div id="dsh-seektip"></div>
   <div id="dsh-tcode"></div>
+  <div id="dsh-toast"></div>
   <aside id="dsh-qpanel" class="hidden">
     <div class="qhead"><span id="dsh-qhead-title">播放列表</span><button id="dsh-qclose" title="收起侧栏">&#10005;</button></div>
     <div id="dsh-qlist"></div>
@@ -131,7 +145,45 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   // 模块级状态(跨 show 共享,防旧定时器串台)
   var slideTimer = null, slideIdx = 0, slideImages = [], slidePaused = false;
   var stallTimer = null, showSeq = 0, muted = false, volume = 100, lastVol = 100, autoNext = false;
-  var qOpen = false, qCur = -1, qTotal = 0, qLoading = false, curIdxShown = -1;   // 播放队列侧栏状态
+  var curIdxShown = -1;   // 当前播放的全局序号(播放列表跟随用)
+  var playTotal = 0;      // 当前播放队列总数(边界禁用判断用)
+  // 手动上一首/下一首的边界守卫:第一条禁"上一条"、最后一条禁"下一条"。
+  // 注意只守"手动入口"(按钮/方向键/滚轮)——自动连播播到队尾仍需发 next 让宿主收尾返回列表,
+  // 因此不能在后端直接吞掉 next 边界,前端守卫最合适。
+  function navAtStart() { return curIdxShown <= 0; }
+  function navAtEnd() { return playTotal > 0 && curIdxShown >= playTotal - 1; }
+  function updateNavState() {
+    var p = $('dsh-prev'), n = $('dsh-next');
+    if (p) p.disabled = navAtStart();
+    if (n) n.disabled = navAtEnd();
+  }
+
+  // ---------- 播放页内单条取消点赞 ----------
+  var unlikeDoneIdx = -1;   // 本次会话已取消的队列序号(切歌后按序号复位/置灰)
+  var toastTimer = null;
+  function showPlayerToast(text, isErr) {
+    var el = $('dsh-toast');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('err', !!isErr);
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 3200);
+  }
+  function syncUnlikeBtn() {
+    var b = $('dsh-unlike');
+    if (!b) return;
+    var done = curIdxShown === unlikeDoneIdx;
+    b.disabled = done;
+    b.textContent = done ? '已取消' : '取消点赞';
+    b.title = done ? '本条已取消点赞' : '在抖音取消这条的点赞(不可逆),并从本地移除';
+  }
+  // 宿主单条 unlike 回执:ok=true → 本条标记"已取消"(不可再点);失败 → 按钮复位可重试
+  window.__dshUnlikeDone = function (ok, text) {
+    if (ok) unlikeDoneIdx = curIdxShown;
+    showPlayerToast(text || (ok ? '已取消点赞' : '取消失败'), !ok);
+    syncUnlikeBtn();
+  };
 
   function updateToggleIcon(playing) { $('dsh-toggle').innerHTML = playing ? '&#9208;' : '&#9654;'; }
   // 音量应用 + 图标/滑块同步:静音图标随"静音开关或音量=0"显示 🔇;静音时滑块仍保留原音量值
@@ -249,7 +301,8 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     if (now - lastSwitch < 600) return;
     if (Math.abs(e.deltaY) < 40) return;
     lastSwitch = now;
-    post({ player: e.deltaY > 0 ? 'next' : 'prev' });
+    if (e.deltaY > 0) { if (navAtEnd()) return; post({ player: 'next' }); }
+    else { if (navAtStart()) return; post({ player: 'prev' }); }
   }, { passive: false });
 
   root.addEventListener('click', function (e) {
@@ -278,6 +331,15 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   $('dsh-toggle').onclick = function (e) { e.stopPropagation(); togglePlay(); };
   $('dsh-prev').onclick = function (e) { e.stopPropagation(); post({ player: 'prev' }); };
   $('dsh-next').onclick = function (e) { e.stopPropagation(); post({ player: 'next' }); };
+  $('dsh-unlike').onclick = function (e) {
+    e.stopPropagation();
+    if (curIdxShown === unlikeDoneIdx) return;   // 本条已取消
+    if (!confirm('在抖音取消这条的点赞,并从本地移除?\n此操作在抖音侧不可逆;当前播放不受影响。')) return;
+    var b = $('dsh-unlike');
+    b.disabled = true;
+    b.textContent = '取消中…';
+    post({ player: 'unlike' });   // 宿主执行;结果经 __dshUnlikeDone 回执复位
+  };
   $('dsh-page').onclick = function (e) { e.stopPropagation(); post({ player: 'openpage' }); };
   $('dsh-close').onclick = function (e) { e.stopPropagation(); post({ player: 'close' }); };
   $('dsh-fs').onclick = function (e) { e.stopPropagation(); toggleFs(); };
@@ -308,8 +370,8 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
         if (slideImages.length > 0) slideStep(1);
         else { e.preventDefault(); seekBy(10); }
         break;
-      case 'ArrowUp': case 'PageUp': e.preventDefault(); post({ player: 'prev' }); break;
-      case 'ArrowDown': case 'PageDown': e.preventDefault(); post({ player: 'next' }); break;
+      case 'ArrowUp': case 'PageUp': e.preventDefault(); if (navAtStart()) break; post({ player: 'prev' }); break;
+      case 'ArrowDown': case 'PageDown': e.preventDefault(); if (navAtEnd()) break; post({ player: 'next' }); break;
       case 'KeyF': toggleFs(); break;
       case 'KeyM': toggleMute(); break;
       case 'KeyA': toggleAutoNext(); break;
@@ -437,11 +499,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     var titleText = cfg.title || '';
     if (titleText.length > 60) titleText = titleText.slice(0, 60) + '…';
     curIdxShown = cfg.index;
-    // 播放队列侧栏强跟随:目标行在已加载区 → 原位点亮(视口外则就近滚入);
-    // 不在已加载区 → 以它为中心重拉窗口并滚动到可见(杜绝高亮丢跟)
-    if (qOpen) {
-      if (!qMarkCurrent()) resetQueueWindow(curIdxShown);
-    }
+    playTotal = cfg.total || 0;
+    updateNavState();   // 第一条禁上一条 / 最后一条禁下一条
+    syncUnlikeBtn();    // 取消点赞按钮状态跟随当前条目(已取消的保持置灰)
+    // 播放队列侧栏(虚拟列表):确保当前行已加载并置顶高亮
+    if (qOpen) qSyncCur();
     $('dsh-title').textContent = (cfg.index + 1) + '/' + cfg.total + '  ' + titleText;
     $('dsh-title').title = cfg.title || '';
     $('dsh-author-name').textContent = cfg.author || '';
@@ -567,107 +629,145 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   };
   function stopStallCheckSafe() { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } }
 
-  // ---------- 播放队列侧栏 ----------
-  // 数据在宿主内存队列(C# PlaybackController),按需分片:首窗围绕当前条 120 条,滚底 +80;
-  // 点击条目跳播(queueJump);连播/跳转后当前条在窗内只更新高亮,不在才重拉窗口定位。
+  // ---------- 播放队列侧栏(虚拟列表·滑动窗口) ----------
+  // 渲染层:纯虚拟滚动(只渲染视口 ~40 行,absolute 定位,渲染是纯函数)。
+  // 数据层:内存只保留连续窗口段 [qStart, qStart+len);滚到段边缘时"串行"拉相邻段
+  // (一次最多一个在途请求,忙时只排队最后一个方向);★头部补段后对 scrollTop 做
+  // 等量补偿(视口停留原内容,这是"向上滚跳变/错乱"的真正根因修复);
+  // 窗口超过上限时从远离当前行的一端裁剪 → 十几万条队列内存/DOM 恒定。
   var qList = $('dsh-qlist'), qHeadTitle = $('dsh-qhead-title');
-  var qPendingLocate = false;   // 本次响应到达后是否滚到当前行(仅重拉窗口用,加载更多不滚)
-  var qExpectFrom = -1;         // 最近一次请求的起点;响应起点不符 = 过期响应(期间重拉过窗口)→ 丢弃
+  var ROWH = 52;                       // 固定行高(与 CSS .qrow 一致)
+  var WINMAX = 6000;                   // 窗口段条数上限(超出从远端裁剪)
+  var qItems = [];                     // 连续段 [{i,t,g,c}](i=全局序号)
+  var qStart = 0;                      // qItems[0] 对应的全局序号
+  var qTotal = 0;
+  var qOpen = false, qBusy = false;
+  var qPend = 0;                       // 排队的边缘方向:+1 下 / -1 上 / 0 无
+  var qRenderTick = 0;
+  var sizer = document.createElement('div');
+  sizer.className = 'qsizer';
+  qList.appendChild(sizer);
+
   function escH(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
-  function setQPanel(open) {
+  function qSetHead(t) { if (qHeadTitle) qHeadTitle.textContent = t; }
+  function qPost(from, count) { qBusy = true; post({ player: 'queueSlice', from: from, count: count }); }
+
+  // 打开面板:围绕当前行建窗(不拉全量,十几万条也秒开)
+  function qOpenLoad() {
+    qItems = []; qStart = Math.max(0, (curIdxShown || 0) - 60); qPend = 0;
+    sizer.innerHTML = ''; sizer.style.height = '0px';
+    qSetHead('加载列表…');
+    qPost(qStart, 200);
+  }
+  // 宿主回传(__dshQueueSlice(items,total,current,from)):严格接续校验,乱序丢弃
+  window.__dshQueueSlice = function (items, total, cur, from) {
+    qBusy = false;
+    qTotal = total;
+    if (!qOpen) { qPend = 0; return; }
+    var arr = items || [];
+    if (qItems.length === 0 && from === qStart) {
+      qItems = arr;                                    // 初始窗口
+    } else if (from === qStart + qItems.length) {
+      qItems = qItems.concat(arr);                     // 尾部续段(视口不动)
+    } else if (qItems.length > 0 && from >= 0 && from + arr.length === qStart && arr.length > 0) {
+      qItems = arr.concat(qItems);                     // 头部补段
+      qStart = from;
+      qList.scrollTop += arr.length * ROWH;            // ★ 等量补偿:视口停留在原内容
+    } else {
+      // 过期/乱序响应 → 丢弃
+    }
+    if (qItems.length) qSetHead('播放列表(' + qTotal + ')');
+    qRender();
+    if (qPend) { var d = qPend; qPend = 0; qEdge(d); }
+  };
+  // 边缘拉段:忙时只排队最后一个方向(串行,无并发乱序)
+  function qEdge(dir) {
+    if (!qOpen) return;
+    if (qBusy) { qPend = dir; return; }
+    if (dir > 0) {
+      if (qStart + qItems.length >= qTotal) return;    // 已到底
+      qPost(qStart + qItems.length, 200);
+    } else {
+      if (qStart <= 0) return;                         // 已到顶
+      var from = Math.max(0, qStart - 200);
+      qPost(from, qStart - from);
+    }
+  }
+  // 窗口超限:从远离当前行的一端裁剪(裁头需补偿 scrollTop)
+  function qTrim() {
+    if (qItems.length <= WINMAX) return;
+    var cur = (curIdxShown || 0) - qStart;
+    if (cur > qItems.length / 2) {
+      var cut = Math.min(2000, cur - 200);
+      if (cut <= 0) return;
+      qItems = qItems.slice(cut); qStart += cut;
+      qList.scrollTop = Math.max(0, qList.scrollTop - cut * ROWH);
+    } else {
+      var keep = Math.max(cur + 200, qItems.length - 2000);
+      if (keep < qItems.length) qItems = qItems.slice(0, keep);
+    }
+  }
+  // 渲染:纯函数(scrollTop → 可见行)
+  function qRender() {
+    if (!qOpen || !qItems.length) return;
+    var sc = qList.scrollTop || 0, ch = qList.clientHeight || 300;
+    sizer.style.height = (qItems.length * ROWH) + 'px';
+    var start = Math.max(0, Math.floor(sc / ROWH) - 4);
+    var end = Math.min(qItems.length, Math.ceil((sc + ch) / ROWH) + 4);
+    var html = '';
+    for (var k = start; k < end; k++) {
+      var it = qItems[k];
+      html += '<div class="qrow' + (it.i === curIdxShown ? ' cur' : '') + '" data-i="' + it.i + '" style="top:' + (k * ROWH) + 'px">'
+        + '<span class="idx">' + (it.i + 1) + '</span>'
+        + (it.c ? '<img class="th" loading="lazy" src="' + escH(it.c) + '" onerror="this.outerHTML=\'<span class=&quot;th th-ph&quot;></span>\'"/>' : '<span class="th th-ph"></span>')
+        + '<span class="tt">' + (it.g ? '<span class="tag">图集</span>' : '') + '<span class="t1">' + escH(it.t || '(无标题)') + '</span></span></div>';
+    }
+    sizer.innerHTML = html;
+  }
+  // 滚动边缘检测(距顶/底 2 行内 → 拉相邻段)+ 窗口裁剪
+  function qEdgeDetect() {
+    var sc = qList.scrollTop || 0, ch = qList.clientHeight || 300;
+    var max = qItems.length * ROWH - ch;
+    if (sc <= ROWH * 2 && qStart > 0) qEdge(-1);
+    else if (max > 0 && sc >= max - ROWH * 2 && qStart + qItems.length < qTotal) qEdge(1);
+    qTrim();
+  }
+  // 当前行跟随(切歌/打开):在窗内 → 置顶;不在 → 围绕它重建窗口
+  function qSyncCur() {
+    if (!qOpen) return;
+    var local = (curIdxShown || 0) - qStart;
+    if (local >= 0 && local < qItems.length) {
+      qList.scrollTop = Math.max(0, local * ROWH);
+      qRender();
+      qEdgeDetect();
+    } else {
+      qOpenLoad();
+    }
+  }
+  function qSetOpen(open) {
     qOpen = !!open;
     $('dsh-qpanel').classList.toggle('hidden', !qOpen);
     $('dsh-qbtn').classList.toggle('active', qOpen);
-    if (qOpen) { qCur = -1; qList.innerHTML = ''; resetQueueWindow(Math.max(0, curIdxShown)); }
+    if (qOpen) qOpenLoad();
+    else { sizer.innerHTML = ''; sizer.style.height = '0px'; qItems = []; }
   }
-  function resetQueueWindow(idx) {
-    var from = Math.max(0, (idx || 0) - 25);
-    qList.innerHTML = '';
-    qLoading = false;
-    qPendingLocate = true;   // 重拉窗口后滚到当前行
-    qExpectFrom = from;
-    post({ player: 'queueSlice', from: from, count: 120 });
-  }
-  function loadMoreQ() {
-    if (qLoading || !qOpen || qTotal === 0) return;
-    if (qList.children.length >= qTotal) return;   // 已全量
-    qLoading = true;
-    qExpectFrom = qList.children.length;
-    post({ player: 'queueSlice', from: qList.children.length, count: 80 });
-  }
-  // 切歌/跳转后点亮当前行并把当前行"置顶跟随"(行顶对齐列表视口顶部;首行自然停 0)。
-  // 用手动 scrollTop 计算而非 scrollIntoView:后者与"加载中的追加内容"存在位置竞态,
-  // 会滚出整段错位视口(如 115,120,1,2 拼接);手动计算只设一次目标值,稳定可控。
-  // 返回 true=行已在已加载区(已点亮);false=不在(由调用方重拉窗口)。
-  function qMarkCurrent() {
-    if (!qOpen) return true;
-    var rows = qList.querySelectorAll('.qrow');
-    var found = false, curRow = null;
-    for (var k = 0; k < rows.length; k++) {
-      var hit = parseInt(rows[k].getAttribute('data-i'), 10) === curIdxShown;
-      rows[k].classList.toggle('cur', hit);
-      if (hit) { found = true; curRow = rows[k]; }
-    }
-    if (found && curRow) {
-      try {
-        var lr = qList.getBoundingClientRect();
-        var rr = curRow.getBoundingClientRect();
-        var top = rr.top - lr.top + qList.scrollTop;   // 当前行在滚动内容中的 y
-        var max = qList.scrollHeight - qList.clientHeight;
-        qList.scrollTop = Math.max(0, Math.min(top, max > 0 ? max : 0));
-      } catch (e) {}
-    }
-    return found;
-  }
-  // 宿主回传片段(__dshQueueSlice(items,total,current,from);from 用于丢弃过期响应)
-  window.__dshQueueSlice = function (items, total, cur, from) {
-    qLoading = false;
-    if (from !== qExpectFrom) return;   // 过期响应(期间已重拉窗口)→ 丢弃,防止序号错接(如 119,120,1,2)
-    qTotal = total; qCur = cur;
-    if (qHeadTitle) qHeadTitle.textContent = '播放列表(' + total + ')';
-    if (!qOpen) return;
-    var html = '';
-    for (var k = 0; k < (items || []).length; k++) {
-      var it = items[k];
-      html += '<div class="qrow' + (it.i === qCur ? ' cur' : '') + '" data-i="' + it.i + '">'
-        + '<span class="idx">' + (it.i + 1) + '</span>'
-        + (it.c
-            ? '<img class="th" loading="lazy" src="' + escH(it.c) + '" onerror="this.outerHTML=\'<span class=&quot;th th-ph&quot;></span>\'"/>'
-            : '<span class="th th-ph"></span>')
-        + '<span class="tt">' + (it.g ? '<span class="tag">图集</span>' : '')
-        + '<span class="t1">' + escH(it.t || '(无标题)') + '</span></span></div>';
-    }
-    qList.insertAdjacentHTML('beforeend', html);
-    if (qPendingLocate) {
-      qPendingLocate = false;
-      // 新窗口定位:不调 scrollIntoView(center 会和动态内容打架);直接回顶,
-      // 窗口从 cur-25 开始,cur 总在已加载区可见(最坏情况在窗顶),用户无扰
-      qList.scrollTop = 0;
-    }
-    qFillMore();   // 内容不足一屏或仍贴底 → 自动续拉
-  };
-  // 贴底/未满一屏时自动继续加载,直到用户离开底部
-  function qFillMore() {
-    if (!qOpen || qLoading) return;
-    if (qTotal === 0 || qList.children.length >= qTotal) return;
-    var nearBottom = qList.scrollTop + qList.clientHeight >= qList.scrollHeight - 600;
-    var notFull = qList.scrollHeight <= qList.clientHeight + 4;
-    if (nearBottom || notFull) loadMoreQ();
-  }
-  // 交互:面板内点击/滚轮只作用在面板,不冒泡到播放层(点击跳转 / 收起照常可用)
-  $('dsh-qbtn').onclick = function (e) { e.stopPropagation(); setQPanel(!qOpen); };
-  $('dsh-qclose').onclick = function (e) { e.stopPropagation(); setQPanel(false); };
-  $('dsh-qpanel').addEventListener('click', function (e) { e.stopPropagation(); });   // 冒泡层拦,内部控件先执行
-  $('dsh-qpanel').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });   // 滚轮滚列表,不切歌
+  function setQPanel(open) { qSetOpen(open); }   // 别名(hide / KeyQ 外部调用)
+
+  // 交互:面板内点击/滚轮不冒泡;点行跳播;滚动驱动渲染+边缘拉段(rAF 节流)
+  $('dsh-qbtn').onclick = function (e) { e.stopPropagation(); qSetOpen(!qOpen); };
+  $('dsh-qclose').onclick = function (e) { e.stopPropagation(); qSetOpen(false); };
+  $('dsh-qpanel').addEventListener('click', function (e) { e.stopPropagation(); });
+  $('dsh-qpanel').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
   qList.addEventListener('click', function (e) {
     var row = e.target && e.target.closest ? e.target.closest('.qrow') : null;
     if (!row) return;
     post({ player: 'queueJump', index: parseInt(row.getAttribute('data-i'), 10) });
   });
   qList.addEventListener('scroll', function () {
-    if (qList.scrollTop + qList.clientHeight >= qList.scrollHeight - 600) qFillMore();
+    if (qRenderTick) return;
+    qRenderTick = requestAnimationFrame(function () { qRenderTick = 0; qRender(); qEdgeDetect(); });
   });
 
   // ---------- 倍速(点击循环:0.75 → 1 → 1.25 → 1.5 → 2) ----------

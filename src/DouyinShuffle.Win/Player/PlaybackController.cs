@@ -58,6 +58,9 @@ public sealed class PlaybackController
     /// <summary>请求窗口全屏切换(播放页 JS 的全屏按钮/双击/F 键)。</summary>
     public event Action? FullscreenToggleRequested;
 
+    /// <summary>播放页请求取消当前条目的抖音点赞(宿主执行单条 unlike;传 null 表示无当前条目)。</summary>
+    public event Action<AwemeItem?>? UnlikeRequested;
+
     /// <summary>实时取链器(抖音页上下文):输入 aweme_id,返回新鲜直链/图片/音乐;失败返回 null。</summary>
     public Func<string, Task<FreshMedia?>>? FreshUrlFetcher;
 
@@ -381,6 +384,17 @@ public sealed class PlaybackController
                 case "fullscreen":
                     FullscreenToggleRequested?.Invoke();
                     break;
+                case "unlike":
+                    // 播放页"取消点赞":把当前条目交宿主做单条 unlike(结果经 CompleteUnlike 回执)
+                    {
+                        AwemeItem? cur = null;
+                        lock (_sync)
+                        {
+                            if (_index >= 0 && _index < _queue.Count) cur = _queue[_index];
+                        }
+                        UnlikeRequested?.Invoke(cur);
+                    }
+                    break;
                 case "queueJump":
                     // 播放队列侧栏:跳转到指定索引播放
                     _ = PlayAtAsync(jo["index"]?.Value<int>() ?? -1, userInitiated: true);
@@ -397,8 +411,11 @@ public sealed class PlaybackController
         catch { }
     }
 
-    // ---------- 失效处理 ----------
+    /// <summary>把"取消点赞"结果注入播放页:文案展示 + 按钮状态复位(ok → 本条标记"已取消")。</summary>
+    public void CompleteUnlike(bool ok, string text)
+        => _ = EvalAsync($"window.__dshUnlikeDone && window.__dshUnlikeDone({(ok ? "true" : "false")},{Json(text)})");
 
+    // ---------- 失效处理 ----------
     /// <summary>
     /// 播放队列侧栏取片段:锁内手工拼 JSON(仅 i/标题/图集标记),整队列几万条不整传;
     /// 结果注入播放页 __dshQueueSlice(items,total,current)。

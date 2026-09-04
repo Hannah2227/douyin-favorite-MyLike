@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     // 新增：批量取消点赞服务；与原有采集/本地删除逻辑独立。
     private UnlikeService? _unlikeService;
     private CancellationTokenSource? _unlikeCts;   // 批量取消点赞:运行中令牌(防重入 + 停止)
+    private bool _playerUnlikeBusy;                 // 播放页内单条取消点赞:忙标志(防重复)
     private CollectOrchestrator? _orchestrator;
 
     /// <summary>抖音引擎页的 Core(屏幕外常显窗口里;登录态/签名/采集引擎)。</summary>
@@ -60,6 +61,7 @@ public partial class MainWindow : Window
         Closed += OnClosed;
         Loaded += OnLoadedAsync;
         StateChanged += OnStateChanged;
+        SizeChanged += (_, _) => QueueNudgeAll();   // 尺寸变化后 WebView(HwndHost)可能错位
         try { Icon = CreateHeartIcon(); } catch { }
     }
 
@@ -82,6 +84,7 @@ public partial class MainWindow : Window
         var compensate = WindowState == WindowState.Maximized && WindowStyle != WindowStyle.None;
         RootGrid.Margin = compensate ? new Thickness(8) : new Thickness(0);
         DispatchUi($"window.__dsh_winState && window.__dsh_winState({(WindowState == WindowState.Maximized ? "true" : "false")})");
+        QueueNudgeAll();   // 窗口状态变化后 WebView(HwndHost)可能错位,节流重排
     }
 
     /// <summary>红色爱心图标(渲染为 256x256 位图)。</summary>
@@ -228,6 +231,7 @@ public partial class MainWindow : Window
         _player.Notice += msg => DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(msg)},false)");
         _player.RiskDetected += OnPlayerRisk;
         _player.FullscreenToggleRequested += ToggleFullscreen;
+        _player.UnlikeRequested += OnPlayerUnlikeRequested;
         _player.PageOpened += awemeId =>
         {
             if (_pageWindow != null) { _pageWindow.NavigateTo(awemeId); _pageWindow.Activate(); return; }
@@ -261,6 +265,61 @@ public partial class MainWindow : Window
         _player.SetAutoNext(_store?.LoadState().AutoNext ?? false);   // 恢复上次选择(默认关)
     }
 
+    // ---------- 播放页内单条取消点赞 ----------
+    // 与批量 unlike(_unlikeCts 通道)相互独立:播放中批量 unlike 已被互斥拦截,
+    // 故播放页单条执行时不存在并发批量;单条忙标志仅防本入口重复点击。
+    // 成功(HTTP 2xx + status_code=0)才删本地并落盘;失败保留(与批量口径一致)。
+    private void OnPlayerUnlikeRequested(AwemeItem? item)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnPlayerUnlikeRequested(item)); return; }
+        if (_playerUnlikeBusy || _unlikeCts != null)
+        {
+            _player?.CompleteUnlike(false, "已有取消点赞任务在处理,请稍候");
+            return;
+        }
+        if (item == null || _collector == null || _unlikeService == null)
+        {
+            _player?.CompleteUnlike(false, "当前没有可取消的条目");
+            return;
+        }
+        _playerUnlikeBusy = true;
+        _ = RunPlayerUnlikeAsync(item);
+    }
+
+    private async Task RunPlayerUnlikeAsync(AwemeItem item)
+    {
+        try
+        {
+            if (!await IsLoggedInAsync())
+            {
+                _player?.CompleteUnlike(false, "未登录,请先在主界面完成抖音登录");
+                return;
+            }
+            var r = await _unlikeService!.UnlikeOneAsync(item.AwemeId);
+            if (r.Success)
+            {
+                _collector!.Remove(item.AwemeId);
+                SaveNow();
+                DispatchUi("window.__dsh_refresh && window.__dsh_refresh()");   // 主列表同步移除(页面当前隐藏,回列表即最新)
+                _player?.CompleteUnlike(true, "已在抖音取消点赞,并已从本地移除");
+            }
+            else if (r.FailKind == UnlikeFailKind.NoResponse)
+            {
+                _player?.CompleteUnlike(false, "取消失败:接口无响应(疑似验证/风控),请稍后重试");
+            }
+            else
+            {
+                _player?.CompleteUnlike(false, "取消失败:" + r.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("PLAYER UNLIKE ERR " + ex);
+            _player?.CompleteUnlike(false, "取消失败,请重试");
+        }
+        finally { _playerUnlikeBusy = false; }
+    }
+
     // ---------- 登录态 ----------
     internal Task<bool> IsLoggedInAsync() => DouyinProbe.IsLoggedInAsync(DouyinCore);
 
@@ -282,24 +341,75 @@ public partial class MainWindow : Window
     private void ShowUiOnly()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(ShowUiOnly); return; }
+        // 关键:WebView2(HwndHost)从 Collapsed 切到 Visible 时,WPF 用它当前的 Width/Height
+        // 做测量;如果还是上一次 Collapsed 时的小值,Chromium 第一帧就会按小尺寸渲染(左上角一块)。
+        // 这里在 Visible 之前先把它的宽高对齐到 RootGrid,保证测量即正确。
+        if (RootGrid.ActualWidth > 0 && RootGrid.ActualHeight > 0)
+        {
+            UiWebView.Width = RootGrid.ActualWidth;
+            UiWebView.Height = RootGrid.ActualHeight;
+        }
         UiWebView.Visibility = Visibility.Visible;
         PlayerWebView.Visibility = Visibility.Collapsed;
+        QueueNudgeAll();
     }
     private void ShowPlayer()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(ShowPlayer); return; }
+        // 同 ShowUiOnly:Visible 之前必须先把宽高对齐 RootGrid,避免 Chromium 第一帧按小尺寸渲染。
+        if (RootGrid.ActualWidth > 0 && RootGrid.ActualHeight > 0)
+        {
+            PlayerWebView.Width = RootGrid.ActualWidth;
+            PlayerWebView.Height = RootGrid.ActualHeight;
+        }
         UiWebView.Visibility = Visibility.Collapsed;
         PlayerWebView.Visibility = Visibility.Visible;
         // 白屏防御:Collapsed→Visible 后 WebView2 可能不主动重绘,强制布局+重绘一次
         PlayerWebView.UpdateLayout();
         PlayerWebView.InvalidateVisual();
+        QueueNudgeAll();
     }
 
-    // ---------- 窗口级全屏(WebView2 内 JS requestFullscreen 不可靠,改为宿主切无边框最大化) ----------
+    /// <summary>WebView 渲染防御:无边框 + WebView2 HwndHost 在切换/全屏/窗口尺寸变化时
+    /// 容易出现"内容整体偏移到左上角、白屏"(渲染层坐标与宿主不同步)。
+    /// 经验有效修法:1px margin 抖动 + SystemIdle 优先级(等所有布局完成后再触发),
+    /// 强制 WPF 重新排 HwndHost 子窗口的位置,使其与新窗口大小对齐。</summary>
+    private void NudgeWebView(FrameworkElement el)
+    {
+        if (el == null) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                // 关键:WebView2(HwndHost)有条件不参与 Grid Stretch,会保持上次(可能 Collapsed/初始)
+                // 的小尺寸 → Chromium 渲染视图缩小到左上角一块。这里显式把宽高设回父级实际尺寸,
+                // 再让 WPF 走完测量/排列,HwndHost 才会调 SetWindowPos 把 Chromium 子窗口摆到正确位置。
+                var parent = System.Windows.Media.VisualTreeHelper.GetParent(el) as FrameworkElement;
+                if (parent != null && parent.ActualWidth > 0 && parent.ActualHeight > 0)
+                {
+                    el.Width = parent.ActualWidth;
+                    el.Height = parent.ActualHeight;
+                }
+                el.UpdateLayout();
+                // 1px margin 抖动:额外再触发一次子窗口重排(防止尺寸更新未生效的边缘情况)
+                var m = el.Margin;
+                el.Margin = new Thickness(m.Left + 1, m.Top, m.Right, m.Bottom);
+                el.UpdateLayout();
+                el.Margin = m;
+                el.UpdateLayout();
+            }
+            catch { }
+            el.InvalidateVisual();
+        }), System.Windows.Threading.DispatcherPriority.SystemIdle);
+    }
+
+    // ---------- 窗口级全屏 ----------
+    // 最佳实践:不切换 WindowState(WebView2 的 HwndHost 在 Maximized↔Normal 切换时
+    // 不跟随重排是"播放页错位/平移"的根因),全屏 = 记录矩形 → 把 Normal 窗口 bounds
+    // 直接铺满主屏;退出还原矩形。窗口任何尺寸/状态变化都触发节流重排兜底。
     private bool _windowFullscreen;
-    private WindowStyle _prevStyle;
-    private WindowState _prevState;
-    private ResizeMode _prevResize;
+    private double _prevLeft, _prevTop, _prevWidth, _prevHeight;
+    private bool _nudgeQueued;
 
     private void ToggleFullscreen()
     {
@@ -307,23 +417,40 @@ public partial class MainWindow : Window
         if (_windowFullscreen) ExitFullscreen();
         else
         {
-            _prevStyle = WindowStyle;
-            _prevState = WindowState;
-            _prevResize = ResizeMode;
-            WindowStyle = WindowStyle.None;
-            ResizeMode = ResizeMode.NoResize;
-            WindowState = WindowState.Maximized;
+            // 记录当前矩形:若处于最大化,先还原再取(最大化时 Left/Top 是负数,还原矩形拿不到)
+            if (WindowState == WindowState.Maximized)
+            {
+                WindowState = WindowState.Normal;
+                UpdateLayout();
+            }
+            _prevLeft = Left; _prevTop = Top; _prevWidth = Width; _prevHeight = Height;
+            Left = 0; Top = 0;
+            Width = SystemParameters.PrimaryScreenWidth;
+            Height = SystemParameters.PrimaryScreenHeight;
             _windowFullscreen = true;
+            QueueNudgeAll();
         }
     }
     private void ExitFullscreen()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(ExitFullscreen); return; }
         if (!_windowFullscreen) return;
-        WindowStyle = _prevStyle;
-        ResizeMode = _prevResize;
-        WindowState = _prevState;
+        Left = _prevLeft; Top = _prevTop; Width = _prevWidth; Height = _prevHeight;
         _windowFullscreen = false;
+        QueueNudgeAll();
+    }
+
+    /// <summary>窗口尺寸/状态变化后节流触发两个 WebView 重排(HwndHost 错位兜底)。</summary>
+    private void QueueNudgeAll()
+    {
+        if (_nudgeQueued) return;
+        _nudgeQueued = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _nudgeQueued = false;
+            NudgeWebView(PlayerWebView);
+            NudgeWebView(UiWebView);
+        }), System.Windows.Threading.DispatcherPriority.SystemIdle);
     }
 
     /// <summary>播放页媒体请求改写 Referer/UA(防盗链)。只对播放页 WebView 开。</summary>
