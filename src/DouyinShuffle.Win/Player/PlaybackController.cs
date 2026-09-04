@@ -381,6 +381,14 @@ public sealed class PlaybackController
                 case "fullscreen":
                     FullscreenToggleRequested?.Invoke();
                     break;
+                case "queueJump":
+                    // 播放队列侧栏:跳转到指定索引播放
+                    _ = PlayAtAsync(jo["index"]?.Value<int>() ?? -1, userInitiated: true);
+                    break;
+                case "queueSlice":
+                    // 播放队列侧栏:按需返回队列片段(标题/图集标记),避免几万条整传
+                    SendQueueSlice(jo["from"]?.Value<int>() ?? 0, jo["count"]?.Value<int>() ?? 80);
+                    break;
                 case "resume":
                     ResumeRequested?.Invoke();
                     break;
@@ -390,6 +398,43 @@ public sealed class PlaybackController
     }
 
     // ---------- 失效处理 ----------
+
+    /// <summary>
+    /// 播放队列侧栏取片段:锁内手工拼 JSON(仅 i/标题/图集标记),整队列几万条不整传;
+    /// 结果注入播放页 __dshQueueSlice(items,total,current)。
+    /// </summary>
+    private void SendQueueSlice(int from, int count)
+    {
+        if (count is < 1 or > 200) count = 80;
+        if (from < 0) from = 0;
+        string json;
+        int total, cur;
+        lock (_sync)
+        {
+            total = _queue.Count;
+            cur = _index;
+            if (from >= total) json = "[]";
+            else
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append('[');
+                var end = Math.Min(from + count, total);
+                for (var k = from; k < end; k++)
+                {
+                    if (k > from) sb.Append(',');
+                    var it = _queue[k];
+                    sb.Append("{\"i\":").Append(k)
+                      .Append(",\"t\":").Append(Newtonsoft.Json.JsonConvert.ToString(it.Desc))
+                      .Append(",\"c\":").Append(Newtonsoft.Json.JsonConvert.ToString(it.CoverUrl))
+                      .Append(",\"g\":").Append(it.PlayUrls.Count == 0 && it.ImageUrls.Count > 0 ? "true" : "false")
+                      .Append('}');
+                }
+                sb.Append(']');
+                json = sb.ToString();
+            }
+        }
+        _ = EvalAsync($"window.__dshQueueSlice && window.__dshQueueSlice({json},{total},{cur})");
+    }
 
     private async Task HandleFailAsync()
     {

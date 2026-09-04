@@ -44,6 +44,37 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 #dsh-pb-tip{position:absolute;bottom:26px;color:#fff;font-size:12px;background:rgba(0,0,0,.75);padding:4px 8px;border-radius:5px;pointer-events:none;white-space:nowrap;display:none}
 #dsh-close{position:absolute;top:14px;right:18px;color:#fff;font-size:24px;background:none;border:none;cursor:pointer;z-index:3}
 #dsh-close:hover{color:var(--accent)}
+#dsh-qbtn.active{background:rgba(254,44,85,.22);color:var(--accent)}
+#dsh-qbtn{font-size:12px}
+#dsh-qpanel{position:absolute;top:0;right:0;bottom:0;width:300px;background:rgba(14,14,18,.94);border-left:1px solid rgba(255,255,255,.09);z-index:6;display:flex;flex-direction:column;color:#e8e8ea}
+#dsh-qpanel.hidden{display:none}
+#dsh-qpanel .qhead{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;font-size:13px;color:#fff;border-bottom:1px solid rgba(255,255,255,.1);flex:none}
+#dsh-qpanel .qhead button{background:none;border:none;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;padding:2px 6px}
+#dsh-qpanel .qhead button:hover{color:#fff}
+#dsh-qlist{flex:1;overflow-y:auto;padding:4px 0;scrollbar-width:none}
+#dsh-qlist::-webkit-scrollbar{display:none}   /* 滚轮控制列表,隐藏拖动条 */
+#dsh-qpanel .qrow{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:13px;line-height:1.3;cursor:pointer;color:#cfcfd3;min-height:50px}
+#dsh-qpanel .qrow:hover{background:rgba(255,255,255,.06)}
+#dsh-qpanel .qrow.cur{background:rgba(254,44,85,.14)}
+#dsh-qpanel .qrow .idx{flex:none;color:rgba(255,255,255,.32);font-size:11px;min-width:26px;text-align:right}
+#dsh-qpanel .qrow .th{flex:none;width:42px;height:42px;border-radius:6px;object-fit:cover;background:#22242a}
+#dsh-qpanel .qrow .th-ph{flex:none;width:42px;height:42px;border-radius:6px;background:linear-gradient(135deg,#23252b,#191b20)}
+#dsh-qpanel .qrow .tt{flex:1;min-width:0;display:flex;align-items:center;gap:6px}
+#dsh-qpanel .qrow .tag{flex:none;font-size:10px;color:rgba(255,255,255,.5);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 3px}
+#dsh-qpanel .qrow .t1{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d5d5da}
+#dsh-qpanel .qrow.cur .t1{color:var(--accent)}
+/* 播放页 UI 升级:顶部遮罩 / 时间码 / seek 提示 / 胶囊按钮 / 呼吸高亮 */
+#dsh-topmask{position:absolute;top:0;left:0;right:0;height:140px;background:linear-gradient(to bottom,rgba(0,0,0,.55),transparent);pointer-events:none;z-index:2}
+#dsh-tcode{position:absolute;right:26px;bottom:90px;color:rgba(255,255,255,.92);font-size:12px;text-shadow:0 1px 4px rgba(0,0,0,.85);pointer-events:none;z-index:3;font-variant-numeric:tabular-nums}
+#dsh-seektip{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);color:#fff;font-size:36px;font-weight:700;text-shadow:0 2px 14px rgba(0,0,0,.75);letter-spacing:1px;opacity:0;pointer-events:none;z-index:5;transition:opacity .22s}
+#dsh-ctrl{gap:14px}
+#dsh-ctrl button.wbtn{width:auto;min-width:52px;height:34px;padding:0 13px;border-radius:17px;font-size:13px !important;background:rgba(255,255,255,.1);letter-spacing:.3px}
+#dsh-ctrl button.wbtn:hover{background:rgba(255,255,255,.24);color:var(--accent)}
+#dsh-ctrl button.wbtn.on{background:rgba(254,44,85,.2);color:#fff}
+#dsh-qpanel .qrow{position:relative}
+@keyframes dshqbreath{0%,100%{background:rgba(254,44,85,.12)}50%{background:rgba(254,44,85,.34);box-shadow:inset 0 0 18px rgba(254,44,85,.22)}}
+#dsh-qpanel .qrow.cur{background:rgba(254,44,85,.16);animation:dshqbreath 2.2s ease-in-out infinite}
+#dsh-qpanel .qrow.cur::before{content:'';position:absolute;left:0;top:5px;bottom:5px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
 #dsh-failmsg{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.75);padding:16px 24px;border-radius:10px;display:none;text-align:center;font-size:14px;z-index:4}
 #dsh-failmsg button{background:rgba(254,44,85,.85);border:none;color:#fff;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;margin-top:10px}
 #dsh-failmsg button.ghost{background:rgba(255,255,255,.15);margin-left:8px}
@@ -75,11 +106,20 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       <button id="dsh-mute" title="静音(M),悬停上方滑条调音量">&#128266;</button>
       <input id="dsh-vol" type="range" min="0" max="100" value="100" title="音量" />
     </span>
-    <button id="dsh-auto" title="自动连播:关(按 A 开启)">连播关</button>
-    <button id="dsh-page" title="打开原页看评论">原页</button>
-    <button id="dsh-fs" title="全屏(F / 双击画面)">全屏</button>
+    <button id="dsh-auto" class="wbtn" title="自动连播:关(按 A 开启)">连播关</button>
+    <button id="dsh-speed" class="wbtn" title="倍速:点击循环切换">1x</button>
+    <button id="dsh-page" class="wbtn" title="打开抖音原视频页看评论,关闭后返回继续播放">评论</button>
+    <button id="dsh-fs" class="wbtn" title="全屏(F / 双击画面)">全屏</button>
+    <button id="dsh-qbtn" class="wbtn" title="播放列表(Q):查看/跳转队列">播放列表</button>
   </div>
   <button id="dsh-close" title="停止并返回列表(Esc)">&#10005;</button>
+  <div id="dsh-topmask"></div>
+  <div id="dsh-seektip"></div>
+  <div id="dsh-tcode"></div>
+  <aside id="dsh-qpanel" class="hidden">
+    <div class="qhead"><span id="dsh-qhead-title">播放列表</span><button id="dsh-qclose" title="收起侧栏">&#10005;</button></div>
+    <div id="dsh-qlist"></div>
+  </aside>
 </div>
 <script>
 (function () {
@@ -91,6 +131,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   // 模块级状态(跨 show 共享,防旧定时器串台)
   var slideTimer = null, slideIdx = 0, slideImages = [], slidePaused = false;
   var stallTimer = null, showSeq = 0, muted = false, volume = 100, lastVol = 100, autoNext = false;
+  var qOpen = false, qCur = -1, qTotal = 0, qLoading = false, curIdxShown = -1;   // 播放队列侧栏状态
 
   function updateToggleIcon(playing) { $('dsh-toggle').innerHTML = playing ? '&#9208;' : '&#9654;'; }
   // 音量应用 + 图标/滑块同步:静音图标随"静音开关或音量=0"显示 🔇;静音时滑块仍保留原音量值
@@ -261,17 +302,18 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       case 'Space': e.preventDefault(); togglePlay(); break;
       case 'ArrowLeft':
         if (slideImages.length > 0) slideStep(-1);
-        else { try { video.currentTime = Math.max(0, video.currentTime - 5); } catch (_) {} }
+        else { e.preventDefault(); seekBy(-10); }
         break;
       case 'ArrowRight':
         if (slideImages.length > 0) slideStep(1);
-        else { try { if (video.duration) video.currentTime = Math.min(video.duration, video.currentTime + 5); } catch (_) {} }
+        else { e.preventDefault(); seekBy(10); }
         break;
       case 'ArrowUp': case 'PageUp': e.preventDefault(); post({ player: 'prev' }); break;
       case 'ArrowDown': case 'PageDown': e.preventDefault(); post({ player: 'next' }); break;
       case 'KeyF': toggleFs(); break;
       case 'KeyM': toggleMute(); break;
       case 'KeyA': toggleAutoNext(); break;
+      case 'KeyQ': setQPanel(!qOpen); break;
       case 'Escape': post({ player: 'close' }); break;
     }
   });
@@ -394,6 +436,12 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 
     var titleText = cfg.title || '';
     if (titleText.length > 60) titleText = titleText.slice(0, 60) + '…';
+    curIdxShown = cfg.index;
+    // 播放队列侧栏强跟随:目标行在已加载区 → 原位点亮(视口外则就近滚入);
+    // 不在已加载区 → 以它为中心重拉窗口并滚动到可见(杜绝高亮丢跟)
+    if (qOpen) {
+      if (!qMarkCurrent()) resetQueueWindow(curIdxShown);
+    }
     $('dsh-title').textContent = (cfg.index + 1) + '/' + cfg.total + '  ' + titleText;
     $('dsh-title').title = cfg.title || '';
     $('dsh-author-name').textContent = cfg.author || '';
@@ -430,6 +478,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       }
       updateSlideProgress();
       updateToggleIcon(true);
+      var tc = $('dsh-tcode'); if (tc) tc.textContent = '';
       slideTimer = setInterval(slideTick, 2000);
       return;
     }
@@ -451,6 +500,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       video.removeAttribute('src');
       video.load();
       video.src = urls[vi++];
+      video.playbackRate = playRate;   // 换源后 playbackRate 会被重置,重设用户倍速
     }
 
     // 播放停滞检测:12 秒推进不足 1 秒(真断流)才切下一条
@@ -513,8 +563,136 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     video.removeAttribute('src');
     try { audio.pause(); } catch (e) {}
     audio.removeAttribute('src');
+    setQPanel(false);   // 收起播放队列侧栏
   };
   function stopStallCheckSafe() { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } }
+
+  // ---------- 播放队列侧栏 ----------
+  // 数据在宿主内存队列(C# PlaybackController),按需分片:首窗围绕当前条 120 条,滚底 +80;
+  // 点击条目跳播(queueJump);连播/跳转后当前条在窗内只更新高亮,不在才重拉窗口定位。
+  var qList = $('dsh-qlist'), qHeadTitle = $('dsh-qhead-title');
+  var qPendingLocate = false;   // 本次响应到达后是否滚到当前行(仅重拉窗口用,加载更多不滚)
+  function escH(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function setQPanel(open) {
+    qOpen = !!open;
+    $('dsh-qpanel').classList.toggle('hidden', !qOpen);
+    $('dsh-qbtn').classList.toggle('active', qOpen);
+    if (qOpen) { qCur = -1; qList.innerHTML = ''; resetQueueWindow(Math.max(0, curIdxShown)); }
+  }
+  function resetQueueWindow(idx) {
+    qList.innerHTML = '';
+    qLoading = false;
+    qPendingLocate = true;   // 重拉窗口后滚到当前行
+    post({ player: 'queueSlice', from: Math.max(0, (idx || 0) - 25), count: 120 });
+  }
+  function loadMoreQ() {
+    if (qLoading || !qOpen || qTotal === 0) return;
+    if (qList.children.length >= qTotal) return;   // 已全量
+    qLoading = true;
+    post({ player: 'queueSlice', from: qList.children.length, count: 80 });
+  }
+  // 切歌/跳转后点亮当前行:返回 true=行已在已加载区(已点亮);false=不在(由调用方重拉窗口)
+  function qMarkCurrent() {
+    if (!qOpen) return true;
+    var rows = qList.querySelectorAll('.qrow');
+    var found = false;
+    for (var k = 0; k < rows.length; k++) {
+      var hit = parseInt(rows[k].getAttribute('data-i'), 10) === curIdxShown;
+      rows[k].classList.toggle('cur', hit);
+      if (hit) { found = true; rows[k].scrollIntoView({ block: 'center' }); }
+    }
+    return found;
+  }
+  // 宿主回传片段(__dshQueueSlice(items,total,current))
+  window.__dshQueueSlice = function (items, total, cur) {
+    qLoading = false;
+    qTotal = total; qCur = cur;
+    if (qHeadTitle) qHeadTitle.textContent = '播放列表(' + total + ')';
+    if (!qOpen) return;
+    var html = '';
+    for (var k = 0; k < (items || []).length; k++) {
+      var it = items[k];
+      html += '<div class="qrow' + (it.i === qCur ? ' cur' : '') + '" data-i="' + it.i + '">'
+        + '<span class="idx">' + (it.i + 1) + '</span>'
+        + (it.c
+            ? '<img class="th" loading="lazy" src="' + escH(it.c) + '" onerror="this.outerHTML=\'<span class=&quot;th th-ph&quot;></span>\'"/>'
+            : '<span class="th th-ph"></span>')
+        + '<span class="tt">' + (it.g ? '<span class="tag">图集</span>' : '')
+        + '<span class="t1">' + escH(it.t || '(无标题)') + '</span></span></div>';
+    }
+    qList.insertAdjacentHTML('beforeend', html);
+    if (qPendingLocate) {
+      qPendingLocate = false;
+      var curRow = qList.querySelector('.qrow.cur');
+      if (curRow && curRow.scrollIntoView) { try { curRow.scrollIntoView({ block: 'center' }); } catch (e) {} }
+    }
+    qFillMore();   // 内容不足一屏或仍贴底 → 自动续拉
+  };
+  // 贴底/未满一屏时自动继续加载,直到用户离开底部
+  function qFillMore() {
+    if (!qOpen || qLoading) return;
+    if (qTotal === 0 || qList.children.length >= qTotal) return;
+    var nearBottom = qList.scrollTop + qList.clientHeight >= qList.scrollHeight - 600;
+    var notFull = qList.scrollHeight <= qList.clientHeight + 4;
+    if (nearBottom || notFull) loadMoreQ();
+  }
+  // 交互:面板内点击/滚轮只作用在面板,不冒泡到播放层(点击跳转 / 收起照常可用)
+  $('dsh-qbtn').onclick = function (e) { e.stopPropagation(); setQPanel(!qOpen); };
+  $('dsh-qclose').onclick = function (e) { e.stopPropagation(); setQPanel(false); };
+  $('dsh-qpanel').addEventListener('click', function (e) { e.stopPropagation(); });   // 冒泡层拦,内部控件先执行
+  $('dsh-qpanel').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });   // 滚轮滚列表,不切歌
+  qList.addEventListener('click', function (e) {
+    var row = e.target && e.target.closest ? e.target.closest('.qrow') : null;
+    if (!row) return;
+    post({ player: 'queueJump', index: parseInt(row.getAttribute('data-i'), 10) });
+  });
+  qList.addEventListener('scroll', function () {
+    if (qList.scrollTop + qList.clientHeight >= qList.scrollHeight - 600) qFillMore();
+  });
+
+  // ---------- 倍速(点击循环:0.75 → 1 → 1.25 → 1.5 → 2) ----------
+  var RATES = [0.75, 1, 1.25, 1.5, 2], rateIdx = 1, playRate = 1;
+  function rateLabel(r) { return (r % 1 === 0 ? r : r) + 'x'; }
+  function applyRate() {
+    playRate = RATES[rateIdx];
+    try { video.playbackRate = playRate; } catch (e) {}
+    var b = $('dsh-speed');
+    if (b) { b.textContent = rateLabel(playRate); b.classList.toggle('on', playRate !== 1); }
+  }
+  $('dsh-speed').onclick = function (e) { e.stopPropagation(); rateIdx = (rateIdx + 1) % RATES.length; applyRate(); };
+
+  // ---------- seek 快进/快退提示 ----------
+  var seekTipTimer = null;
+  function seekBy(sec) {
+    if (slideImages.length > 0) return;
+    try {
+      var d = video.duration || 0;
+      if (!d || !isFinite(d)) return;
+      video.currentTime = Math.max(0, Math.min(d - 0.3, video.currentTime + sec));
+    } catch (e) { return; }
+    var tip = $('dsh-seektip');
+    if (!tip) return;
+    tip.textContent = (sec > 0 ? '+' : '') + sec + ' 秒';
+    tip.style.opacity = '1';
+    if (seekTipTimer) clearTimeout(seekTipTimer);
+    seekTipTimer = setTimeout(function () { tip.style.opacity = '0'; }, 650);
+  }
+
+  // ---------- 时间码(当前/总时长) ----------
+  function fmtT(s) {
+    if (!isFinite(s) || s < 0) s = 0;
+    var m = Math.floor(s / 60), x = Math.floor(s % 60);
+    return m + ':' + (x < 10 ? '0' : '') + x;
+  }
+  video.addEventListener('timeupdate', function () {
+    var tc = $('dsh-tcode');
+    if (!tc) return;
+    var d = video.duration || 0;
+    tc.textContent = fmtT(video.currentTime) + (d > 0 && isFinite(d) ? ' / ' + fmtT(d) : '');
+  });
+  applyRate();
 })();
 </script>
 </body>
