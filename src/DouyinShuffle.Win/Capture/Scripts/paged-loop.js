@@ -1,5 +1,5 @@
-// 翻页采集脚本(单一通道:直连裸 fetch)。宿主模板替换 3 个占位符:
-// SEC_USER_ID / START_CURSOR / KNOWN_IDS
+// 翻页采集脚本(单一通道:直连裸 fetch)。宿主模板替换 4 个占位符:
+// SEC_USER_ID / START_CURSOR / KNOWN_IDS / RESUME_MODE
 // 注意:本文件注释中不得出现占位符原文,否则会被 Replace 误替换导致语法错误(历史事故)。
 // - 循环:buildUrl(cursor) → send(url) → 解析 max_cursor/has_more → 回传 body → 下一页
 // - 终止(五重):has_more=false / 增量整页已知 / cursor 停滞(3次) / 安全页数上限(200) / 停止标志
@@ -8,6 +8,11 @@
 (function () {
   var SEC = '{{SEC_USER_ID}}';
   var CURSOR = {{START_CURSOR}};
+  // 模式开关(宿主显式传入,不再由 cursor 推断 —— 两阶段采集后 cursor>0 不再等于断点硬续):
+  // hardResume=1 断点硬续:禁用"整页已知→incremental"停(硬续区都该是未采内容,出现整页已知
+  //   只可能是接口卡页,停成 incremental 会清断点、重演"卡在几千条再采无新增");
+  // hardResume=0 头部增量(首轮/续轮):保持增量停,补完新点赞即秒回。
+  var IS_RESUME = '{{RESUME_MODE}}' === '1';
   var KNOWN = {{KNOWN_IDS}};   // 增量模式:已知 aweme_id 查找表(对象字面量,O(1) 命中判断)
   function post(d) {
     try { window.chrome.webview.postMessage(d); } catch (e) {}
@@ -91,7 +96,12 @@
       var curFirst = pFirst;
       // 增量模式:整页全为已知 ID = 已到断点(喜欢列表倒序,旧内容无需重翻)。
       // 单页混有新旧(用户断点后又有新喜欢)→ 继续,后续页会全旧而停。
-      if (KNOWN && pCount > 0) {
+      // ★硬续模式(IS_RESUME)整轮禁用此判断:硬续起点 cursor 指向上轮停滞/中断处,往更早翻
+      // 的方向理论上都是未采内容,不该出现"整页已知" —— 若出现,只可能是接口仍在重放停滞页
+      // (卡页),停成 incremental 会清掉断点标志,重演"卡在几千条再采无新增"的老 bug。
+      // 正确做法:放它继续翻 —— 接口恢复 → 翻到全新内容越过断层;仍卡页 → 由下方
+      // stallCount(连续同首条/游标不进)判 stalled(保留断点,下次再续)。
+      if (KNOWN && !IS_RESUME && pCount > 0) {
         var knownHits = 0;
         try {
           for (var ki = 0; ki < c.list.length; ki++) {
@@ -113,6 +123,8 @@
       } else {
         emptyPages = 0;
       }
+      // 游标停滞判定(紧跟在"整页已知"增量停之后):连续 3 次出现
+      // 返回游标不前进 / 首页 aweme 与上页相同 = 接口卡页(疑似限流喂假数据)。
       if (next !== 0 && (next === lastCursor || (curFirst && curFirst === lastFirst))) {
         stallCount++;
         if (stallCount >= 3) { done('stalled'); return; }
@@ -121,7 +133,15 @@
       }
       lastCursor = next;
       lastFirst = curFirst;
-      if (!hasMore || !next || next === CURSOR) { done('complete'); return; }
+      // 完成判定只用真信号:has_more=false(接口明说没有更多),或接口不再给游标(!next)。
+      // ★注意:不能把 next===CURSOR(游标原地不动)当成完成 —— 那正是"卡页被当成采完"的来源,
+      // 会清掉断点标志、重演"再采永远无新增"。has_more=true 时游标不前进 = 疑似卡页,
+      // 不判完成,原地再探一次,由上面的 stallCount 连续计数收口(3 次 → stalled,断点保留)。
+      if (!hasMore || !next) { done('complete'); return; }
+      if (next === CURSOR) {
+        setTimeout(step, 400 + Math.random() * 400);
+        return;
+      }
       CURSOR = next;
       setTimeout(step, 200 + Math.random() * 300);   // 拟人间隔
     }).catch(function (e) {

@@ -8,7 +8,9 @@ namespace DouyinShuffle.Win;
 ///
 /// 链路:登录检查 → sec_uid(self 探测,只管登录态) → 引擎页预热 →
 ///   ★采集前预检(favorite 探测,8s 内定位接口状态)
-///     OK  → 翻页采集(单一直连通道;单轮 200 页上限,分轮自动续采,最多 30 轮)
+///     OK  → 两阶段翻页采集(单一直连通道):
+///           ①头部增量(cursor=0,补新点赞/首次全量;单轮 200 页上限,safety 分轮续)
+///           ②断点续尾部(仅当上次未跑完;从深断点继续,最多 200 轮 ≈ 72 万条)
 ///     不通 → 短重试 2 次 → 仍不通分流:
 ///       已有数据 = 限流 → 弹验证窗(轮询 favorite 恢复,恢复即自动断点续采)
 ///       无数据   = 网络/环境 → 报错退出
@@ -34,6 +36,7 @@ internal sealed class CollectOrchestrator
     /// <summary>认证等待续采开关:登录/验证弹窗打开时置位,认证完成后自动开始/续采。与风控状态机正交。</summary>
     private bool _pendingCollectResume;
     private int _autoRecoverCount;   // 采集波动静默恢复次数(防死循环,超过 3 次转人工/终止)
+    private int _riskRecoverHandling;   // OnCollectRisk 门闩(1=进行中):与主流程 blocked 分流互斥,防双发探测/collectDone
 
     /// <summary>风控统一状态机:挂起/验证窗/恢复的单一状态源(取代散落的 _riskHangup 标志)。</summary>
     private readonly RiskStateMachine _riskState = new();
@@ -57,8 +60,8 @@ internal sealed class CollectOrchestrator
     public void ClearSecUid() => _lastSecUid = "";
 
     /// <summary>
-    /// 开始采集(命令泵入口):上次未跑完 → 从 MaxCursor 断点续采;
-    /// 否则从头(cursor 0)增量(喜欢列表时间倒序,翻到已知断点即停,只补新喜欢)。
+    /// 开始采集(命令泵入口):两阶段 —— 先头部增量(cursor 0,补新点赞/首次全量),
+    /// 再断点续尾部(仅当上次未跑完:从 MaxCursor 深断点继续采未完成的旧尾部)。
     /// </summary>
     public string Start()
     {
@@ -83,16 +86,27 @@ internal sealed class CollectOrchestrator
         _pendingCollectResume = false;
     }
 
-    /// <summary>认证成功后自动续采(若采集被登录/验证打断)。</summary>
-    public async Task ResumeAfterAuthAsync()
+    /// <summary>采集因"未登录弹登录窗"被用户取消时复位:清挂起标志 + 复位 UI(进度条/采集按钮)。
+    /// 否则 UI 会永久停在"采集中"、采集按钮永久灰(关掉登录窗的经典死锁)。</summary>
+    public void CancelPendingResume()
     {
         if (!_pendingCollectResume) return;
         _pendingCollectResume = false;
+        var count = _host.Collector?.Count ?? 0;
+        _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText(count.ToString())},false)");
+    }
+
+    /// <summary>认证成功后自动续采(若采集被登录/验证打断)。返回 true=确实续采(调用方据此提示用户)。</summary>
+    public async Task<bool> ResumeAfterAuthAsync()
+    {
+        if (!_pendingCollectResume) return false;
+        _pendingCollectResume = false;
         // 等旧采集循环完全退出再重启(风控取消有延迟,避免双循环)
         for (var i = 0; i < 20 && _collecting; i++) await Task.Delay(250);
-        if (_host.IsShuttingDown) return;
+        if (_host.IsShuttingDown) return false;
         var resumeCursor = _host.Collector is { Count: > 0 } ? _host.Collector.MaxCursor : 0;
         _ = RunCollectAsync(resumeCursor);
+        return true;
     }
 
     /// <summary>
@@ -104,45 +118,50 @@ internal sealed class CollectOrchestrator
     {
         if (!_host.Dispatcher.CheckAccess()) { _ = _host.Dispatcher.BeginInvoke(OnCollectRisk); return; }
         if (_host.Collector == null || _lastSecUid.Length == 0) return;
-
-        var uid = _lastSecUid;
-        AppLog.Write($"RISK-RECHECK fav auto={_autoRecoverCount}");
-        var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
-
-        // 已恢复 = 真波动(JS 退避期间接口回来了)→ 静默续采
-        if (favOk && _autoRecoverCount < 3)
+        // 门闩:采集中途 blocked 会同时触发 RiskDetected(→ 本流程)与主流程的 blocked 分流,
+        // 两个出口并行会双发探测/reload/toast/collectDone。抢到者负责,主流程收尾见"riskHandled"分支。
+        if (Interlocked.Exchange(ref _riskRecoverHandling, 1) != 0) return;
+        try
         {
-            _autoRecoverCount++;
-            _riskState.OnRecovered();
-            _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("采集波动,自动恢复中…") + ",false)");
-            await ResumeAsync();
-            return;
-        }
+            var uid = _lastSecUid;
+            AppLog.Write($"RISK-RECHECK fav auto={_autoRecoverCount}");
+            var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
 
-        // 不通 → reload 重建 SDK 拦截器(登录/风控后旧页面持过期状态是黑洞常见原因)再探一次
-        if (!favOk)
-        {
-            await _host.ReloadDouyinPageAsync();
-            favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+            // 已恢复 = 真波动(JS 退避期间接口回来了)→ 静默续采
             if (favOk && _autoRecoverCount < 3)
             {
                 _autoRecoverCount++;
                 _riskState.OnRecovered();
-                _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("已恢复页面状态,自动继续采集…") + ",false)");
+                _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("采集波动,自动恢复中…") + ",false)");
                 await ResumeAsync();
                 return;
             }
+
+            // 不通 → reload 重建 SDK 拦截器(登录/风控后旧页面持过期状态是黑洞常见原因)再探一次
+            if (!favOk)
+            {
+                await _host.ReloadDouyinPageAsync();
+                favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+                if (favOk && _autoRecoverCount < 3)
+                {
+                    _autoRecoverCount++;
+                    _riskState.OnRecovered();
+                    _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("已恢复页面状态,自动继续采集…") + ",false)");
+                    await ResumeAsync();
+                    return;
+                }
+            }
+
+            // 仍不通 = 限流:挂起等待,不再立即弹窗(弹窗推迟到用户下次点「采集」的预检阶段,
+            // 减少采集中途加载抖音页对接口的刺激);UI 补 collectDone 让进度条复位并刷新列表
+            _autoRecoverCount = 0;
+            _riskState.OnRiskConfirmed(requireManual: false);   // → RiskHeld
+            Stop();
+            _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("采集被风控暂停,请稍等片刻后再点「采集」,届时会自动弹出滑块验证") + ",true)");
+            _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText((_host.Collector?.Count ?? 0).ToString())},false)");
         }
-
-        // 仍不通 = 限流:挂起等待,不再立即弹窗(弹窗推迟到用户下次点「采集」的预检阶段,
-        // 减少采集中途加载抖音页对接口的刺激);UI 补 collectDone 让进度条复位并刷新列表
-        _autoRecoverCount = 0;
-        _riskState.OnRiskConfirmed(requireManual: false);   // → RiskHeld
-        Stop();
-        _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("采集被风控暂停,请稍等片刻后再点「采集」,届时会自动弹出滑块验证") + ",true)");
-        _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText((_host.Collector?.Count ?? 0).ToString())},false)");
+        finally { Interlocked.Exchange(ref _riskRecoverHandling, 0); }
     }
-
     /// <summary>等旧循环退出后从断点重启采集。</summary>
     private async Task ResumeAsync()
     {
@@ -228,20 +247,81 @@ internal sealed class CollectOrchestrator
             if (ct.IsCancellationRequested) return;
             _riskState.OnRecovered();   // 预检通过(接口恢复)→ 解除风控挂起/验证状态
 
-            // 5. 翻页采集(单一通道;分轮续采:单轮 200 页上限到达后自动从 MaxCursor 继续,
-            //    否则超长列表再点采集会立即命中"整页已知"增量停止,尾部永远采不到。最多 30 轮 ≈ 10万条)
+            // 5. 翻页采集:两阶段。★先头部增量、再断点续尾部(issue #3:采完后新点赞的视频采不进来)。
+            //    根因:上次未完成时 Start() 只从 MaxCursor 深处断点续采 —— 喜欢列表按时间倒序
+            //    翻页(游标越翻越小),新点赞全在列表顶部,深断点之后的翻页永远碰不到它们;
+            //    等旧尾部全部采完(可能几万条)才轮到头部,用户感知就是"点了采集、新点赞永远不进来"。
+            //    阶段 A(头部增量,cursor=0):新增点赞都在顶部,增量碰到"整页已采"即秒停,
+            //      没有新增时开销极小;首次使用(无数据)也由本阶段完成全量(safety 分轮续)。
+            //      ★trackCursor = 仅全量模式写断点(见下方阶段 A 注释);增量边界永不写断点。
+            //    阶段 B(断点续旧尾部):仅当上次未跑完(_lastCollectIncomplete)且确有断点。
             var knownIds = collector.Items.Select(i => i.AwemeId).ToList();
             var reason = "";
-            for (var round = 0; round < 30; round++)
+            var lastRoundStored = collector.Count;   // 上轮结束时的入库数(防呆参照)
+            var deepCursor = startCursor;            // 深断点,阶段 B 起点
+            collector.Round = 1;
+            // —— 阶段 A:头部增量(总是先跑;hardResume=false 保持增量可停)——
+            //    ★trackCursor = 仅全量模式(无既有数据)写断点。不能用 deepCursor==0 判定:
+            //    正常采完后的普通增量 deepCursor 也是 0,若把增量边界写进断点,一旦增量中途
+            //    stalled(incomplete=true),下次就会从"已采区内的浅边界"硬续 —— 硬续禁用
+            //    knownIds 表 → 整个已采区反复空翻 → 零新增防呆停止 → 断点依旧 → 死循环。
+            //    只有首次全量(knownIds<50,采集器同款判定)的中断进度才是合法深断点。
+            var headTrack = knownIds.Count < 50;
+            reason = await collector.StartDirectAsync(uid, 0, knownIds, ct, trackCursor: headTrack);
+            AppLog.Write($"COLLECT head {reason}");
+            try { _host.SaveNow(true); } catch { }
+            var rk = reason.Split(':')[0];
+            var round = 0;
+            // safety = 头部 200 页没翻完(新增极多/首次全量)→ 从最近边界游标分轮续(单轮≈3600 条)
+            var fullMode = knownIds.Count < 50;   // 全量模式(与采集器增量启用判定一致)
+            while (rk == "safety" && !ct.IsCancellationRequested && round < 200)
             {
-                collector.Round = round + 1;   // 进度文本显示轮次(用户看到"第1页重新计数"时知道是续轮)
-                reason = await collector.StartDirectAsync(uid, startCursor, knownIds, ct);
-                AppLog.Write($"COLLECT direct#{round} {reason}");
-                // 每轮落盘一次(≈3600 条粒度):防进程崩溃/断电丢整轮数据(异常分支虽有兜底,硬崩溃无解)
+                // 防呆:连续整轮零新增(接口异常翻页)→ 停止空转。
+                // ★仅全量模式启用:增量轮"零新增"是常态(补完新增即停,safety 不会走到续轮);
+                //   全量续轮翻过的页大多已知,去重后单轮新增为 0 可能是正常现象(尤其中断重启后),
+                //   连续两轮零新增才判定异常。
+                if (fullMode && round > 0 && collector.Count == lastRoundStored)
+                {
+                    AppLog.Write("COLLECT zero-progress round, stop");
+                    reason = "stalled:0";
+                    break;
+                }
+                lastRoundStored = collector.Count;
+                round++;
+                collector.Round = round + 1;
+                reason = await collector.StartDirectAsync(uid, collector.LastBoundaryCursor, knownIds, ct, trackCursor: headTrack);
+                AppLog.Write($"COLLECT head#{round} {reason}");
                 try { _host.SaveNow(true); } catch { }
-                var rk = reason.Split(':')[0];
-                if (rk != "safety" || ct.IsCancellationRequested) break;
-                startCursor = collector.MaxCursor;
+                rk = reason.Split(':')[0];
+            }
+            // —— 阶段 B:断点续采旧尾部(仅当上次未跑完且确有断点)——
+            //    ★阶段 A 门槛:头部已明确失败(stalled/blocked/notready)时不进阶段 B ——
+            //    接口正在挣扎,硬续只会白耗请求,阶段 A 的失败原因直接走下方分流/收口;
+            //    下次点采集阶段 A 秒级试探,接口恢复后自然进入阶段 B 补尾部。
+            //    轮数上限 200 轮 ≈ 72 万条覆盖几十万量级;极端超出的账号按文档口径停在轮次上限
+            //    (数据/断点已逐轮落盘)。★此处刻意不加"零新增防呆":硬续轮翻过已采区
+            //    (去重后零新增)但游标在前进,正是把断点走到列表尽头(has_more=false →
+            //    complete → 清除断点标志)的自愈路径,拦掉会让标志永远清不掉、每次采集重翻;
+            //    游标真卡死由 JS 层 stallCount(3 次同首条/游标不进 → stalled)收口。
+            if (rk is "complete" or "incremental" or "safety"
+                && _lastCollectIncomplete && deepCursor > 0 && !ct.IsCancellationRequested)
+            {
+                var tailCursor = deepCursor;
+                for (var r = 0; r < 200 && !ct.IsCancellationRequested; r++)
+                {
+                    collector.Round = r + 2;   // 第 1 轮 = 头部,尾部从第 2 轮起(进度文案)
+                    reason = await collector.StartDirectAsync(uid, tailCursor, knownIds, ct, trackCursor: true, hardResume: true);
+                    AppLog.Write($"COLLECT tail#{r} {reason}");
+                    try { _host.SaveNow(true); } catch { }
+                    var rk2 = reason.Split(':')[0];
+                    if (rk2 != "safety" || ct.IsCancellationRequested) break;
+                    // ★此处刻意不加"零新增防呆":硬续轮翻过已采区(去重后零新增)但游标在前进,
+                    //   正是把断点走到列表尽头(has_more=false → complete → 清除断点标志)的
+                    //   自愈路径,拦掉会让标志永远清不掉、每次采集重翻;游标真卡死由 JS 层
+                    //   stallCount(3 次同首条/游标不进 → stalled)收口,200 轮上限兜底。
+                    lastRoundStored = collector.Count;
+                    tailCursor = collector.MaxCursor;
+                }
             }
             var reasonKey = reason.Split(':')[0];
 
@@ -260,8 +340,17 @@ internal sealed class CollectOrchestrator
                 // 中途失败(>0 页):数据已落库,断点续采标志由下方统一处理
             }
 
-            // 7. 收尾:结束原因 → UI 反馈(complete/incremental/stalled/safety=正常收尾)
-            var ok = reasonKey is "complete" or "stalled" or "incremental" or "safety";
+            // 7. 收尾:结束原因 → UI 反馈。
+            //    真正的"采完"只有:complete(接口 has_more=false/游标不再前进,明说没有更多)、
+            //    incremental(增量碰到已采边界)。
+            //    ★stalled(游标连续停滞 = 疑似限流卡页)不是采完 —— 曾把它归入 ok,导致:
+            //    断点标志不置位 → 下次只能增量从头翻,而增量穿不过"整页已采"的断层,
+            //    表现为"卡在几千条、再点采集永远无新增"(须清空全量重采才能越过)。
+            //    现归入"未完成":下次点采集从 MaxCursor 断点硬续,越过已采区继续往下。
+            //    ★safety(轮次/页数上限用尽)同样不是采完:走到收尾时 reason 仍是 safety,
+            //    说明上限耗尽时接口还在给新页(更旧的尾部没采到)—— 若当完成,断点标志被清,
+            //    上限之外的内容从此够不到(增量只能翻到已采边界即停)。归入未完成 + 诚实提示。
+            var ok = reasonKey is "complete" or "incremental";
             _lastCollectIncomplete = !ok;   // 未跑完(失败/停止)→ 下次点采集从断点续采
             if (ok) _autoRecoverCount = 0;   // 采集正常完成,重置自愈计数
             _host.SaveNow(_lastCollectIncomplete);
@@ -270,6 +359,30 @@ internal sealed class CollectOrchestrator
             // collectDone 只负责进度条复位与结果提示
             if (reasonKey == "busy")
                 _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("已有采集在进行") + ",true)");
+            else if (reasonKey == "stalled")
+            {
+                // 专用提示:别让用户误以为"采完了"(历史事故的教训就是 UI 把 stalled 显示成完成)。
+                // 顺序:先 collectDone 复位进度条/按钮(其内部 toast"采集已停止"会被后一条覆盖),
+                // 再发专用提示 → 最终可见的是"可从断点续采"文案。
+                sentDone = true;
+                _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText(collector.Count.ToString())},false)");
+                _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("接口疑似波动(游标停滞),进度已保存;可稍后再点「采集」,将从断点自动续采") + ",true)");
+            }
+            else if (reasonKey == "safety")
+            {
+                // 轮次上限用尽时接口仍在给新页 = 更旧的尾部没采到 → 诚实告知"未采完",
+                // 断点已保留,下次点采集自动从断点继续(不再冒充"采集完成"误导用户)。
+                sentDone = true;
+                _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText(collector.Count.ToString())},false)");
+                _host.DispatchUi("window.__dsh_toast && window.__dsh_toast(" + MainWindow.JsonText("已达单次采集上限,更早的内容还没采完;进度已保存,稍后再点「采集」将继续补齐") + ",true)");
+            }
+            else if (reasonKey is "blocked" or "notready"
+                     && Interlocked.CompareExchange(ref _riskRecoverHandling, 0, 0) == 1)
+            {
+                // 该失败已由 OnCollectRisk(异步探测分流)接管并完成 UI 收尾,这里只标记已收尾,
+                // 防 finally 补发或重复 collectDone/toast(同一 blocked 事件的两个出口)。
+                sentDone = true;
+            }
             else
             {
                 sentDone = true;
@@ -296,7 +409,8 @@ internal sealed class CollectOrchestrator
             // 统一收口:UI 还在"采集中"且本轮没发过 collectDone、也没挂起等待自动续采 → 补发。
             // 覆盖:未登录弹窗后 return、探测 Blocked return、取消停止、HandleInterfaceDown 的弹验证窗
             // 分支(它故意不发 collectDone 保持进度条显示,但有 _pendingCollectResume 挂起)等所有路径。
-            if (uiCollecting && !sentDone && !_pendingCollectResume && !_host.IsShuttingDown)
+            if (uiCollecting && !sentDone && !_pendingCollectResume && !_host.IsShuttingDown
+                && Interlocked.CompareExchange(ref _riskRecoverHandling, 0, 0) == 0)   // 风控恢复流程接管中则不再补发
             {
                 AppLog.Write("COLLECT done via finally-fallback");
                 _host.DispatchUi($"window.__dsh_collectDone && window.__dsh_collectDone({MainWindow.JsonText((_host.Collector?.Count ?? 0).ToString())},false)");

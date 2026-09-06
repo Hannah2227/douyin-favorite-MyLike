@@ -119,6 +119,26 @@
   <button class="mini-btn" id="btn-unlike-stop">停止</button>
 </div>
 <div class="toast" id="toast"></div>
+<!-- 通用确认弹窗(原生 confirm 无法带勾选框;用于>50批量取消的"不再询问"等场景) -->
+<div class="modal-mask hidden" id="confirm-modal">
+  <div class="modal-box" style="width:min(480px,90vw)">
+    <div class="modal-head">
+      <span class="modal-title" id="cf-title">请确认</span>
+      <button class="modal-close" id="cf-close" title="关闭(Esc)">&#10005;</button>
+    </div>
+    <div class="modal-body" id="cf-body" style="white-space:pre-line;padding-bottom:6px"></div>
+    <div style="padding:0 22px 18px;display:flex;flex-direction:column;gap:14px">
+      <label id="cf-skip-wrap" style="display:none;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--text-dim)">
+        <input type="checkbox" id="cf-skip" style="accent-color:var(--accent)" />
+        <span id="cf-skip-text"></span>
+      </label>
+      <div style="display:flex;justify-content:flex-end;gap:10px">
+        <button class="mini-btn" id="cf-cancel">取消</button>
+        <button class="mini-btn danger" id="cf-ok">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
 <!-- 帮助弹窗(使用教程 / 常见问题) -->
 <div class="modal-mask hidden" id="help-modal">
   <div class="modal-box">

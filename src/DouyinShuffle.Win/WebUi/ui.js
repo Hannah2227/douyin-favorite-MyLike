@@ -49,6 +49,49 @@ function toast(msg, err) {
 function escapeHtml(s) {
   return (s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// 通用确认弹窗(原生 confirm 无法带勾选框)。opts:{title, okText, checkboxText, skipKey}
+// - 提供 checkboxText 时显示"勾选框";用户勾选确定后把 localStorage[skipKey]='1'(以后不再询问)。
+// - 返回 Promise<boolean>;Esc/遮罩/×/取消 → false。
+let cfResolve = null;
+function confirmModal(text, opts) {
+  opts = opts || {};
+  return new Promise(resolve => {
+    if (cfResolve) { const old = cfResolve; cfResolve = null; old(false); }   // 并发只留最新
+    const mask = document.getElementById('confirm-modal');
+    const body = document.getElementById('cf-body');
+    const skipWrap = document.getElementById('cf-skip-wrap');
+    const skipBox = document.getElementById('cf-skip');
+    const finish = v => {
+      mask.classList.add('hidden');
+      document.removeEventListener('keydown', onKey, true);
+      mask.removeEventListener('click', onMask);
+      cfResolve = null;
+      resolve(v);
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); finish(false); } };
+    const onMask = e => { if (e.target === mask) finish(false); };
+    cfResolve = finish;
+    setText('cf-title', opts.title || '请确认');
+    body.textContent = text || '';
+    skipBox.checked = false;
+    if (opts.checkboxText) {
+      setText('cf-skip-text', opts.checkboxText);
+      skipWrap.style.display = 'flex';
+    } else {
+      skipWrap.style.display = 'none';
+    }
+    setText('cf-ok', opts.okText || '确定');
+    document.getElementById('cf-ok').onclick = () => {
+      if (skipBox.checked && opts.skipKey) { try { localStorage.setItem(opts.skipKey, '1'); } catch (e) {} }
+      finish(true);
+    };
+    document.getElementById('cf-cancel').onclick = () => finish(false);
+    document.getElementById('cf-close').onclick = () => finish(false);
+    document.addEventListener('keydown', onKey, true);
+    mask.addEventListener('click', onMask);
+    mask.classList.remove('hidden');
+  });
+}
 function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
 function fmtDate(ts) {
   if (!ts) return '';
@@ -388,26 +431,35 @@ on('btn-unlike', 'click', async () => {
   }
 
   const count = selected.size;
-  const warn = count > 50
-    ? `\n\n⚠ 已选 ${count} 条,数量较大:抖音对批量取消有限流/风控风险,触发后会暂停并弹验证。建议先小批量试或分批操作。`
-    : '';
-  if (!confirm(
+  const skipWarn = (() => { try { return localStorage.getItem('dshSkipUnlikeWarn') === '1'; } catch (e) { return false; } })();
+  // 大数量风险确认:>50 且未勾选"不再询问" → 弹确认弹窗(带勾选框);已勾选则直接执行不再打扰。
+  // 小批量(<=50)保持轻量 confirm(无勾选框,始终确认,防误触)。
+  if (count > 50 && !skipWarn) {
+    const go = await confirmModal(
+      `确定在抖音中取消选中的 ${count} 个作品的点赞吗?\n` +
+      `程序会逐个处理,速度较慢属正常,可随时点进度条旁「停止」。\n` +
+      `只有成功取消点赞的条目才会从本地列表移除。\n\n` +
+      `⚠ 已选 ${count} 条,数量较大:抖音对批量取消有限流/风控风险,触发后会暂停并弹验证。建议先小批量试或分批操作。`,
+      {
+        title: '批量取消点赞(大数量)',
+        checkboxText: '我已了解风险,此后不再询问此警告',
+        skipKey: 'dshSkipUnlikeWarn',
+        okText: '继续取消'
+      });
+    if (!go) return;
+  } else if (count <= 50 && !confirm(
     `确定在抖音中取消选中的 ${count} 个作品的点赞吗?\n` +
     `程序会逐个处理,速度较慢属正常,可随时点进度条旁「停止」。\n` +
-    `只有成功取消点赞的条目才会从本地列表移除。${warn}`
+    `只有成功取消点赞的条目才会从本地列表移除。`
   )) return;
 
   const ids = [...selected];
   setUnlikeBtn(true);
-  try {
-    const r = await call('unlike', ids);
-    if (r === 'started') { /* 进度条由宿主 __dsh_unlikeStart 接管 */ }
-    else if (r === 'busy') { toast('已有取消点赞任务正在执行', true); setUnlikeBtn(false); }
-    else if (r && String(r).indexOf('err') === 0) { toast(String(r), true); setUnlikeBtn(false); }
-    else { toast('启动失败:' + r, true); setUnlikeBtn(false); }
-  } finally {
-    // 成功启动时按钮由 __dsh_unlikeEnd 恢复;其余路径上面已恢复
-  }
+  const r = await call('unlike', ids);
+  if (r === 'started') { /* 进度条由宿主 __dsh_unlikeStart 接管 */ }
+  else if (r === 'busy') { toast('已有取消点赞任务正在执行', true); setUnlikeBtn(false); }
+  else if (r && String(r).indexOf('err') === 0) { toast(String(r), true); setUnlikeBtn(false); }
+  else { toast('启动失败:' + r, true); setUnlikeBtn(false); }
 });
 
 on('btn-delete', 'click', async () => {
@@ -425,12 +477,18 @@ on('btn-import', 'click', async () => { const r = await call('import'); toast(r 
 on('btn-stop', 'click', async () => { await call('stop'); setPlaying(''); });
 on('year-filter', 'change', e => { yearFilter = e.target.value; renderMonthOptions(); applyFilter(); });
 on('month-filter', 'change', e => { monthFilter = e.target.value; applyFilter(); });
-// 搜索:点击按钮(或回车)后才执行,不再随输入实时过滤
+// 搜索:点击按钮(或回车)后才执行,不随输入实时过滤(几万条实时过滤会卡)。
+// ★同步时以"当前输入框内容"为准(issue #3):输入后再清空 + 回车/刷新 → searchText 归零恢复全量,
+//   不再残留上次关键词(旧行为只在有词时赋值,清空后变量仍留着旧词,列表永远停在搜索结果)。
 function doSearch() {
   const el = document.getElementById('search');
   searchText = (el ? el.value : '').trim();
   applyFilter();
 }
+// 输入框被清空(退格删空/剪切)→ 立即恢复全量列表,等不到回车
+on('search', 'input', e => {
+  if (!e.target.value.trim() && searchText) { searchText = ''; applyFilter(); }
+});
 on('btn-search', 'click', doSearch);
 on('search', 'keydown', e => { if (e.key === 'Enter') doSearch(); });
 on('nav-all', 'click', () => setNav('all'));
@@ -498,8 +556,8 @@ const HELP_TUTORIAL = `
 <h4>二、采集说明</h4>
 <ul>
   <li><b>采集前预检</b>:每次点「采集」会先检查接口状态(几秒到十几秒),显示「正在检查接口状态…」属正常流程。</li>
-  <li><b>增量采集</b>:再次点「采集」只补上次之后新喜欢的内容,已采集的自动去重,翻到断点即自动停止。</li>
-  <li><b>断点续采</b>:采集中途失败、被限流或手动停止后,再点「采集」会自动从上次的进度继续,不会遗漏。</li>
+  <li><b>增量采集</b>:再次点「采集」会先自动补上新喜欢的内容(已采集的自动去重),补完即停,没新内容时几秒内结束。</li>
+  <li><b>断点续采</b>:采集中途失败、被限流或手动停止后,再点「采集」会先补头部新内容,再自动从上次的进度继续采未完成的旧内容,两边都不会遗漏。</li>
   <li><b>超长列表</b>:单轮最多翻 200 页(约 3600 条),到达上限自动从断点分轮继续,进度条会显示「第 N 轮」,全程无需手动操作。</li>
   <li><b>限流与验证</b>:采集过快可能触发抖音限流,此时会弹出验证窗口——窗口会一直等到接口恢复才自动关闭并继续采集,期间请勿反复点「采集」。</li>
   <li><b>数量说明</b>:抖音接口每页固定返回 18 条;最终总数可能与抖音显示的喜欢数不一致(部分内容已失效、下架或删除)。</li>
@@ -518,10 +576,11 @@ const HELP_TUTORIAL = `
 
 <h4>四、播放快捷键</h4>
 <ul>
+  <li>以下键位均可在播放页控制条「快捷键」面板<b>自定义</b>(点「改键」后直接按新键;支持单个动作还原或全部恢复默认),设置保存在本机。</li>
   <li><kbd>空格</kbd> 播放 / 暂停</li>
   <li><kbd>↑</kbd> / <kbd>PageUp</kbd> 上一首;<kbd>↓</kbd> / <kbd>PageDown</kbd> 下一首</li>
   <li><kbd>←</kbd> / <kbd>→</kbd> 快退 / 快进 10 秒;图集中为上一张 / 下一张</li>
-  <li><kbd>F</kbd> 或双击画面 全屏;<kbd>M</kbd> 静音;<kbd>A</kbd> 自动连播;<kbd>Q</kbd> 播放列表;<kbd>Esc</kbd> 停止并返回列表</li>
+  <li><kbd>F</kbd> 或双击画面 全屏;<kbd>M</kbd> 静音;<kbd>A</kbd> 自动连播;<kbd>Q</kbd> 播放列表;<kbd>Esc</kbd> 停止并返回列表(<kbd>Esc</kbd> 固定不可改)</li>
   <li>播放页空白处<b>滚动滚轮</b> = 上 / 下一首(抖音式);播放列表展开后,在列表范围内滚动只滚动列表、不切歌。</li>
 </ul>
 
@@ -529,13 +588,14 @@ const HELP_TUTORIAL = `
 <ul>
   <li>打开图集后自动轮播;<kbd>空格</kbd> 暂停 / 继续轮播。</li>
   <li>鼠标悬停进度条可预览并直接跳选任意一张;<kbd>←</kbd> <kbd>→</kbd> 手动翻张。</li>
+  <li>图文/图集作品的文字想看全文:标题旁有「展开」按钮(简介超过两行时出现),点开可查看完整文案,文字可选中复制。</li>
 </ul>
 
 <h4>六、筛选与搜索</h4>
 <ul>
   <li>左栏「全部 / 图集 / 视频」切换分类,右侧数字为各分类数量。</li>
   <li>列表上方的年份、月份筛选与「洗牌播放」联动:筛选后洗牌只播筛选出的内容。</li>
-  <li>顶部搜索框支持按标题、作者搜索;输入后按回车或点「搜索」执行(不实时过滤,避免大列表卡顿)。</li>
+  <li>顶部搜索框支持按标题、作者搜索;输入后按回车或点「搜索」执行(不实时过滤,避免大列表卡顿)。<b>清空搜索框即恢复全部列表</b>(退格删空立即生效,无需回车)。</li>
 </ul>
 
 <h4>七、数据管理</h4>
@@ -567,6 +627,12 @@ const HELP_FAQ = `
 
 <p class="faq-q">采集会重复抓取吗?</p>
 <p class="faq-a">不会。已入库内容自动去重;上次采完后再次采集,翻到断点即自动完成,只补新内容。</p>
+
+<p class="faq-q">搜索完清空输入框,列表怎么还是搜索结果?</p>
+<p class="faq-a">旧版本需要再按一次回车才会恢复,现在<b>清空输入框立即恢复全部列表</b>(退格删空或剪切清空都生效);也可以清空后按回车。如果搜索词还在框里,按回车重新执行即可。</p>
+
+<p class="faq-q">为什么每次点「采集」有时候不加、最多只加几条?</p>
+<p class="faq-a">这是增量采集的正常表现,不是漏采:每次采集只抓"上次采集之后新点赞的那几条"——如果你在这期间没怎么点赞,自然不增加或只加几条。想验证:先在抖音里给几条新视频点赞,再点一次「采集」,它们就会进来。真正需要担心的是"上次没采完被中断"(界面会提示"可从断点续采"),那种情况再点一次会从断点补全,而不是走上面的增量。</p>
 
 <p class="faq-q">为什么采集到的数量比抖音里显示的喜欢数少?</p>
 <p class="faq-a">正常现象。部分内容已被删除、下架或设为私密,接口不再返回;能返回但无法播放的在列表中标记「失效」。最终数量 ≤ 抖音显示的喜欢数。</p>

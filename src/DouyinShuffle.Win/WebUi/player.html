@@ -9,7 +9,7 @@
 html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Microsoft YaHei",sans-serif;user-select:none}
 #dsh-root{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
 #dsh-video{width:100vw;height:100vh;object-fit:contain;cursor:pointer;outline:none;background:#000}
-#dsh-slide{max-width:100vw;max-height:100vh;object-fit:contain;cursor:pointer;display:none}
+#dsh-slide{width:100%;height:100%;max-width:100vw;max-height:100vh;object-fit:contain;cursor:pointer;display:none}
 #dsh-audio{display:none}
 #dsh-hint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.55);padding:14px 26px;border-radius:50px;font-size:16px;display:none;pointer-events:none;z-index:5}
 #dsh-load{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#fff;font-size:14px;display:none;align-items:center;gap:10px;background:rgba(0,0,0,.5);padding:12px 22px;border-radius:24px;z-index:5}
@@ -30,7 +30,6 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 #dsh-toggle{font-size:26px !important;width:54px !important;height:54px !important}
 #dsh-page,#dsh-fs,#dsh-mute{font-size:15px !important}
 #dsh-auto{width:auto !important;min-width:50px;padding:0 8px;font-size:13px !important;letter-spacing:.5px}
-/* 音量控件:点击图标=静音开关;悬停按钮上方弹出水平滑条调音量 */
 #dsh-vol-wrap{position:relative;display:flex;align-items:center}
 /* 音量控件:点击图标=静音开关;悬停按钮上方弹出垂直滑条调音量 */
 #dsh-vol-wrap{position:relative;display:flex;align-items:center}
@@ -50,6 +49,40 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 #dsh-close:hover{color:var(--accent)}
 #dsh-qbtn.active{background:rgba(254,44,85,.22);color:var(--accent)}
 #dsh-qbtn{font-size:12px}
+#dsh-keys-panel{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;max-width:88%;max-height:82%;background:rgba(16,16,22,.97);border:1px solid rgba(255,255,255,.14);border-radius:12px;z-index:9;display:flex;flex-direction:column;color:#e8e8ea;box-shadow:0 16px 50px rgba(0,0,0,.55);overflow:hidden}
+#dsh-keys-panel.hidden{display:none}
+#dsh-keys-panel .kp-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;font-size:14px;color:#fff;border-bottom:1px solid rgba(255,255,255,.1);flex:none}
+#dsh-keys-panel .kp-head button{background:none;border:none;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;padding:2px 6px}
+#dsh-keys-panel .kp-head button:hover{color:#fff}
+#dsh-keys-panel .kp-tip{font-size:12px;color:rgba(255,255,255,.55);padding:9px 16px 4px;line-height:1.6}
+#dsh-keys-panel .kp-hint{font-size:12px;color:#ff8da1;padding:2px 16px 8px;min-height:0}
+#dsh-keys-list{flex:1;overflow-y:auto;padding:2px 8px 8px}
+#dsh-keys-panel .kr{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px}
+#dsh-keys-panel .kr:hover,#dsh-keys-panel .kr.rec{background:rgba(255,255,255,.07)}
+#dsh-keys-panel .kr-name{font-size:13px;flex:none;max-width:150px}
+#dsh-keys-panel .kr-keys{flex:1;text-align:right;font-size:13px;color:var(--accent);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#dsh-keys-panel .kr-keys em{color:#ffd166;font-style:normal}
+#dsh-keys-panel button.kr-ch,#dsh-keys-panel button.kr-rs{background:rgba(255,255,255,.1);border:none;color:#ddd;font-size:12px;padding:4px 11px;border-radius:14px;cursor:pointer;flex:none}
+#dsh-keys-panel button.kr-ch:hover{background:rgba(254,44,85,.55)}
+#dsh-keys-panel button.kr-rs:hover{background:rgba(255,255,255,.22)}
+#dsh-keys-resetall{margin:2px 14px 12px;padding:7px 0;background:rgba(255,255,255,.08);border:none;color:#ccc;border-radius:8px;cursor:pointer;font-size:12px;flex:none}
+#dsh-keys-resetall:hover{background:rgba(255,255,255,.16)}
+/* 简介展开面板(issue #3:长简介/图文文案只显示 2 行看不全;图文帖"只有标签不能具体查看"):
+   标题区尾部加「展开」入口 → 居中弹窗显示完整文案(标题/作者/发布时间/全文),Esc/×/遮罩关闭 */
+#dsh-more{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:560px;max-width:86%;max-height:78%;background:rgba(16,16,22,.97);border:1px solid rgba(255,255,255,.14);border-radius:12px;z-index:8;display:flex;flex-direction:column;color:#e8e8ea;box-shadow:0 16px 50px rgba(0,0,0,.55);overflow:hidden}
+#dsh-more.hidden{display:none}
+#dsh-more .m-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;font-size:14px;color:#fff;border-bottom:1px solid rgba(255,255,255,.1);flex:none}
+#dsh-more .m-head button{background:none;border:none;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;padding:2px 6px}
+#dsh-more .m-head button:hover{color:#fff}
+#dsh-more .m-meta{flex:none;padding:10px 16px 0;font-size:12px;color:rgba(255,255,255,.55)}
+#dsh-more .m-meta .m-author{color:rgba(255,255,255,.85);margin-right:10px}
+#dsh-more .m-desc{flex:1;overflow-y:auto;padding:8px 16px 16px;font-size:14px;line-height:1.9;white-space:pre-wrap;word-break:break-all;color:#e2e2e6;user-select:text;cursor:auto}
+#dsh-more .m-desc::-webkit-scrollbar{width:8px}
+#dsh-more .m-desc::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:4px}
+/* 「展开」入口:简介超过 2 行(>60 字)才显示;#dsh-info 是 pointer-events:none 的纯展示层,
+   按钮必须单独恢复可点击 */
+#dsh-more-btn{display:none;pointer-events:auto;margin-left:10px;background:rgba(255,255,255,.12);border:none;color:#fff;font-size:12px;padding:3px 10px;border-radius:12px;cursor:pointer;vertical-align:middle}
+#dsh-more-btn:hover{background:rgba(254,44,85,.55)}
 #dsh-qpanel{position:absolute;top:0;right:0;bottom:0;width:300px;background:rgba(14,14,18,.94);border-left:1px solid rgba(255,255,255,.09);z-index:6;display:flex;flex-direction:column;color:#e8e8ea}
 #dsh-qpanel.hidden{display:none}
 #dsh-qpanel .qhead{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;font-size:13px;color:#fff;border-bottom:1px solid rgba(255,255,255,.1);flex:none}
@@ -70,7 +103,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 /* 播放页 UI 升级:顶部遮罩 / 时间码 / seek 提示 / 胶囊按钮 / 呼吸高亮 */
 #dsh-topmask{position:absolute;top:0;left:0;right:0;height:140px;background:linear-gradient(to bottom,rgba(0,0,0,.55),transparent);pointer-events:none;z-index:2}
 #dsh-tcode{position:absolute;right:26px;bottom:90px;color:rgba(255,255,255,.92);font-size:12px;text-shadow:0 1px 4px rgba(0,0,0,.85);pointer-events:none;z-index:3;font-variant-numeric:tabular-nums}
-#dsh-toast{position:absolute;top:78px;left:50%;transform:translateX(-50%);max-width:74%;background:rgba(18,18,24,.94);color:#fff;font-size:13px;line-height:1.5;padding:9px 16px;border-radius:9px;border:1px solid rgba(255,255,255,.14);box-shadow:0 4px 18px rgba(0,0,0,.35);z-index:9;opacity:0;pointer-events:none;transition:opacity .22s ease;text-align:center}
+#dsh-toast{position:absolute;top:78px;left:50%;transform:translateX(-50%);max-width:74%;background:rgba(18,18,24,.94);color:#fff;font-size:13px;line-height:1.5;padding:9px 16px;border-radius:9px;border:1px solid rgba(255,255,255,.14);box-shadow:0 4px 18px rgba(0,0,0,.35);z-index:10;opacity:0;pointer-events:none;transition:opacity .22s ease;text-align:center}
 #dsh-toast.show{opacity:1}
 #dsh-toast.err{color:#ff8da1;border-color:rgba(254,44,85,.5)}
 #dsh-seektip{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);color:#fff;font-size:36px;font-weight:700;text-shadow:0 2px 14px rgba(0,0,0,.75);letter-spacing:1px;opacity:0;pointer-events:none;z-index:5;transition:opacity .22s}
@@ -108,9 +141,13 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   <div id="dsh-load"><span class="spin"></span><span id="dsh-load-text">正在获取播放地址…</span></div>
   <div id="dsh-hint">&#9654; 点击播放</div>
   <div id="dsh-failmsg">该内容暂时无法播放<br/><button id="dsh-fail-skip">跳过</button><button class="ghost" id="dsh-fail-page">原页播放</button></div>
-  <div id="dsh-info"><div id="dsh-title"></div><div><span id="dsh-author-name"></span><span id="dsh-time"></span></div></div>
+  <div id="dsh-info"><div id="dsh-title"></div><div><span id="dsh-author-name"></span><span id="dsh-time"></span><button id="dsh-more-btn" title="查看完整文案(长简介/图文帖可看全文)">展开</button></div></div>
   <div id="dsh-pb"><div id="dsh-pb-track"><i id="dsh-pb-fill"></i></div><div id="dsh-pb-thumb"></div><div id="dsh-pb-tip"></div></div>
   <div id="dsh-ctrl">
+    <button id="dsh-keys" class="wbtn" title="快捷键设置:自定义播放页按键">快捷键</button>
+    <button id="dsh-unlike" class="wbtn dng" title="在抖音取消这条的点赞(不可逆),并从本地移除">取消点赞</button>
+    <button id="dsh-speed" class="wbtn" title="倍速:点击循环切换">1x</button>
+    <button id="dsh-page" class="wbtn" title="打开抖音原视频页看评论,关闭后返回继续播放">评论</button>
     <button id="dsh-prev" title="上一首(↑)">&#9198;</button>
     <button id="dsh-toggle" title="播放/暂停(空格)">&#9654;</button>
     <button id="dsh-next" title="下一首(↓)">&#9197;</button>
@@ -119,9 +156,6 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       <input id="dsh-vol" type="range" min="0" max="100" value="100" title="音量" />
     </span>
     <button id="dsh-auto" class="wbtn" title="自动连播:关(按 A 开启)">连播关</button>
-    <button id="dsh-speed" class="wbtn" title="倍速:点击循环切换">1x</button>
-    <button id="dsh-page" class="wbtn" title="打开抖音原视频页看评论,关闭后返回继续播放">评论</button>
-    <button id="dsh-unlike" class="wbtn dng" title="在抖音取消这条的点赞(不可逆),并从本地移除">取消点赞</button>
     <button id="dsh-fs" class="wbtn" title="全屏(F / 双击画面)">全屏</button>
     <button id="dsh-qbtn" class="wbtn" title="播放列表(Q):查看/跳转队列">播放列表</button>
   </div>
@@ -134,6 +168,20 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     <div class="qhead"><span id="dsh-qhead-title">播放列表</span><button id="dsh-qclose" title="收起侧栏">&#10005;</button></div>
     <div id="dsh-qlist"></div>
   </aside>
+  <!-- 简介展开面板:完整文案(视频/图文通用) -->
+  <div id="dsh-more" class="hidden">
+    <div class="m-head"><span>作品文案</span><button id="dsh-more-close" title="关闭(Esc)">&#10005;</button></div>
+    <div class="m-meta"><span class="m-author" id="dsh-more-author"></span><span id="dsh-more-time"></span></div>
+    <div class="m-desc" id="dsh-more-desc"></div>
+  </div>
+  <!-- 快捷键设置面板 -->
+  <div id="dsh-keys-panel" class="hidden">
+    <div class="kp-head"><span>播放页快捷键</span><button id="dsh-keys-close" title="关闭(Esc)">&#10005;</button></div>
+    <div class="kp-tip">点「改键」后直接按新键(Esc 取消)。「返回列表」固定为 Esc 不可改;点「默认」还原单个动作。</div>
+    <div id="dsh-keys-hint" class="kp-hint"></div>
+    <div id="dsh-keys-list"></div>
+    <button id="dsh-keys-resetall">全部恢复默认</button>
+  </div>
 </div>
 <script>
 (function () {
@@ -160,6 +208,28 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 
   // ---------- 播放页内单条取消点赞 ----------
   var unlikeDoneIdx = -1;   // 本次会话已取消的队列序号(切歌后按序号复位/置灰)
+  var unlikeBusy = false;   // 单条 unlike 请求在途(host 异步执行数秒)→ 防重复触发
+  var unlikeTargetIdx = -1; // 在途请求对应的队列序号(回执据此归位,防切歌后误标新条目)
+  // 简介展开面板(issue #3):当前条目的完整文案/作者/时间(切歌时更新,面板开着即同步刷新)
+  var lastDesc = '', lastAuthor = '', lastTime = '';
+  var moreOpen = false;
+  function syncMorePanel() {
+    var d = $('dsh-more-desc'), a = $('dsh-more-author'), t = $('dsh-more-time');
+    if (!d) return;
+    d.textContent = lastDesc || '(无文案)';
+    if (a) a.textContent = lastAuthor || '';
+    if (t) t.textContent = lastTime ? '发布时间:' + lastTime : '';
+    if (d) d.scrollTop = 0;
+  }
+  function openMore() {
+    moreOpen = true;
+    syncMorePanel();
+    $('dsh-more').classList.remove('hidden');
+  }
+  function closeMore() {
+    moreOpen = false;
+    $('dsh-more').classList.add('hidden');
+  }
   var toastTimer = null;
   function showPlayerToast(text, isErr) {
     var el = $('dsh-toast');
@@ -174,13 +244,23 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     var b = $('dsh-unlike');
     if (!b) return;
     var done = curIdxShown === unlikeDoneIdx;
-    b.disabled = done;
-    b.textContent = done ? '已取消' : '取消点赞';
+    // 在途期间全局禁用(切歌也不放开):宿主单飞,避免"切歌→再点→二次请求→回执错位"。
+    // 文案仅在"当前条目就是请求目标"时显示"取消中…",其余显示灰态"取消点赞"。
+    var busy = unlikeBusy;
+    b.disabled = done || busy;
+    b.textContent = done ? '已取消' : unlikeBusy && curIdxShown === unlikeTargetIdx ? '取消中…' : '取消点赞';
     b.title = done ? '本条已取消点赞' : '在抖音取消这条的点赞(不可逆),并从本地移除';
   }
-  // 宿主单条 unlike 回执:ok=true → 本条标记"已取消"(不可再点);失败 → 按钮复位可重试
+  // 宿主单条 unlike 回执:ok=true → 把"请求发起时那条"(unlikeTargetIdx,而非回执时的
+  // curIdxShown)标记为已取消 —— 执行期间用户可能已切歌,按当前序号标记会误伤新条目。
+  // 失败 → 复位按钮可重试。
   window.__dshUnlikeDone = function (ok, text) {
-    if (ok) unlikeDoneIdx = curIdxShown;
+    var target = unlikeTargetIdx;
+    unlikeTargetIdx = -1;
+    unlikeBusy = false;
+    // 仅在"播放会话仍在"时落标记:若退出播放页后回执才到(curIdxShown 已复位 -1),
+    // 写入会把上一会话的序号残留到新会话,导致新队列同序号误显"已取消"
+    if (ok && target >= 0 && curIdxShown >= 0) unlikeDoneIdx = target;
     showPlayerToast(text || (ok ? '已取消点赞' : '取消失败'), !ok);
     syncUnlikeBtn();
   };
@@ -331,15 +411,22 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   $('dsh-toggle').onclick = function (e) { e.stopPropagation(); togglePlay(); };
   $('dsh-prev').onclick = function (e) { e.stopPropagation(); post({ player: 'prev' }); };
   $('dsh-next').onclick = function (e) { e.stopPropagation(); post({ player: 'next' }); };
-  $('dsh-unlike').onclick = function (e) {
-    e.stopPropagation();
+  function triggerUnlike() {
     if (curIdxShown === unlikeDoneIdx) return;   // 本条已取消
+    if (unlikeBusy) return;                      // 已有请求在途(按钮/快捷键双入口防重)
     if (!confirm('在抖音取消这条的点赞,并从本地移除?\n此操作在抖音侧不可逆;当前播放不受影响。')) return;
-    var b = $('dsh-unlike');
-    b.disabled = true;
-    b.textContent = '取消中…';
-    post({ player: 'unlike' });   // 宿主执行;结果经 __dshUnlikeDone 回执复位
-  };
+    unlikeBusy = true;
+    unlikeTargetIdx = curIdxShown;               // 记住发起条目:回执按它归位,防切歌误标
+    syncUnlikeBtn();                             // 置"取消中…"并禁用
+    post({ player: 'unlike', index: curIdxShown });   // 附带序号:宿主按发起时条目执行,防切歌取错
+  }
+  $('dsh-unlike').onclick = function (e) { e.stopPropagation(); triggerUnlike(); };
+  // 简介展开面板(issue #3):标题区「展开」按钮 + 面板内交互不冒泡(防触发播放/暂停)
+  var moreBtn = $('dsh-more-btn');
+  if (moreBtn) moreBtn.onclick = function (e) { e.stopPropagation(); moreOpen ? closeMore() : openMore(); };
+  $('dsh-more-close').onclick = function (e) { e.stopPropagation(); closeMore(); };
+  $('dsh-more').addEventListener('click', function (e) { e.stopPropagation(); });
+  $('dsh-more').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
   $('dsh-page').onclick = function (e) { e.stopPropagation(); post({ player: 'openpage' }); };
   $('dsh-close').onclick = function (e) { e.stopPropagation(); post({ player: 'close' }); };
   $('dsh-fs').onclick = function (e) { e.stopPropagation(); toggleFs(); };
@@ -359,26 +446,155 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   $('dsh-slide-next').onclick = function (e) { e.stopPropagation(); slideStep(1); };
 
   // ---------- 键盘 ----------
+  // ---------- 快捷键设置(可自定义,localStorage 持久化;录制式) ----------
+  // "返回列表"固定 Esc 不可改(防止锁死);其余动作均可改键/还原默认。
+  var KEY_ACTIONS = [
+    ['toggle', '播放 / 暂停'],
+    ['prev', '上一首'],
+    ['next', '下一首'],
+    ['seekBack', '快退 10 秒 / 上一张(图集)'],
+    ['seekFwd', '快进 10 秒 / 下一张(图集)'],
+    ['fs', '全屏'],
+    ['mute', '静音'],
+    ['auto', '自动连播开关'],
+    ['unlike', '取消当前条目点赞'],
+    ['speed', '倍速循环(0.75x~2x)'],
+    ['page', '打开原页看评论'],
+    ['queue', '播放列表']
+  ];
+  var DEFAULT_KEYS = {
+    toggle: ['Space'], prev: ['ArrowUp', 'PageUp'], next: ['ArrowDown', 'PageDown'],
+    seekBack: ['ArrowLeft'], seekFwd: ['ArrowRight'], fs: ['KeyF'], mute: ['KeyM'],
+    auto: ['KeyA'], unlike: [], speed: [], page: [], queue: ['KeyQ']
+  };
+  var customKeys = {};
+  try { var _sk = localStorage.getItem('dshPlayerKeys'); if (_sk) customKeys = JSON.parse(_sk) || {}; } catch (e) {}
+  function saveKeys() { try { localStorage.setItem('dshPlayerKeys', JSON.stringify(customKeys)); } catch (e) {} }
+  function keysOf(a) { return (customKeys[a] && customKeys[a].length) ? customKeys[a] : (DEFAULT_KEYS[a] || []); }
+  function codeLabel(c) {
+    var m = { Space: '空格', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+      PageUp: 'PageUp', PageDown: 'PageDown', Home: 'Home', End: 'End', Tab: 'Tab',
+      Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'",
+      BracketLeft: '[', BracketRight: ']', Backslash: '\\', Backquote: '`' };
+    if (m[c]) return m[c];
+    if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+    if (/^Digit\d$/.test(c)) return c.slice(5);
+    if (/^Numpad/.test(c)) return '小键盘' + c.slice(6);
+    if (/^F\d{1,2}$/.test(c)) return c;
+    return c;
+  }
+  var keysPanelOpen = false, recState = null, keysBody = null, keysHint = null;
+  function renderKeysPanel() {
+    if (!keysBody) return;
+    var html = '';
+    for (var i = 0; i < KEY_ACTIONS.length; i++) {
+      var a = KEY_ACTIONS[i][0];
+      var arr = keysOf(a);
+      var k = arr.length ? arr.map(codeLabel).join(' / ') : '<span style="color:rgba(255,255,255,.32)">未绑定</span>';
+      html += '<div class="kr' + (recState && recState.a === a ? ' rec' : '') + '" data-a="' + a + '">'
+        + '<span class="kr-name">' + KEY_ACTIONS[i][1] + '</span>'
+        + '<span class="kr-keys">' + (recState && recState.a === a ? '<em>请按新键…(Esc 取消)</em>' : k) + '</span>'
+        + '<button class="kr-ch">改键</button>'
+        + '<button class="kr-rs">默认</button></div>';
+    }
+    keysBody.innerHTML = html;
+  }
+  function closeKeysPanel() {
+    keysPanelOpen = false; recState = null;
+    $('dsh-keys-panel').classList.add('hidden');
+    $('dsh-keys').classList.remove('active');
+  }
+  function openKeysPanel() {
+    keysPanelOpen = true; recState = null;
+    if (keysHint) keysHint.textContent = '';
+    $('dsh-keys-panel').classList.remove('hidden');
+    $('dsh-keys').classList.add('active');
+    renderKeysPanel();
+  }
+  function recCapture(e) {
+    var code = e.code;
+    if (!recState) return;
+    if (code === 'Escape') { recState = null; renderKeysPanel(); return; }
+    if (!code || /^(Shift|Control|Alt|Meta|CapsLock|NumLock|ScrollLock)$/.test(code)) return;   // 纯修饰键忽略
+    for (var i = 0; i < KEY_ACTIONS.length; i++) {
+      var a2 = KEY_ACTIONS[i][0];
+      if (a2 === recState.a) continue;
+      if (keysOf(a2).indexOf(code) >= 0) {
+        if (keysHint) keysHint.textContent = '该键已用于「' + KEY_ACTIONS[i][1] + '」,请换一个键';
+        return;
+      }
+    }
+    customKeys[recState.a] = [code];
+    saveKeys(); recState = null;
+    if (keysHint) keysHint.textContent = '';
+    renderKeysPanel();
+  }
+  // 按键分发(查表)
+  function dispatchKey(code) {
+    for (var i = 0; i < KEY_ACTIONS.length; i++) {
+      var a = KEY_ACTIONS[i][0];
+      if (keysOf(a).indexOf(code) >= 0) { runAction(a); return true; }
+    }
+    return false;
+  }
+  function runAction(a) {
+    switch (a) {
+      case 'toggle': togglePlay(); break;
+      case 'prev': if (!navAtStart()) post({ player: 'prev' }); break;
+      case 'next': if (!navAtEnd()) post({ player: 'next' }); break;
+      case 'seekBack': if (slideImages.length > 0) slideStep(-1); else seekBy(-10); break;
+      case 'seekFwd': if (slideImages.length > 0) slideStep(1); else seekBy(10); break;
+      case 'fs': toggleFs(); break;
+      case 'mute': toggleMute(); break;
+      case 'auto': toggleAutoNext(); break;
+      case 'unlike': triggerUnlike(); break;
+      case 'speed': cycleRate(); break;
+      case 'page': post({ player: 'openpage' }); break;
+      case 'queue': setQPanel(!qOpen); break;
+    }
+  }
+  // 全局键盘入口:录制态优先捕获;Esc 关面板或返回列表;面板开着时屏蔽播放热键(防误触,仅 Esc 有效);其余查表分发
   document.addEventListener('keydown', function (e) {
-    switch (e.code) {
-      case 'Space': e.preventDefault(); togglePlay(); break;
-      case 'ArrowLeft':
-        if (slideImages.length > 0) slideStep(-1);
-        else { e.preventDefault(); seekBy(-10); }
-        break;
-      case 'ArrowRight':
-        if (slideImages.length > 0) slideStep(1);
-        else { e.preventDefault(); seekBy(10); }
-        break;
-      case 'ArrowUp': case 'PageUp': e.preventDefault(); if (navAtStart()) break; post({ player: 'prev' }); break;
-      case 'ArrowDown': case 'PageDown': e.preventDefault(); if (navAtEnd()) break; post({ player: 'next' }); break;
-      case 'KeyF': toggleFs(); break;
-      case 'KeyM': toggleMute(); break;
-      case 'KeyA': toggleAutoNext(); break;
-      case 'KeyQ': setQPanel(!qOpen); break;
-      case 'Escape': post({ player: 'close' }); break;
+    if (recState) { e.preventDefault(); e.stopPropagation(); recCapture(e); return; }
+    var code = e.code;
+    if (code === 'Escape') {
+      if (moreOpen) { closeMore(); return; }          // 简介面板优先关闭
+      if (keysPanelOpen) { closeKeysPanel(); return; }
+      post({ player: 'close' });
+      return;
+    }
+    if (moreOpen) return;   // 简介面板打开:屏蔽播放热键(面板内文案可选中复制)
+    if (keysPanelOpen) return;   // 面板(非录制态)打开:空格/方向键等不触发播放动作
+    if (dispatchKey(code)) e.preventDefault();
+  });
+
+  // 面板交互:打开/关闭/改键/还原/重置;面板内事件不冒泡到播放层
+  keysBody = $('dsh-keys-list');
+  keysHint = $('dsh-keys-hint');
+  $('dsh-keys').onclick = function (e) { e.stopPropagation(); keysPanelOpen ? closeKeysPanel() : openKeysPanel(); };
+  $('dsh-keys-close').onclick = function (e) { e.stopPropagation(); closeKeysPanel(); };
+  $('dsh-keys-panel').addEventListener('click', function (e) { e.stopPropagation(); });
+  $('dsh-keys-panel').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
+  keysBody.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button') : null;
+    if (!b) return;
+    var row = b.closest('.kr');
+    if (!row) return;
+    var a = row.getAttribute('data-a');
+    if (b.classList.contains('kr-ch')) {
+      if (keysHint) keysHint.textContent = '';
+      recState = { a: a };
+      renderKeysPanel();
+    } else if (b.classList.contains('kr-rs')) {
+      delete customKeys[a];
+      saveKeys(); renderKeysPanel();
     }
   });
+  $('dsh-keys-resetall').onclick = function (e) {
+    e.stopPropagation();
+    customKeys = {};
+    saveKeys(); renderKeysPanel();
+  };
 
   // ---------- 进度条(视频=seek;图集=选图) ----------
   var pbEl = $('dsh-pb'), pbThumb = $('dsh-pb-thumb'), pbTip = $('dsh-pb-tip'), pbFill = $('dsh-pb-fill');
@@ -491,13 +707,21 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     hideLoader();
     var mySeq = ++showSeq;
     stopStallCheck();
-    root.classList.add('ui-on');
-    uiShow();
+    // UI 唤起策略:只在"进入播放首帧"唤一次 UI(自动隐藏计时照走);
+    // 切歌/连播/队列跳转不再唤起 → 滚轮/PageUp/PageDown 连续切歌时控制条不会频繁闪现。
+    // 需要操作时动一下鼠标(mousemove)即唤起,体验不受影响。
+    if (curIdxShown < 0) uiShow();
     applyVol();   // 恢复/保持用户音量设置(静音或自定义音量)
     setAutoNext(!!cfg.autoNext);   // 同步宿主自动连播开关(初值/切歌后)
 
     var titleText = cfg.title || '';
     if (titleText.length > 60) titleText = titleText.slice(0, 60) + '…';
+    // 简介展开入口(issue #3:长简介/图文文案只显示 2 行看不全):原文超 60 字才显示「展开」
+    var moreBtn = $('dsh-more-btn');
+    if (moreBtn) moreBtn.style.display = (cfg.title || '').length > 60 ? 'inline-block' : 'none';
+    lastDesc = cfg.title || '';
+    lastAuthor = cfg.author || '';
+    lastTime = cfg.time || '';
     curIdxShown = cfg.index;
     playTotal = cfg.total || 0;
     updateNavState();   // 第一条禁上一条 / 最后一条禁下一条
@@ -545,9 +769,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       return;
     }
 
-    // 视频模式
+    // 视频模式(图集切回视频时,必须隐藏图集翻页箭头,否则残留覆盖在画面上)
     img.style.display = 'none';
     video.style.display = '';
+    $('dsh-slide-prev').style.display = 'none';
+    $('dsh-slide-next').style.display = 'none';
 
     var urls = (cfg.urls && cfg.urls.length) ? cfg.urls : (cfg.url ? [cfg.url] : []);
     var vi = 0;
@@ -621,11 +847,16 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     $('dsh-failmsg').style.display = 'none';
     root.classList.remove('ui-on');
     root.classList.remove('ui-hold');
+    curIdxShown = -1;   // 复位首帧标志:下次重新进入播放时仍会唤起一次 UI(见 __dshPlayerShow)
+    unlikeDoneIdx = -1;   // 复位已取消标记:新会话的队列序号对应的是新条目,防首条误显"已取消"
+    unlikeBusy = false; unlikeTargetIdx = -1;   // 在途请求跨会话无效,一并复位
     try { video.pause(); } catch (e) {}
     video.removeAttribute('src');
     try { audio.pause(); } catch (e) {}
     audio.removeAttribute('src');
     setQPanel(false);   // 收起播放队列侧栏
+    if (keysPanelOpen) closeKeysPanel();   // 收起快捷键面板
+    if (moreOpen) closeMore();   // 收起简介面板(issue #3)
   };
   function stopStallCheckSafe() { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } }
 
@@ -772,14 +1003,15 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 
   // ---------- 倍速(点击循环:0.75 → 1 → 1.25 → 1.5 → 2) ----------
   var RATES = [0.75, 1, 1.25, 1.5, 2], rateIdx = 1, playRate = 1;
-  function rateLabel(r) { return (r % 1 === 0 ? r : r) + 'x'; }
+  function rateLabel(r) { return r + 'x'; }
   function applyRate() {
     playRate = RATES[rateIdx];
     try { video.playbackRate = playRate; } catch (e) {}
     var b = $('dsh-speed');
     if (b) { b.textContent = rateLabel(playRate); b.classList.toggle('on', playRate !== 1); }
   }
-  $('dsh-speed').onclick = function (e) { e.stopPropagation(); rateIdx = (rateIdx + 1) % RATES.length; applyRate(); };
+  function cycleRate() { rateIdx = (rateIdx + 1) % RATES.length; applyRate(); }
+  $('dsh-speed').onclick = function (e) { e.stopPropagation(); cycleRate(); };
 
   // ---------- seek 快进/快退提示 ----------
   var seekTipTimer = null;

@@ -96,7 +96,12 @@ public sealed class PlaybackController
     /// <summary>设置队列(复制,保持收集顺序)。</summary>
     public void SetQueue(IEnumerable<AwemeItem> items)
     {
-        lock (_sync) _queue = items.ToList();
+        lock (_sync)
+        {
+            _queue = items.ToList();
+            _refreshedIds.Clear();   // 新队列=新会话:缓存旧链随队列重建作废(旧链可能过期导致黑屏)
+            _failureStreak = 0;   // 失败计数同属一次播放会话:不清会让分散的历史失败凑满 5 次误停新会话
+        }
     }
 
     /// <summary>追加一条到队尾。</summary>
@@ -180,29 +185,41 @@ public sealed class PlaybackController
     private async Task ShowCurrentAsync()
     {
         AwemeItem? it;
+        int showIndex;
         lock (_sync)
         {
             if (_index < 0 || _index >= _queue.Count) return;
             it = _queue[_index];
+            showIndex = _index;
+        }
+        // 代际保护:取链是异步的(可能数秒),期间用户切歌/连点会改 _index。
+        // 若发起后索引已变,说明这条已被新的 show 取代 → 直接丢弃本流程,避免旧内容覆盖新条目。
+        bool StillCurrent()
+        {
+            lock (_sync) return _active && _index == showIndex;
         }
 
         // 严格新链模式:播放前必须取到新链。取链期间播放页显示 loader。
         await EvalAsync($"window.__dshPlayerLoad ? window.__dshPlayerLoad({Json("正在获取播放地址…")}) : 0");
+        if (!StillCurrent()) return;
 
         var fresh = FreshUrlFetcher != null ? await SafeFetchAsync(it) : null;
+        if (!StillCurrent()) return;
         if (fresh is { HasAny: true })
         {
             lock (_sync) _failureStreak = 0;
             await ShowCurrentCoreAsync(it);
+            lock (_sync) if (!StillCurrent()) return;   // 切歌已发生,不预取旧条目的下一首
             _ = PrefetchNextAsync(_index);
             return;
         }
 
-        // 取链失败
+        // 取链失败(仍须是最新索引才处理;用户若已切走,新条目自会重试)
+        if (!StillCurrent()) return;
         lock (_sync) _failureStreak++;
         if (_failureStreak >= 5)
         {
-            var failedIndex = _index;   // StopAsync 会清 _index,先记下重试锚点
+            var failedIndex = showIndex;   // StopAsync 会清 _index,先记下重试锚点
             Notice?.Invoke("连续 5 条无法获取新链接(可能触发风控),已停止播放。");
             RiskDetected?.Invoke(failedIndex);
             await StopAsync();
@@ -385,12 +402,16 @@ public sealed class PlaybackController
                     FullscreenToggleRequested?.Invoke();
                     break;
                 case "unlike":
-                    // 播放页"取消点赞":把当前条目交宿主做单条 unlike(结果经 CompleteUnlike 回执)
+                    // 播放页"取消点赞":把发起时条目(优先用消息携带的 index,兼容无 index 的旧消息)
+                    // 交宿主做单条 unlike(结果经 CompleteUnlike 回执)
                     {
                         AwemeItem? cur = null;
+                        var idx = jo["index"]?.Type == Newtonsoft.Json.Linq.JTokenType.Integer
+                            ? jo["index"]!.Value<int>()
+                            : _index;
                         lock (_sync)
                         {
-                            if (_index >= 0 && _index < _queue.Count) cur = _queue[_index];
+                            if (idx >= 0 && idx < _queue.Count) cur = _queue[idx];
                         }
                         UnlikeRequested?.Invoke(cur);
                     }

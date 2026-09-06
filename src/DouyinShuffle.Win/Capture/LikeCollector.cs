@@ -99,6 +99,17 @@ public sealed class LikeCollector
     public long MaxCursor { get { lock (_sync) return _maxCursor; } }
     public bool IsRunning => _directRunning;
 
+    /// <summary>最近一次响应的边界游标(每页解析即更新,不受 trackCursor 影响)。
+    /// 两阶段采集(issue #3):头部增量阶段按编排器传入的 trackCursor 决定是否回写断点,
+    /// 续轮起点由编排器读本属性驱动 —— 已有深断点时断点(_maxCursor)保持原值不互踩。</summary>
+    private long _lastBoundary;
+
+    /// <summary>当前轮次是否把翻页进度回写断点游标(经 StartDirectAsync 传入;默认 true=旧行为)。</summary>
+    private volatile bool _trackCursor = true;
+
+    /// <summary>最近一次解析到的边界游标(0=本轮还没有合法页)。</summary>
+    public long LastBoundaryCursor { get { lock (_sync) return _lastBoundary; } }
+
     // ---------- 消息回传 ----------
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -249,7 +260,11 @@ public sealed class LikeCollector
                     }
                 }
             }
-            if (parsed.MaxCursor > 0) _maxCursor = parsed.MaxCursor;
+            if (parsed.MaxCursor > 0)
+            {
+                _lastBoundary = parsed.MaxCursor;   // 边界游标:每页即记(两阶段续轮用,不受 trackCursor 影响)
+                if (_trackCursor) _maxCursor = parsed.MaxCursor;   // 断点游标:仅断点续采阶段回写
+            }
         }
     }
 
@@ -276,7 +291,9 @@ public sealed class LikeCollector
         }
         try
         {
-            var js = ScriptLoader.Get("detail-fetch.js").Replace("{{AID}}", awemeId);
+            var js = ScriptLoader.Get("detail-fetch.js")
+                .Replace("{{AID}}", awemeId)
+                .Replace("{{RID}}", "null");   // 播放取链通道按 awemeId 关联 → RID 置 null,id 回传 AID
             await _webView.ExecuteScriptAsync(js);
             return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(6));
         }
@@ -293,10 +310,19 @@ public sealed class LikeCollector
 
     // ---------- 翻页采集(单一通道) ----------
 
-    /// <summary>启动直连翻页采集(公开入口)。</summary>
+    /// <summary>启动直连翻页采集(公开入口)。
+    /// trackCursor(默认 true):是否把翻页进度回写断点游标(_maxCursor)。
+    /// hardResume(默认 false):断点硬续模式 —— 禁用"整页已知→incremental"停。
+    /// 两参数刻意解耦(issue #3 两阶段采集):
+    ///   头部增量轮:hardResume=false(增量语义,补完新点赞即停;knownIds 表生效),
+    ///     trackCursor=仅当无深断点时 true(有深断点时增量边界不得覆盖断点);
+    ///   断点续尾部轮:hardResume=true(硬续区都该是未采内容,出现整页已知=接口卡页,
+    ///     停成 incremental 会清断点、重演"卡在几千条再采无新增"),trackCursor=true。
+    /// </summary>
     public Task<string> StartDirectAsync(string secUserId, long startCursor,
-        IReadOnlyCollection<string> knownIds, CancellationToken cancellationToken)
-        => RunPagedLoopAsync(secUserId, startCursor, knownIds, cancellationToken);
+        IReadOnlyCollection<string> knownIds, CancellationToken cancellationToken,
+        bool trackCursor = true, bool hardResume = false)
+        => RunPagedLoopAsync(secUserId, startCursor, knownIds, cancellationToken, trackCursor, hardResume);
 
     /// <summary>
     /// 直连翻页采集。裸 fetch + 结构性参数,webmssdk 拦截器自动补签名,
@@ -304,12 +330,15 @@ public sealed class LikeCollector
     /// 增量模式:knownIds 非空时,整页全为已知 ID 即停(喜欢列表倒序,断点后旧内容无需重翻)。
     /// </summary>
     private async Task<string> RunPagedLoopAsync(string secUserId, long startCursor,
-        IReadOnlyCollection<string> knownIds, CancellationToken cancellationToken)
+        IReadOnlyCollection<string> knownIds, CancellationToken cancellationToken,
+        bool trackCursor = true, bool hardResume = false)
     {
         if (_directRunning) return "busy"; // 已有翻页循环,拒绝并发
         if (string.IsNullOrEmpty(secUserId)) return "nouser";
         _directRunning = true;
         _directStoredAtStart = Count;
+        _trackCursor = trackCursor;   // busy 检查之后才置位:不污染已在跑轮次的游标行为
+        lock (_sync) _lastBoundary = 0;
 
         // 已有数据量大时启用增量(至少 50 条才有意义;全量重采只在用户主动清空后)
         List<string> known;
@@ -335,7 +364,8 @@ public sealed class LikeCollector
         var js = ScriptLoader.Get("paged-loop.js")
             .Replace("{{SEC_USER_ID}}", secUserId)
             .Replace("{{START_CURSOR}}", startCursor.ToString())
-            .Replace("{{KNOWN_IDS}}", knownJson);
+            .Replace("{{KNOWN_IDS}}", knownJson)
+            .Replace("{{RESUME_MODE}}", hardResume ? "1" : "0");   // 硬续模式与是否写断点解耦(头部增量轮永远是增量语义)
 
         // JS 循环是 async IIFE,ExecuteScriptAsync 不会等它完成 → 用 direct_done 消息驱动结束
         _directTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -405,6 +435,7 @@ public sealed class LikeCollector
         {
             _items.Clear();
             _maxCursor = 0;
+            _lastBoundary = 0;
         }
     }
 

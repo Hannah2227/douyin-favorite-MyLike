@@ -61,8 +61,22 @@ public partial class MainWindow : Window
         Closed += OnClosed;
         Loaded += OnLoadedAsync;
         StateChanged += OnStateChanged;
-        SizeChanged += (_, _) => QueueNudgeAll();   // 尺寸变化后 WebView(HwndHost)可能错位
+        SizeChanged += (_, _) => QueueNudgeSettled();   // 尺寸变化后 WebView(HwndHost)可能错位(连续缩放时去抖,停稳再排)
+        DpiChanged += (_, _) => QueueNudgeAll();   // 跨屏拖动/系统缩放比变化:DIP 尺寸不变但物理像素变,
+                                                   // HwndHost 子窗口不重排就会把整页渲染进左上角一块
+                                                   // (200% 缩放下正好 1/4 —— "播放页平移到左上角"的根源之一)
+        LocationChanged += (_, _) => QueueNudgeSettled();   // ★窗口拖动后子窗口坐标可能失同步(自绘标题栏
+                                                            // 的 Win32 模态拖动期间 WebView2 收不到正常
+                                                            // 位置更新)。★必须去抖:拖动中每次移动都
+                                                            // nudge 会对可见 WebView 反复抖动重排 = 频闪,
+                                                            // 停稳 150ms 后只补排一次。
         try { Icon = CreateHeartIcon(); } catch { }
+        SourceInitialized += (_, _) =>
+        {
+            // 挂 WndProc 钩子:捕获 WM_EXITSIZEMOVE(拖动/缩放模态循环结束的精确信号)
+            var helper = new System.Windows.Interop.WindowInteropHelper(this);
+            System.Windows.Interop.HwndSource.FromHwnd(helper.Handle)?.AddHook(WndProcHook);
+        };
     }
 
     // ---------- 无边框窗口:状态联动 ----------
@@ -75,6 +89,35 @@ public partial class MainWindow : Window
         if (hwnd == IntPtr.Zero) return;
         Win32.ReleaseCapture();
         Win32.SendMessage(hwnd, Win32.WM_NCLBUTTONDOWN, (IntPtr)Win32.HTCAPTION, IntPtr.Zero);
+    }
+
+    /// <summary>精确的"拖动/缩放模态循环结束"信号(WM_EXITSIZEMOVE):
+    /// 比去抖计时器可靠 —— 模态循环结束后 LocationChanged 可能不再补发,而这是
+    /// HwndHost 子窗口 rect 最容易滞留旧值的时刻,立即硬对齐一次。</summary>
+    private void OnExitsSizeMove()
+    {
+        if (IsShuttingDown) return;
+        // 交给排程序列执行:此时刚出模态循环,布局/渲染管线需要先走完一拍
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                UpdateLayout();
+                NudgeWebView(PlayerWebView);
+                NudgeWebView(UiWebView);
+            }
+            catch { }
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private IntPtr WndProcHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WM_EXITSIZEMOVE = 0x0232;
+        if (msg == WM_EXITSIZEMOVE)
+        {
+            OnExitsSizeMove();
+        }
+        return IntPtr.Zero;
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -144,6 +187,15 @@ public partial class MainWindow : Window
             await Task.WhenAll(
                 UiWebView.EnsureCoreWebView2Async(env),
                 PlayerWebView.EnsureCoreWebView2Async(env));
+#if !DEBUG
+            // 发布版关闭 DevTools(防 F12/右键检查被浏览器层截获,与页面快捷键自定义冲突)
+            try { UiWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
+            try { PlayerWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
+#endif
+            // 关闭浏览器层加速键(F5 刷新/Ctrl+R/F3 查找等):本地应用页无浏览器刷新语义,
+            // 且会与播放页"自定义快捷键"冲突(F5 等被浏览器层吃掉,页面收不到)。
+            try { UiWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
+            try { PlayerWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
             // 抖音引擎页:独立屏幕外窗口(HwndHost 不受 WPF z-order 裁剪,不能在主窗口里叠放)
             _engineWindow = new DouyinEngineWindow();
             _engineWindow.Owner = this;
@@ -157,8 +209,8 @@ public partial class MainWindow : Window
             // 存储 + 采集器(挂在抖音页)
             _store = new LikeListStore(_dataDir);
             if (_store.HasLegacyData()) { _store.MigrateLegacy(); }
-            var saved = _store.LoadItems();
-            var state = _store.LoadState();
+            // 大数据量(几十万条 = 几十 MB JSON)启动读盘耗时秒级,放后台线程避免卡启动画面
+            var (saved, state) = await Task.Run(() => (_store.LoadItems(), _store.LoadState()));
 
             _collector = new LikeCollector(DouyinCore!);
             _unlikeService = new UnlikeService(DouyinCore!);   // 进度/结果由 UnlikeRunAsync 统一转发
@@ -198,6 +250,11 @@ public partial class MainWindow : Window
             // 隐藏抖音页,静默导航建立登录态(若已登录;未登录不弹窗)
             DouyinCore!.NavigationCompleted += OnDouyinNavCompleted;
             DouyinCore!.Navigate(DouyinProbe.DouyinHomeUrl);
+
+            // ★启动 z-order 钉死:两个 WebView 常驻可见(z-order 切换方案),谁在上层必须显式
+            // 声明 —— 若播放页(黑底)排在主界面上,启动就是黑屏。主界面为启动视图。
+            RaiseWebViewToTop(UiWebView);
+            UiWebView.Focus();
 
             await PushStateAsync();
         }
@@ -336,43 +393,49 @@ public partial class MainWindow : Window
     private Task WaitForPlayerPageAsync() => _playerPageTcs?.Task ?? Task.CompletedTask;
 
     // ---------- 视图切换(两态:UI / 播放页) ----------
-    // 注意:用 Collapsed(非 Hidden)——旧版 WebView2 在 Hidden↔Visible 切换时有白屏不重绘 bug,
-    // Collapsed 会强制重新布局,显示时必重绘;配 XAML 里 DefaultBackgroundColor=Black,切换瞬间不闪白
+    // ★方案(2024-09 定稿):两个 WebView 常驻 Visible,切换 = Win32 z-order 抬升/压底。
+    // 证据(诊断日志 01:44:55):Collapsed 期间 Chromium 视口冻结在陈旧尺寸(实测 inner=69x56),
+    // Visible 后 ~1s 才追上 —— 期间整页按小视口渲染贴到大 HWND 上 = "播放页缩在左上角/平移"。
+    // 常驻可见让两个视口始终实时跟随窗口,陈旧值从源头消失;且完全规避旧版
+    // Hidden↔Visible 的白屏不重绘 bug(不再有任何可见性切换)。
     private void ShowUiOnly()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(ShowUiOnly); return; }
-        // 关键:WebView2(HwndHost)从 Collapsed 切到 Visible 时,WPF 用它当前的 Width/Height
-        // 做测量;如果还是上一次 Collapsed 时的小值,Chromium 第一帧就会按小尺寸渲染(左上角一块)。
-        // 这里在 Visible 之前先把它的宽高对齐到 RootGrid,保证测量即正确。
-        if (RootGrid.ActualWidth > 0 && RootGrid.ActualHeight > 0)
-        {
-            UiWebView.Width = RootGrid.ActualWidth;
-            UiWebView.Height = RootGrid.ActualHeight;
-        }
-        UiWebView.Visibility = Visibility.Visible;
-        PlayerWebView.Visibility = Visibility.Collapsed;
+        RaiseWebViewToTop(UiWebView);
+        // 键盘焦点跟随视图:两个 WebView 常驻可见(z-order 切换),被盖住的仍可持有
+        // Win32 焦点 —— 不显式转移的话,回主界面后搜索框/按钮的键盘输入会"失灵"
+        Dispatcher.BeginInvoke(() => { try { UiWebView.Focus(); } catch { } },
+            System.Windows.Threading.DispatcherPriority.Input);
         QueueNudgeAll();
     }
     private void ShowPlayer()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(ShowPlayer); return; }
-        // 同 ShowUiOnly:Visible 之前必须先把宽高对齐 RootGrid,避免 Chromium 第一帧按小尺寸渲染。
-        if (RootGrid.ActualWidth > 0 && RootGrid.ActualHeight > 0)
-        {
-            PlayerWebView.Width = RootGrid.ActualWidth;
-            PlayerWebView.Height = RootGrid.ActualHeight;
-        }
-        UiWebView.Visibility = Visibility.Collapsed;
-        PlayerWebView.Visibility = Visibility.Visible;
-        // 白屏防御:Collapsed→Visible 后 WebView2 可能不主动重绘,强制布局+重绘一次
-        PlayerWebView.UpdateLayout();
-        PlayerWebView.InvalidateVisual();
+        RaiseWebViewToTop(PlayerWebView);
+        // 键盘焦点跟随视图(同上):否则进播放页后空格/Esc/方向键被盖住的主界面吃掉
+        Dispatcher.BeginInvoke(() => { try { PlayerWebView.Focus(); } catch { } },
+            System.Windows.Threading.DispatcherPriority.Input);
+        // 兜底重排(硬归位仅在检测到 >2px 偏差时才动,平时零操作)
+        NudgeWebView(PlayerWebView);
         QueueNudgeAll();
+    }
+
+    /// <summary>把 WebView 的 HwndHost 抬到兄弟窗口最顶(z-order 切换的核心)。
+    /// 两个 WebView 常驻可见,被压住的那个不接收输入、不可见区域由顶层覆盖。</summary>
+    private void RaiseWebViewToTop(Microsoft.Web.WebView2.Wpf.WebView2 wv)
+    {
+        try
+        {
+            if (wv is System.Windows.Interop.HwndHost h && h.Handle != IntPtr.Zero)
+                Win32.SetWindowPos(h.Handle, Win32.HWND_TOP, 0, 0, 0, 0,
+                    Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+        }
+        catch { }
     }
 
     /// <summary>WebView 渲染防御:无边框 + WebView2 HwndHost 在切换/全屏/窗口尺寸变化时
     /// 容易出现"内容整体偏移到左上角、白屏"(渲染层坐标与宿主不同步)。
-    /// 经验有效修法:1px margin 抖动 + SystemIdle 优先级(等所有布局完成后再触发),
+    /// 经验有效修法:半像素 margin 抖动 + SystemIdle 优先级(等所有布局完成后再触发),
     /// 强制 WPF 重新排 HwndHost 子窗口的位置,使其与新窗口大小对齐。</summary>
     private void NudgeWebView(FrameworkElement el)
     {
@@ -391,12 +454,25 @@ public partial class MainWindow : Window
                     el.Height = parent.ActualHeight;
                 }
                 el.UpdateLayout();
-                // 1px margin 抖动:额外再触发一次子窗口重排(防止尺寸更新未生效的边缘情况)
-                var m = el.Margin;
-                el.Margin = new Thickness(m.Left + 1, m.Top, m.Right, m.Bottom);
+                // WPF 的 Width/Height 改变但值与旧值相同时不会触发 Arrange,子窗口仍持旧物理
+                // 矩形 → 用半像素 Margin 抖动(不引入可见偏移)强制 Visual 层向 HwndHost
+                // 下发新位置,把 Chromium 子窗口重新对齐窗口。
+                var m2 = el.Margin;
+                el.Margin = new Thickness(m2.Left, m2.Top + 0.5, m2.Right, m2.Bottom);
                 el.UpdateLayout();
-                el.Margin = m;
+                el.Margin = m2;
                 el.UpdateLayout();
+                // 终极兜底(位置级失同步,如拖动/最大化后"播放页右下角出现在左上角"):
+                // 对比 Chromium 宿主窗口的"期望矩形"(WPF 视觉树变换,物理像素)与"实际矩形"
+                // (GetWindowRect,屏幕坐标),偏差 > 2 物理像素才归位 —— 平时零动作(无闪烁)。
+                // ★坐标空间注意:host 是主窗口的 WS_CHILD,SetWindowPos 必须用客户区相对坐标
+                // (把期望屏幕坐标减去客户区原点屏幕坐标),绝不能直接传屏幕坐标 ——
+                // 那会把子窗口挪到错误位置,本身就是"平移"的一种来源。
+                if (el == PlayerWebView && el is System.Windows.Interop.HwndHost host
+                    && host.Visibility == Visibility.Visible && host.ActualWidth > 10)
+                {
+                    HardAlignWebView(host);
+                }
             }
             catch { }
             el.InvalidateVisual();
@@ -453,6 +529,78 @@ public partial class MainWindow : Window
         }), System.Windows.Threading.DispatcherPriority.SystemIdle);
     }
 
+    /// <summary>HwndHost 硬归位:把 Chromium 宿主子窗口的物理矩形校正到 WPF 布局矩形。
+    /// 期望矩形 = host 左上/右下角经 PointToScreen(物理像素);实际矩形 = GetWindowRect。
+    /// SetWindowPos 必须用"父窗口客户区相对坐标":期望屏幕坐标 - 客户区原点屏幕坐标
+    /// (直接传屏幕坐标会把子窗口挪到错误位置,本身就是"平移"的一种来源)。
+    /// 仅在偏差 > 2 物理像素时动作,平时零操作(无闪烁)。</summary>
+    private void HardAlignWebView(System.Windows.Interop.HwndHost host)
+    {
+        try
+        {
+            var hwnd = host.Handle;   // host 自身的 HWND(WebView2 会把 Chrome_WidgetWin 挂在它下面)
+            if (hwnd == IntPtr.Zero) return;
+            if (!Win32.GetWindowRect(hwnd, out var rc)) return;
+
+            // 期望物理矩形:host 视觉左上/右下角映射到屏幕
+            var tl = host.PointToScreen(new Point(0, 0));
+            var br = host.PointToScreen(new Point(host.ActualWidth, host.ActualHeight));
+
+            // 偏差 > 2 物理像素才算失同步(舍入/DPI 舍入不算)
+            if (Math.Abs(rc.Left - (int)tl.X) <= 2 && Math.Abs(rc.Top - (int)tl.Y) <= 2
+                && Math.Abs(rc.Right - (int)br.X) <= 2 && Math.Abs(rc.Bottom - (int)br.Y) <= 2)
+                return;
+
+            // 客户区相对坐标 = 期望屏幕坐标 - 父窗口客户区原点屏幕坐标
+            var rootHwnd = Win32.GetAncestor(hwnd, Win32.GA_ROOT);
+            var clientOrigin = new System.Drawing.Point(0, 0);
+            if (!Win32.ClientToScreen(rootHwnd, ref clientOrigin)) return;
+            int x = (int)tl.X - clientOrigin.X;
+            int y = (int)tl.Y - clientOrigin.Y;
+            int w = (int)(br.X - tl.X);
+            int h = (int)(br.Y - tl.Y);
+            if (w <= 0 || h <= 0) return;
+            Win32.SetWindowPos(hwnd, IntPtr.Zero, x, y, w, h,
+                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+
+            // 第二层:WebView2 的渲染窗口(Chrome_WidgetWin)挂在 host 下一层,
+            // 失同步可能只发生在它身上(host 本身是正的)。期望 = 充满 host 客户区。
+            var childHwnd = Win32.GetWindow(hwnd, Win32.GW_CHILD);
+            if (childHwnd != IntPtr.Zero && Win32.GetWindowRect(childHwnd, out var rcChild))
+            {
+                var hostOrigin2 = new System.Drawing.Point(0, 0);
+                if (Win32.ClientToScreen(hwnd, ref hostOrigin2)
+                    && (Math.Abs(rcChild.Left - hostOrigin2.X) > 2
+                        || Math.Abs(rcChild.Top - hostOrigin2.Y) > 2
+                        || Math.Abs(rcChild.Right - hostOrigin2.X - w) > 2
+                        || Math.Abs(rcChild.Bottom - hostOrigin2.Y - h) > 2))
+                {
+                    Win32.SetWindowPos(childHwnd, IntPtr.Zero, 0, 0, w, h,
+                        Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>去抖版 nudge(窗口拖动/连续缩放用):事件风暴期间不动作,
+    /// 停稳 150ms 后补排一次 —— 拖动中实时 nudge 可见 WebView 会造成频闪。</summary>
+    private System.Windows.Threading.DispatcherTimer? _nudgeSettleTimer;
+    private void QueueNudgeSettled()
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(QueueNudgeSettled); return; }
+        _nudgeSettleTimer ??= new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _nudgeSettleTimer.Stop();   // 每次事件重置计时:持续拖动/缩放期间永不触发
+        _nudgeSettleTimer.Tick -= OnNudgeSettled;
+        _nudgeSettleTimer.Tick += OnNudgeSettled;
+        _nudgeSettleTimer.Start();
+    }
+    private void OnNudgeSettled(object? sender, EventArgs e)
+    {
+        ((System.Windows.Threading.DispatcherTimer)sender!).Stop();
+        QueueNudgeAll();
+    }
+
     /// <summary>播放页媒体请求改写 Referer/UA(防盗链)。只对播放页 WebView 开。</summary>
     private void InstallMediaHeaderRewrite(CoreWebView2 core)
     {
@@ -504,12 +652,18 @@ public partial class MainWindow : Window
             // 登录可能换了账号 → 清 sec_uid 缓存,采集时由 ProbeAccountAsync 重新探测
             if (mode == DouyinAuthWindow.AuthMode.Login) _orchestrator?.ClearSecUid();
             DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(mode == DouyinAuthWindow.AuthMode.Login ? "登录成功" : "验证通过")},false)");
-            await AfterAuthSuccessAsync();
+            await AfterAuthSuccessAsync(mode);
         };
         win.Abandoned += () =>
         {
             _authWindow = null;
-            if (mode == DouyinAuthWindow.AuthMode.Verify)
+            if (mode == DouyinAuthWindow.AuthMode.Login)
+            {
+                // 未登录触发采集而弹的登录窗被关 → 复位挂起标志与采集 UI,
+                // 否则进度条/采集按钮永久卡住、且残留挂起导致下次登录意外自动续采
+                _orchestrator?.CancelPendingResume();
+            }
+            else
             {
                 _orchestrator?.NotifyVerifyAbandoned();   // 状态机:Verifying → RiskHeld,等下次点采集再弹
                 DispatchUi("window.__dsh_verifyLock && window.__dsh_verifyLock(false)");
@@ -519,18 +673,18 @@ public partial class MainWindow : Window
         win.Show();
     }
 
-    /// <summary>认证成功后:重载隐藏页、刷新登录状态、若采集被风控打断则自动续采。</summary>
-    private async Task AfterAuthSuccessAsync()
+    /// <summary>认证成功后:重载隐藏页、刷新登录状态;仅当采集确实被挂起等待时才提示"自动续采"
+    /// (手动登录/与采集无关的认证不弹误导性文案)。</summary>
+    private async Task AfterAuthSuccessAsync(DouyinAuthWindow.AuthMode mode)
     {
         // 重载隐藏抖音页:登录/验证后 cookie 全换,旧页面的 securitySDK 拦截器持过期状态,
         // 不重载的话裸 fetch 会持续失败(误报风控的根源)。
         await ReloadDouyinPageAsync();
         await PushStateAsync();
-        if (_orchestrator != null)
-        {
-            DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText("验证通过,自动继续采集…")},false)");
-            await _orchestrator.ResumeAfterAuthAsync();
-        }
+        if (_orchestrator == null) return;
+        var resumed = await _orchestrator.ResumeAfterAuthAsync();
+        if (resumed)
+            DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(mode == DouyinAuthWindow.AuthMode.Login ? "登录成功,自动开始采集…" : "验证通过,自动继续采集…")},false)");
     }
 
     /// <summary>播放取链失败自动 reload 引擎页重试的次数(上限 2,防循环)。用户重新点播放时重置。</summary>
@@ -538,7 +692,7 @@ public partial class MainWindow : Window
 
     private async void OnPlayerRisk(int index)
     {
-        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(OnPlayerRisk, index); return; }
+        if (!Dispatcher.CheckAccess()) { _ = Dispatcher.BeginInvoke(OnPlayerRisk, index); return; }
         // 取链失败两种根因:① 引擎页 SDK 拦截器状态过期(裸 fetch 黑洞,reload 重建可修复);
         // ② detail 接口真被限(验证窗信号 favorite/self 代表不了它,弹窗只会秒过,故不弹)。
         // 用 detail 探测直接区分:接口正常 → 页面过期 → reload 后自动重播;接口受限 → 不白 reload,提示稍后。
@@ -611,6 +765,9 @@ public partial class MainWindow : Window
             // 先停采集:cookie 即将被清空,采集必失败并误弹滑块验证
             _orchestrator?.Stop();
             for (var i = 0; i < 20 && _orchestrator is { IsCollecting: true }; i++) await Task.Delay(250);
+            // 先停批量取消点赞:同样会因 cookie 被清而误判 NoResponse/风控
+            _unlikeCts?.Cancel();
+            for (var i = 0; i < 20 && _unlikeCts != null; i++) await Task.Delay(250);   // 等 unlike 循环退出(最多 5s)
             // 删 douyin.com 全域 cookie → 下次启动需重新登录
             foreach (var domain in new[] { "https://www.douyin.com/", "https://douyin.com/", "https://passport.douyin.com/", "https://snssdk.com/" })
             {
@@ -723,7 +880,7 @@ public partial class MainWindow : Window
         RequestSave(null);
         Task? idle;
         lock (_saveGate) idle = _saveRunning ? _saveIdle?.Task : null;
-        if (idle != null) { try { idle.Wait(TimeSpan.FromSeconds(5)); } catch { } }
+        if (idle != null) { try { idle.Wait(TimeSpan.FromSeconds(2)); } catch { } }
     }
 
     private string _orchestratorSecUid() => _orchestrator?.SecUid ?? "";
@@ -1084,7 +1241,8 @@ public partial class MainWindow : Window
             if (stopReason.Contains("验证") && !IsVerifyWindowOpen)
             {
                 // 引导用户过滑块:验证通过后引擎页自动 reload;剩余条目本地未删,重新勾选即可续跑
-                OpenAuthWindow(DouyinAuthWindow.AuthMode.Verify);
+                // 必须带 secUid:验证窗完成信号 = favorite 接口恢复(风控分接口,self 恢复说明不了)
+                OpenAuthWindow(DouyinAuthWindow.AuthMode.Verify, _orchestratorSecUid());
             }
             var summary = stopReason.Length > 0
                 ? $"{stopReason}。已取消 {ok} 条,失败 {skip} 条。"
@@ -1123,15 +1281,46 @@ public partial class MainWindow : Window
     }
 }
 
-/// <summary>Win32 互操作:无边框窗口拖动。</summary>
+/// <summary>Win32 互操作:无边框窗口拖动 + HwndHost 子窗口硬归位。</summary>
 internal static class Win32
 {
     public const int WM_NCLBUTTONDOWN = 0x00A1;
     public const int HTCAPTION = 0x2;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOREDRAW = 0x0008;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint GW_CHILD = 5;
+    public static readonly IntPtr HWND_TOP = IntPtr.Zero;
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     public static extern bool ReleaseCapture();
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+
+    public const uint GA_ROOT = 2;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref System.Drawing.Point p);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint flags);
 }

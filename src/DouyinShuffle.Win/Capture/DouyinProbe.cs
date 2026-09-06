@@ -135,7 +135,8 @@ public static class DouyinProbe
                 var u = location.href || '';
                 if (u.indexOf('verify') >= 0 || u.indexOf('captcha') >= 0) return true;
                 if (!document.body) return false;
-                if (document.querySelector('#captcha', '#captcha_verify')) return true;
+                // querySelector 只接受单个选择器(第二参会被忽略);两坑位用逗号列表一次命中
+                if (document.querySelector('#captcha, #captcha_verify')) return true;
                 if (document.querySelector('[id*="captcha"], [class*="captcha_verify"], [class*="captcha"][style*="visible"]')) return true;
                 var s = document.body.innerText || '';
                 if (s.indexOf('拖动滑块') >= 0 || s.indexOf('完成验证') >= 0 || s.indexOf('安全验证') >= 0) return true;
@@ -175,10 +176,16 @@ public static class DouyinProbe
         core.WebMessageReceived += Handler;
         try
         {
-            // 取数脚本见 Capture/Scripts/detail-fetch.js(6s 超时 + C# 6s TCS 兜底)
-            var js = ScriptLoader.Get("detail-fetch.js").Replace("{{AID}}", awemeId);
+            // 取数脚本见 Capture/Scripts/detail-fetch.js(6s 超时 + C# TCS 兜底)。
+            // ★注意:同一脚本也被 LikeCollector 播放取链通道复用(它按 awemeId 关联 _detailTcsMap)。
+            // 探测必须注入独立 RID 让响应带本次 token 回来,否则按 awemeId 匹配会与播放取链
+            // 通道互相干扰/永远匹配不上(历史 bug:只替换 AID,id 恒为 awemeId,回调永不命中,
+            // 探测每次 6s 超时 → 播放失败自动 reload 恢复链路整条失效)。
+            var js = ScriptLoader.Get("detail-fetch.js")
+                .Replace("{{AID}}", awemeId)
+                .Replace("{{RID}}", Newtonsoft.Json.JsonConvert.ToString(id));   // 探测通道:独立 token,不与播放取链串扰
             await core.ExecuteScriptAsync(js);
-            var v = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            var v = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(8));   // JS 6s 超时 + 余量(与 favorite-probe 同款 8s)
             AppLog.Write("DETAIL-PROBE " + (v?.Length > 80 ? v[..80] : v));
             if (string.IsNullOrEmpty(v) || v.StartsWith("err:", StringComparison.Ordinal)) return ApiHealth.NotReady;
             var t = v.TrimStart();

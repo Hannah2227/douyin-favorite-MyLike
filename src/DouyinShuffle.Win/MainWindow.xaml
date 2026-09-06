@@ -16,10 +16,12 @@
     </WindowChrome.WindowChrome>
     <Grid x:Name="RootGrid">
         <!-- 本地主界面(卡片列表) -->
-        <wv2:WebView2 x:Name="UiWebView" Visibility="Visible"/>
+        <wv2:WebView2 x:Name="UiWebView"/>
 
         <!-- 独立纯净播放页(方案 B):自有播放器,无抖音页面干扰。
-             Collapsed(非 Hidden):显示时强制重新布局,规避旧版 WebView2 白屏不重绘 bug -->
-        <wv2:WebView2 x:Name="PlayerWebView" Visibility="Collapsed" DefaultBackgroundColor="Black"/>
+             ★两个 WebView 常驻可见,切换 = Win32 z-order 抬升/压底(见 ShowPlayer 注释):
+             Collapsed 期间 Chromium 视口冻结在陈旧尺寸,Visible 后 ~1s 才追上,
+             期间整页按小视口渲染 = "播放页缩在左上角/平移"(诊断日志实锤)。 -->
+        <wv2:WebView2 x:Name="PlayerWebView" DefaultBackgroundColor="Black"/>
     </Grid>
 </Window>

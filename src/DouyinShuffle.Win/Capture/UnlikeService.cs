@@ -104,11 +104,19 @@ public sealed class UnlikeService
 
             await _webView.ExecuteScriptAsync(js);
 
-            var completed = await Task.WhenAny(
-                tcs.Task,
-                Task.Delay(TimeSpan.FromSeconds(10), cancellationToken));
-
-            if (completed != tcs.Task)
+            // 竞态修正:取消(token)与超时(10s)共享同一 Task.Delay —— 若响应与取消同时到,
+            // 原实现一律判"超时",会把一次实际成功的取消误报为 NoResponse(宿主按疑似风控停批)。
+            // 正确顺序:先看是否已取消 → 已取消才算"已中止";delay 先完成才是真超时;
+            // tcs 已就绪则无条件采用真实结果(成功与否由下方业务判定)。
+            var delay = Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+            var completed = await Task.WhenAny(tcs.Task, delay);
+            if (completed == tcs.Task)
+            {
+                // 结果已回(哪怕此刻取消信号同时到):以真实结果为准
+            }
+            else if (cancellationToken.IsCancellationRequested)
+                return new UnlikeOneResult(false, UnlikeFailKind.NoResponse, 0, null, "已中止");
+            else
                 return new UnlikeOneResult(false, UnlikeFailKind.NoResponse, 0, null, "接口请求超时(10 秒)");
 
             var result = await tcs.Task;
