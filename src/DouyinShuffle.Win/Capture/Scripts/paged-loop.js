@@ -70,8 +70,8 @@
     var timeout = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('timeout6s')); }, 6000); });
     Promise.race([send(url), timeout]).then(function (res) {
       var c = window.__dsh_classify(res.b, res.s);
-      if (c.kind !== 'json') {
-        // 非合法 JSON(验证页 A / 黑洞超时 B / 解析失败)→ 空响应计数,统一分流
+      if (c.kind !== 'json' || !Array.isArray(c.list)) {
+        // 非成功响应(验证页 / HTTP 或业务错误 / 结构异常)→ 空响应计数,统一分流
         empty++;
         post({ type: 'direct_fail', fetched: fetched, empty: empty, status: res.s, body: (res.b || '').slice(0, 150) });
         // 首页即不可用 → notready,让宿主分流(网络抖动重试 / 限流弹验证)
