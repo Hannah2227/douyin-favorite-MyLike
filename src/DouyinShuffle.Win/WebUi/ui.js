@@ -326,6 +326,127 @@ window.__dsh_unlikeEnd = async function (text) {
 };
 on('btn-unlike-stop', 'click', () => { call('unlikeStop'); toast('正在停止…'); });
 
+// ---------- 批量取消点赞(按筛选条件) ----------
+// 筛选范围(全部/时间/作者)→ 目标 id 集合;取消模式(全部取消/选择性取消)决定是否全量执行。
+// 全部取消:把筛选条件交给宿主 UnlikeBatchService.ResolveTargets 解析后逐个取消;
+// 选择性取消:把筛选条件映射到主网格(作者→搜索框,时间→年份/月份),进入选择模式后人工勾选。
+function ubScope() {
+  const el = document.querySelector('input[name="ub-scope"]:checked');
+  return el ? el.value : 'all';
+}
+function ubMode() {
+  const el = document.querySelector('input[name="ub-mode"]:checked');
+  return el ? el.value : 'all';
+}
+function ubTimeRange() {
+  const s = document.getElementById('ub-time-start').value;
+  const e = document.getElementById('ub-time-end').value;
+  const start = s ? Math.floor(Date.parse(s) / 1000) : 0;
+  const end = e ? Math.floor(Date.parse(e) / 1000) + 86399 : 0;
+  return { start, end };
+}
+function ubAuthors() {
+  const v = document.getElementById('ub-author').value || '';
+  return v.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+}
+function ubMatchIds() {
+  const scope = ubScope();
+  const { start, end } = ubTimeRange();
+  const authors = ubAuthors();
+  const authorSet = new Set(authors);
+  const ids = [];
+  for (const it of items) {
+    if (it.status === 1) continue;
+    if (scope === 'time') {
+      if (start && it.createTime < start) continue;
+      if (end && it.createTime > end) continue;
+    } else if (scope === 'author') {
+      if (authors.length && !authorSet.has(it.author)) continue;
+    }
+    ids.push(it.awemeId);
+  }
+  return ids;
+}
+function ubRefreshCond() {
+  const scope = ubScope();
+  document.getElementById('ub-time-cond').classList.toggle('hidden', scope !== 'time');
+  document.getElementById('ub-author-cond').classList.toggle('hidden', scope !== 'author');
+}
+function ubUpdatePreview() {
+  setText('ub-preview', `匹配 ${ubMatchIds().length} 条`);
+}
+function ubOpen() {
+  document.getElementById('unlike-batch-modal').classList.remove('hidden');
+  ubRefreshCond();
+  ubUpdatePreview();
+}
+function ubClose() {
+  document.getElementById('unlike-batch-modal').classList.add('hidden');
+}
+function ubApplySelective() {
+  const scope = ubScope();
+  if (scope === 'author') {
+    const authors = ubAuthors();
+    if (authors.length) {
+      const el = document.getElementById('search');
+      if (el) el.value = authors.join(' ');
+      searchText = authors.join(' ').toLowerCase();
+    }
+  } else if (scope === 'time') {
+    const { start, end } = ubTimeRange();
+    if (start) {
+      const d = new Date(start * 1000);
+      yearFilter = String(d.getFullYear());
+      const ys = document.getElementById('year-filter');
+      if (ys) ys.value = yearFilter;
+      monthFilter = '';
+      if (end) {
+        const de = new Date(end * 1000);
+        if (de.getFullYear() === d.getFullYear() && de.getMonth() === d.getMonth()) {
+          monthFilter = String(d.getMonth() + 1);
+          const ms = document.getElementById('month-filter');
+          if (ms) ms.value = monthFilter;
+        }
+      }
+      renderMonthOptions();
+    }
+  }
+  selectMode = true;
+  updateSelectUi();
+  applyFilter();
+  ubClose();
+  toast('已进入选择模式:勾选后点工具栏「取消点赞」', false);
+}
+on('btn-unlike-batch', 'click', ubOpen);
+on('unlike-batch-close', 'click', ubClose);
+document.querySelectorAll('input[name="ub-scope"]').forEach(el => el.addEventListener('change', () => { ubRefreshCond(); ubUpdatePreview(); }));
+['ub-time-start', 'ub-time-end', 'ub-author'].forEach(id => on(id, 'input', ubUpdatePreview));
+document.getElementById('unlike-batch-modal').addEventListener('mousedown', e => { if (e.target.id === 'unlike-batch-modal') ubClose(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') ubClose(); });
+
+on('ub-start', 'click', () => {
+  const count = ubMatchIds().length;
+  if (count === 0) { toast('筛选条件下没有可取消的内容', true); return; }
+  if (ubMode() === 'selective') { ubApplySelective(); return; }
+  const warn = count > 50 ? `\n\n⚠ 已匹配 ${count} 条,数量较大:抖音对批量取消有限流/风控风险,触发后会暂停并弹验证。建议先小批量试或分批操作。` : '';
+  if (!confirm(`确定取消筛选范围内的 ${count} 个作品的抖音点赞吗?\n程序会逐个处理,速度较慢属正常,可随时点底部进度条旁「停止」。\n只有成功取消的条目才会从本地列表移除。${warn}`)) return;
+  const { start, end } = ubTimeRange();
+  const req = { scope: ubScope(), startTime: start, endTime: end, authors: ubAuthors(), ids: [] };
+  call('unlikeBatch', req).then(r => {
+    if (r === 'busy') toast('已有取消点赞任务正在执行', true);
+    else if (r && String(r).indexOf('err') === 0) toast(String(r), true);
+  });
+  ubClose();
+});
+on('ub-retry', 'click', () => {
+  if (!confirm('重试上次未成功的取消项吗?\n仅处理仍在本地的失败条目。')) return;
+  call('unlikeRetry').then(r => {
+    if (r === 'busy') toast('已有取消点赞任务正在执行', true);
+    else if (r && String(r).indexOf('err') === 0) toast(String(r), true);
+  });
+  ubClose();
+});
+
 // ---------- 事件 ----------
 function on(id, evt, fn) { const el = document.getElementById(id); if (el) el.addEventListener(evt, fn); }
 

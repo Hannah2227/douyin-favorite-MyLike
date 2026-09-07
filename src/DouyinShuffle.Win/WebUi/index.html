@@ -94,6 +94,7 @@
         </div>
         <div class="toolbar-actions">
           <button class="mini-btn" id="btn-select" title="进入选择模式">选择</button>
+          <button class="mini-btn" id="btn-unlike-batch" title="按筛选条件批量取消点赞(全部/时间范围/作者)">批量取消</button>
           <span class="select-group hidden" id="select-group">
             <button class="mini-btn" id="btn-select-all">全选</button>
             <button class="mini-btn" id="btn-unselect">取消</button>
@@ -127,6 +128,43 @@
       <button class="modal-close" id="help-close" title="关闭(Esc)">&#10005;</button>
     </div>
     <div class="modal-body" id="help-body"></div>
+  </div>
+</div>
+<!-- 批量取消点赞弹窗(筛选范围 + 取消模式) -->
+<div class="modal-mask hidden" id="unlike-batch-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-title">批量取消点赞</span>
+      <button class="modal-close" id="unlike-batch-close" title="关闭(Esc)">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <div class="ub-row">
+        <span class="ub-label">筛选范围</span>
+        <label class="ub-opt"><input type="radio" name="ub-scope" value="all" checked /> 全部</label>
+        <label class="ub-opt"><input type="radio" name="ub-scope" value="time" /> 按时间范围</label>
+        <label class="ub-opt"><input type="radio" name="ub-scope" value="author" /> 按作者</label>
+      </div>
+      <div class="ub-cond hidden" id="ub-time-cond">
+        <span class="ub-label">时间范围</span>
+        <input type="date" id="ub-time-start" />
+        <span class="ub-sep">至</span>
+        <input type="date" id="ub-time-end" />
+      </div>
+      <div class="ub-cond hidden" id="ub-author-cond">
+        <span class="ub-label">作者</span>
+        <input type="text" id="ub-author" placeholder="输入作者昵称(精确匹配,多个用逗号分隔)" />
+      </div>
+      <div class="ub-row">
+        <span class="ub-label">取消模式</span>
+        <label class="ub-opt"><input type="radio" name="ub-mode" value="all" checked /> 全部取消</label>
+        <label class="ub-opt"><input type="radio" name="ub-mode" value="selective" /> 选择性取消</label>
+      </div>
+      <div class="ub-preview" id="ub-preview">匹配 0 条</div>
+      <div class="ub-actions">
+        <button class="ub-btn primary" id="ub-start">开始取消</button>
+        <button class="ub-btn" id="ub-retry" title="重试上次未成功的条目">重试失败项</button>
+      </div>
+    </div>
   </div>
 </div>
 <script src="ui.js"></script>
