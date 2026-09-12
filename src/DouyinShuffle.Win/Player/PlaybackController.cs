@@ -25,6 +25,49 @@ public sealed class PlaybackController
     private readonly HashSet<string> _refreshedIds = new();
     private int _skipped;
 
+    /// <summary>请求窗口控制(播放页顶栏拖动热区/最小化/最大化/关闭;宿主处理)。</summary>
+    public event Action<string>? WindowCommand;
+
+    /// <summary>请求保存"继续上次播放"快照(手动退出时触发;参数:当前条目 id + 位置秒)。</summary>
+    public event Action<string, double>? SnapshotRequested;
+
+    /// <summary>最近一次 timeupdate 上报的位置(秒;StopAsync 取快照用,锁外写入可容忍偏差)。</summary>
+    private double _lastKnownPosition;
+
+    /// <summary>"继续上次播放"目标(awemeId + seek 位置):PlayAtAsync 播到该条时应用一次后清除。</summary>
+    private (string Id, double Pos)? _resumeTarget;
+
+    /// <summary>设置续播目标(宿主在"继续上次播放"时调用;一次生效)。</summary>
+    public void SetResumeTarget(string awemeId, double positionSec)
+        => _resumeTarget = (awemeId, positionSec);
+
+    /// <summary>同步取当前播放会话快照(当前条目 + 最后上报位置 + 队列 id 顺序)。
+    /// ★给"来不及走 postMessage 往返"的收尾路径用:直接关窗口 / 切换账号(拆舱)。
+    /// 早期只靠页面回包落盘,于是"看着看着直接关掉应用"这一次的进度不会被记住,
+    /// 下次启动提示条的还是更早一次的位置。返回 null = 当前没在播放(不要覆盖已有快照)。</summary>
+    public (string Id, double Pos, List<string> QueueIds)? SnapshotNow()
+    {
+        lock (_sync)
+        {
+            if (!_active || _index < 0 || _index >= _queue.Count) return null;
+            return (_queue[_index].AwemeId, _lastKnownPosition, _queue.Select(i => i.AwemeId).ToList());
+        }
+    }
+
+    /// <summary>★顺序契约:先拉起播放页、再加载直链。
+    /// 宿主 ShowPlayer()(抬 z-order)之后立即调用本方法:等播放页就绪 → 让页面进入加载态。
+    /// 直链的取链(SafeFetchAsync)必须排在这之后 —— 播放页没就位就开始加载媒体,
+    /// 首帧会落在这个 WebView 尚未对齐宿主窗口的陈旧视口上(表现为"内容缩小/偏到左上角")。
+    /// 取链耗时(数百 ms ~ 数秒)期间用户看到的是播放页自身,而不是"点了没反应"。</summary>
+    public async Task ShowLoadingAsync(string text)
+    {
+        if (PageReadyTask != null && !PageReadyTask.IsCompleted)
+        {
+            try { await PageReadyTask.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+        }
+        await EvalAsync($"window.__dshPlayerLoad ? window.__dshPlayerLoad({Json(text)}) : 0");
+    }
+
     /// <summary>跳转原页前的播放进度记忆(awemeId → 秒),返回后从此续播。</summary>
     private readonly Dictionary<string, double> _resumePositions = new();
 
@@ -40,8 +83,12 @@ public sealed class PlaybackController
     /// <summary>自动连播开关变化(宿主据此持久化 + 同步主界面勾选态)。</summary>
     public event Action<bool>? AutoNextChanged;
 
-    /// <summary>播放停止。</summary>
+    /// <summary>播放停止(任何原因)。宿主 UI 收口用(退全屏/回主界面/清状态条)。</summary>
     public event Action? Closed;
+
+    /// <summary>播放停止。参数:manual = 用户主动退出(true)/ 队列自然播完(false)。
+    /// 宿主据此决定是否保存"继续上次播放"快照(自然播完不提示继续)。</summary>
+    public event Action<bool>? Stopped;
 
     /// <summary>已跳转原页(宿主应弹出独立抖音窗口显示该视频页)。参数:aweme_id。</summary>
     public event Action<string>? PageOpened;
@@ -162,16 +209,27 @@ public sealed class PlaybackController
         }
         if (next < 0)
         {
-            await StopAsync();
+            // 队列走到尽头(下一首越界)= 自然播完 → manual=false(不提示"继续上次");
+            // 上一首越界 = 用户主动回退出界 → 视作手动退出
+            await StopAsync(manual: delta < 0);
             return;
         }
         await PlayAtAsync(next, userInitiated: delta < 0);
     }
 
-    public async Task StopAsync()
+    /// <summary>停止播放。manual:用户主动关闭(true)/ 队列自然播完(false);用于"继续上次播放"提示判定。</summary>
+    public async Task StopAsync(bool manual = true)
     {
+        double pos = 0;
+        string lastId = "";
         lock (_sync)
         {
+            // 退出前记录当前条目与位置(手动退出才有意义;自然播完位置无意义)
+            if (manual && _index >= 0 && _index < _queue.Count)
+            {
+                lastId = _queue[_index].AwemeId;
+                pos = _lastKnownPosition;
+            }
             _active = false;
             _index = -1;
         }
@@ -179,6 +237,9 @@ public sealed class PlaybackController
         if (_skipped > 0)
             Notice?.Invoke($"播放结束,已跳过 {_skipped} 条失效内容。");
         lock (_sync) _skipped = 0;
+        Stopped?.Invoke(manual);
+        if (manual && lastId.Length > 0)
+            SnapshotRequested?.Invoke(lastId, pos);   // 宿主落盘 resume.json(含队列快照)
         Closed?.Invoke();
     }
 
@@ -200,6 +261,8 @@ public sealed class PlaybackController
         }
 
         // 严格新链模式:播放前必须取到新链。取链期间播放页显示 loader。
+        // 正常入口(宿主点播/续播)已由 ShowLoadingAsync 先拉起播放页;这一句是自动连播/切歌
+        // 链路的兜底加载态(与宿主同一文案,重复调用无副作用)。
         await EvalAsync($"window.__dshPlayerLoad ? window.__dshPlayerLoad({Json("正在获取播放地址…")}) : 0");
         if (!StillCurrent()) return;
 
@@ -230,7 +293,9 @@ public sealed class PlaybackController
         await AdvanceAsync(1);
     }
 
-    /// <summary>调用取链器并应用结果到 item;重试一次。返回 null 表示失败。</summary>
+    /// <summary>调用取链器并应用结果到 item;失败重试一次。返回 null 表示彻底失败。
+    /// ★重试不因入口而缩减:续播同样要抢到一次成功机会,失败跳过一条的代价远大于多等 1.2s
+    /// (等待感已由"先拉起播放页"消解,不再靠砍重试来提速)。</summary>
     private async Task<FreshMedia?> SafeFetchAsync(AwemeItem item)
     {
         // 预检缓存命中 → 直接用 item 里的新链
@@ -243,44 +308,70 @@ public sealed class PlaybackController
                     : null;
             }
         }
-        for (var attempt = 0; attempt < 2; attempt++)
+        const int attempts = 2;   // 首试 + 间隔 1.2s 再试一次(旧链/瞬时失败多为可恢复)
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
             try
             {
                 var fresh = await FreshUrlFetcher!(item.AwemeId);
                 if (fresh is { HasAny: true })
                 {
-                    // 过滤直链:并行探测(串行 3×6s=18s 太慢;总超时 2.5s,超时后不再等慢探测)
-                    var aliveUrls = new List<string>();
+                    // 直链过滤:并行探测候选,★首活即用 —— 不再等"最慢那条"探完(自检发现的延迟大头)。
+                    // 播放页自身有换源链路(player.html:onerror/stall → 下一条),宿主没有义务替它
+                    // 把候选全探完;等齐 = 每个条目都被最慢的探测拖住(实测点播到出图 ~3s)。
+                    // 命中者排最前,其余候选按原序跟随(播放页回退链完整保留);一条都没探到就按原序全给。
                     if (fresh.PlayUrls.Count > 0)
                     {
-                        var candidates = fresh.PlayUrls.Take(3).ToList();
-                        var probes = candidates.Select(u => Task.Run(async () =>
+                        var first = await FirstAliveAsync(fresh.PlayUrls.Take(3).ToList(), TimeSpan.FromMilliseconds(1200));
+                        if (first != null)
                         {
-                            try { return await LinkProber.IsAliveAsync(u) ? u : null; }
-                            catch { return null; }
-                        })).ToList();
-                        await Task.WhenAny(Task.WhenAll(probes), Task.Delay(2500));
-                        foreach (var p in probes)
-                        {
-                            if (p.IsCompletedSuccessfully && p.Result != null) aliveUrls.Add(p.Result);
+                            var ordered = new List<string> { first };
+                            ordered.AddRange(fresh.PlayUrls.Where(u => u != first));
+                            fresh.PlayUrls = ordered;
                         }
                     }
                     lock (_sync)
                     {
-                        if (aliveUrls.Count > 0) { item.PlayUrls = aliveUrls; item.PlayUrl = aliveUrls[0]; }
-                        else if (fresh.PlayUrls.Count > 0) { item.PlayUrls = fresh.PlayUrls; item.PlayUrl = fresh.PlayUrls[0]; }
+                        if (fresh.PlayUrls.Count > 0) { item.PlayUrls = fresh.PlayUrls; item.PlayUrl = fresh.PlayUrls[0]; }
                         if (fresh.ImageUrls.Count > 0) item.ImageUrls = fresh.ImageUrls;
+                        if (fresh.LiveImageUrls.Count > 0) item.LiveImageUrls = fresh.LiveImageUrls;
                         if (fresh.MusicUrl.Length > 0) item.MusicUrl = fresh.MusicUrl;
                         if (fresh.CoverUrl.Length > 0 && item.CoverUrl != fresh.CoverUrl)
                             item.CoverUrl = fresh.CoverUrl;
                         _refreshedIds.Add(item.AwemeId);
                     }
+                    // 诊断:实况动态子链命中情况(排查"动图显示为静态")
+                    AppLog.Write($"PLAY LIVE images={fresh.ImageUrls.Count} liveUrls={fresh.LiveImageUrls.Count(u => !string.IsNullOrEmpty(u))}");
                     return fresh;
                 }
             }
             catch { }
             if (attempt == 0) await Task.Delay(1200);
+        }
+        return null;
+    }
+
+    /// <summary>候选直链并行探测,返回**第一个探到可用**的那条。
+    /// 语义:谁先答应就用谁(CDN 多机房,先应答的通常也更近);budget 内一条都没探到 → null,
+    /// 由调用方按原始顺序照发给播放页(播放页自己会逐条回退)。探到后不等其余探测收尾
+    /// (它们只是被丢弃的后台任务),这样单条目的等待 ≈ 一次探测往返,而不是最慢那次。</summary>
+    private static async Task<string?> FirstAliveAsync(List<string> candidates, TimeSpan budget)
+    {
+        if (candidates.Count == 0) return null;
+        var probes = candidates
+            .Select(u => Task.Run(async () => { try { return await LinkProber.IsAliveAsync(u) ? u : null; } catch { return (string?)null; } }))
+            .ToList();
+        var deadline = Task.Delay(budget);
+        while (probes.Count > 0)
+        {
+            var done = await Task.WhenAny(Task.WhenAny(probes), deadline);
+            if (ReferenceEquals(done, deadline)) return null;
+            foreach (var p in probes.ToList())
+            {
+                if (!p.IsCompleted) continue;
+                probes.Remove(p);
+                if (p.Status == TaskStatus.RanToCompletion && !string.IsNullOrEmpty(p.Result)) return p.Result;
+            }
         }
         return null;
     }
@@ -297,14 +388,28 @@ public sealed class PlaybackController
             ? Newtonsoft.Json.JsonConvert.SerializeObject(it.PlayUrls)
             : Newtonsoft.Json.JsonConvert.SerializeObject(new[] { it.PlayUrl });
         var imagesJson = Newtonsoft.Json.JsonConvert.SerializeObject(it.ImageUrls);
+        // 动图图集(实况):与图片索引对齐的动态子链(无动态版为 null;JSON null 数组传给播放页)
+        var liveImagesJson = it.LiveImageUrls.Count > 0
+            ? Newtonsoft.Json.JsonConvert.SerializeObject(it.LiveImageUrls)
+            : "null";
         var timeText = it.CreateTime > 0
             ? DateTimeOffset.FromUnixTimeSeconds(it.CreateTime).ToLocalTime().ToString("yyyy-MM-dd")
             : "";
         double resume = 0;
-        lock (_sync) { _resumePositions.TryGetValue(it.AwemeId, out resume); }
+        lock (_sync)
+        {
+            // "继续上次播放"目标优先(宿主 SetResumeTarget 指定;命中即消费,防后续切歌重复 seek)
+            if (_resumeTarget.HasValue && _resumeTarget.Value.Id == it.AwemeId)
+            {
+                resume = _resumeTarget.Value.Pos;
+                _resumeTarget = null;
+            }
+            else _resumePositions.TryGetValue(it.AwemeId, out resume);
+        }
         var cfg = string.Concat(
             "{urls:", urlsJson,
             ",images:", imagesJson,
+            ",liveImages:", liveImagesJson,
             ",music:", Json(it.MusicUrl),
             ",title:", Json(it.Desc),
             ",author:", Json(it.AuthorName),
@@ -375,6 +480,11 @@ public sealed class PlaybackController
                         && jo["w"]!.Value<int>() == 0)
                         Notify("画面解码失败(可能是 H.265 编码且系统缺 HEVC 支持),已尝试切换备用链接。");
                     break;
+                case "position":
+                    // 播放页周期上报当前位置(秒):退出快照取数用(高频率,不落日志)
+                    if (jo["pos"]?.Type == Newtonsoft.Json.Linq.JTokenType.Float || jo["pos"]?.Type == Newtonsoft.Json.Linq.JTokenType.Integer)
+                        _lastKnownPosition = jo["pos"]!.Value<double>();
+                    break;
                 case "next":
                     _ = NextAsync();
                     break;
@@ -426,6 +536,13 @@ public sealed class PlaybackController
                     break;
                 case "resume":
                     ResumeRequested?.Invoke();
+                    break;
+                case "winDrag":
+                case "winMin":
+                case "winMax":
+                case "winClose":
+                    // 播放页窗口控制(顶部拖动条/最小化/最大化/关闭应用):代理给宿主
+                    WindowCommand?.Invoke(msg!);
                     break;
             }
         }
@@ -506,6 +623,7 @@ public sealed class PlaybackController
             {
                 if (fresh.PlayUrls.Count > 0) { item.PlayUrls = fresh.PlayUrls; item.PlayUrl = fresh.PlayUrls[0]; }
                 if (fresh.ImageUrls.Count > 0) item.ImageUrls = fresh.ImageUrls;
+                if (fresh.LiveImageUrls.Count > 0) item.LiveImageUrls = fresh.LiveImageUrls;
                 if (fresh.MusicUrl.Length > 0) item.MusicUrl = fresh.MusicUrl;
             }
             await ShowCurrentAsync();

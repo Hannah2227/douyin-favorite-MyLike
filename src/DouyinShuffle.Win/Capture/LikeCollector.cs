@@ -189,6 +189,7 @@ public sealed class LikeCollector
                                     {
                                         PlayUrls = item.PlayUrls,
                                         ImageUrls = item.ImageUrls,
+                                        LiveImageUrls = item.LiveImageUrls,   // 实况动态子链(v1.0.7;曾遗漏导致动图显示为静态)
                                         MusicUrl = item.MusicUrl,
                                         CoverUrl = item.CoverUrl
                                     };

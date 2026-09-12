@@ -47,6 +47,12 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
 #dsh-pb-tip{position:absolute;bottom:26px;color:#fff;font-size:12px;background:rgba(0,0,0,.75);padding:4px 8px;border-radius:5px;pointer-events:none;white-space:nowrap;display:none}
 #dsh-close{position:absolute;top:14px;right:18px;color:#fff;font-size:24px;background:none;border:none;cursor:pointer;z-index:3}
 #dsh-close:hover{color:var(--accent)}
+/* 顶部拖动热区 + 窗口控制(与 dsh-close 并排;层级高于 topmask) */
+#dsh-dragbar{position:absolute;top:0;left:0;right:190px;height:44px;z-index:6;cursor:move;-webkit-app-region:drag;app-region:drag}
+#dsh-title-mini{position:absolute;left:18px;top:12px;color:rgba(255,255,255,.55);font-size:12px;font-weight:700;letter-spacing:1px;pointer-events:none}
+#dsh-wincontrols{position:absolute;top:0;right:64px;height:44px;display:flex;z-index:7;-webkit-app-region:no-drag;app-region:no-drag}
+#dsh-wincontrols button{width:42px;height:32px;margin-top:6px;border:none;background:rgba(255,255,255,.08);color:rgba(255,255,255,.75);font-size:12px;cursor:pointer;border-radius:6px;margin-left:4px}
+#dsh-wincontrols button:hover{background:rgba(255,255,255,.2);color:#fff}
 #dsh-qbtn.active{background:rgba(254,44,85,.22);color:var(--accent)}
 #dsh-qbtn{font-size:12px}
 #dsh-keys-panel{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;max-width:88%;max-height:82%;background:rgba(16,16,22,.97);border:1px solid rgba(255,255,255,.14);border-radius:12px;z-index:9;display:flex;flex-direction:column;color:#e8e8ea;box-shadow:0 16px 50px rgba(0,0,0,.55);overflow:hidden}
@@ -160,6 +166,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     <button id="dsh-qbtn" class="wbtn" title="播放列表(Q):查看/跳转队列">播放列表</button>
   </div>
   <button id="dsh-close" title="停止并返回列表(Esc)">&#10005;</button>
+  <!-- 顶部拖动热区 + 窗口控制(播放页盖住主窗标题栏,没有它用户在播放页无法移动/关闭应用窗口) -->
+  <div id="dsh-dragbar"><span id="dsh-title-mini">MyLike</span></div>
+  <div id="dsh-wincontrols">
+    <button id="dsh-wc-min" title="最小化">&#8722;</button>
+  </div>
   <div id="dsh-topmask"></div>
   <div id="dsh-seektip"></div>
   <div id="dsh-tcode"></div>
@@ -330,28 +341,111 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   }
 
   // ---------- 图集轮播 ----------
+  // 动图图集(实况)抖音式实现(v1.0.7 终版):
+  //   * 每个"有动态子链"的张持有一个常驻 <video>(首次创建后缓存复用,不销毁不重载);
+  //   * video 与静态 img 同层叠放(相同 object-fit),动态帧就绪前隐藏 img、失败回退 img;
+  //   * 停在该张 → video.play() 播一轮;播完(v.ended)→ 回静态图**停 2s**(抖音的呼吸感:
+  //     动一下、静几秒),再播下一轮;切走 → pause 归位(不清 src,避免重复拉流闪烁);
+  //   * 轮播节奏:实况张 3.5s(含动+停),纯图张 2s。
+  var liveVideos = {};                 // idx → HTMLVideoElement(常驻缓存)
+  var liveImages = null;               // 与 slideImages 对齐的动态子链(null=纯图)
+  var curLiveIdx = -1;                 // 当前正在播动态的 idx(-1=无)
+  function liveEl(idx) {
+    if (!liveVideos[idx]) {
+      var v = document.createElement('video');
+      v.muted = true; v.playsInline = true;   // ★不 loop:播完 ended → 呼吸停顿后重播
+      v.setAttribute('playsinline', '');
+      v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;background:#000';
+      v.preload = 'auto';
+      // 动态帧就绪 → 顶掉静态图
+      v.addEventListener('playing', function () {
+        if (curLiveIdx === idx) { v.style.display = 'block'; img.style.visibility = 'hidden'; }
+      });
+      // 播完一轮 → 显示静态图停顿,2s 后再播(抖音的动-静呼吸节奏)
+      v.addEventListener('ended', function () {
+        if (curLiveIdx !== idx) return;
+        v.style.display = 'none';
+        img.style.visibility = 'visible';
+        setTimeout(function () {
+          if (curLiveIdx !== idx || slidePaused) return;
+          v.currentTime = 0;
+          var p = v.play();
+          if (p && p.catch) p.catch(function () {});
+        }, 2000);
+      });
+      v.addEventListener('error', function () { if (liveVideos[idx] === v) delete liveVideos[idx]; });
+      $('dsh-root').insertBefore(v, $('dsh-topmask'));
+      liveVideos[idx] = v;
+    }
+    return liveVideos[idx];
+  }
+  function hideLive() {
+    if (curLiveIdx < 0) return;
+    var v = liveVideos[curLiveIdx];
+    if (v) { try { v.pause(); v.style.display = 'none'; } catch (e) {} }
+    img.style.visibility = 'visible';
+    curLiveIdx = -1;
+  }
+  // 整条内容的动态层彻底卸载(切歌/换图集时调用)
+  // ★不能只把 liveVideos 置空:那些 <video> 已经 insertBefore 进 DOM,只丢引用 = 元素与
+  //   它的流/解码缓冲留在页面上(看几百个实况图集 = 几百个隐藏 video 常驻),
+  //   而且残留元素的 playing/ended 回调还会按旧 idx 命中新内容(curLiveIdx 同号)造成串画面。
+  function disposeLive() {
+    hideLive();
+    for (var k in liveVideos) {
+      var v = liveVideos[k];
+      if (!v) continue;
+      try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {}
+      try { if (v.parentNode) v.parentNode.removeChild(v); } catch (e) {}
+    }
+    liveVideos = {};
+  }
+  function maybeShowLive(idx) {
+    // 切走旧的
+    if (curLiveIdx !== idx) hideLive();
+    var url = liveImages && liveImages[idx];
+    if (!url) return;
+    var v = liveEl(idx);
+    if (v.dataset.url !== url) { v.dataset.url = url; v.src = url; }
+    curLiveIdx = idx;
+    var p = v.play();
+    if (p && p.catch) p.catch(function () { /* 自动播放被拦 → 保持静态图 */ });
+  }
   function updateSlideProgress() {
     var total = slideImages.length || 0;
     var pct = total ? ((slideIdx + 1) / total * 100) : 0;
     $('dsh-pb-fill').style.width = pct + '%';
     $('dsh-pb-thumb').style.left = pct + '%';
   }
+  function scheduleNextSlide() {
+    // 轮播节奏:纯图张 2s;实况张等动态播一轮(≤3.5s 兜底,防止视频长时占住)
+    var isLive = !!(liveImages && liveImages[slideIdx]);
+    if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
+    slideTimer = setInterval(slideTick, isLive ? 3500 : 2000);
+  }
   function slideTick() {
     slideIdx++;
     if (slideIdx >= slideImages.length) {
       slideIdx = 0;                      // 循环
       img.src = slideImages[0];
+      img.style.visibility = 'visible';
       updateSlideProgress();
+      maybeShowLive(slideIdx);
+      scheduleNextSlide();
       try { if (audio.ended) { audio.currentTime = 0; var ap = audio.play(); if (ap && ap.catch) ap.catch(function () {}); } } catch (e) {}
       return;
     }
     img.src = slideImages[slideIdx];
+    img.style.visibility = 'visible';
     updateSlideProgress();
+    maybeShowLive(slideIdx);
+    scheduleNextSlide();
   }
   function toggleSlide() {
     if (slidePaused) {
       slidePaused = false;
-      slideTimer = setInterval(slideTick, 2000);
+      scheduleNextSlide();
+      maybeShowLive(slideIdx);   // 恢复轮播时,当前张若是实况继续播动态
       hideHint();
       try { if (audio.src) { var ap = audio.play(); if (ap && ap.catch) ap.catch(function () {}); } } catch (e) {}
       updateToggleIcon(true);
@@ -371,6 +465,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     slidePaused = true;                  // 手动切图 → 固定当前图
     updateSlideProgress();
     updateToggleIcon(false);
+    maybeShowLive(slideIdx);             // 手动停在实况张上,同样播动态
   }
 
   // ---------- 滚轮切歌(抖音式) ----------
@@ -428,6 +523,9 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   $('dsh-more').addEventListener('click', function (e) { e.stopPropagation(); });
   $('dsh-more').addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
   $('dsh-page').onclick = function (e) { e.stopPropagation(); post({ player: 'openpage' }); };
+  // 窗口拖动热区 + 最小化(全屏/关闭由播放页自身按钮与 Esc 承担)
+  $('dsh-dragbar').addEventListener('mousedown', function (e) { if (e.button === 0) post({ player: 'winDrag' }); });
+  $('dsh-wc-min').onclick = function (e) { e.stopPropagation(); post({ player: 'winMin' }); };
   $('dsh-close').onclick = function (e) { e.stopPropagation(); post({ player: 'close' }); };
   $('dsh-fs').onclick = function (e) { e.stopPropagation(); toggleFs(); };
   $('dsh-mute').onclick = function (e) { e.stopPropagation(); toggleMute(); };
@@ -623,6 +721,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       img.src = slideImages[idx];
       updateSlideProgress();
       updateToggleIcon(false);
+      maybeShowLive(idx);
       pbTip.textContent = (idx + 1) + '/' + slideImages.length;
       return;
     }
@@ -739,6 +838,8 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
     slidePaused = false;
     slideImages = [];
+    liveImages = null;
+    hideLive();   // 实况动态层随切歌收起
     try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) {}
 
     var images = cfg.images || [];
@@ -750,8 +851,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       $('dsh-slide-prev').style.display = 'flex';
       $('dsh-slide-next').style.display = 'flex';
       slideImages = images;
+      liveImages = cfg.liveImages || null;   // 动图图集(实况)动态子链(可为 null)
+      disposeLive();                         // 上一条内容的实况层整体卸载(缓存随会话重建)
       slideIdx = 0;
       img.src = images[0];
+      maybeShowLive(0);                      // 首张若是实况,直接播动态
       if (cfg.music) {
         audio.src = cfg.music;
         var ap = audio.play();
@@ -765,7 +869,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
       updateSlideProgress();
       updateToggleIcon(true);
       var tc = $('dsh-tcode'); if (tc) tc.textContent = '';
-      slideTimer = setInterval(slideTick, 2000);
+      scheduleNextSlide();
       return;
     }
 
@@ -842,6 +946,8 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     stopStallCheckSafe();
     if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
     slideImages = [];
+    liveImages = null;
+    hideLive();   // 实况动态层收起
     hideLoader();
     hideHint();
     $('dsh-failmsg').style.display = 'none';
@@ -1038,9 +1144,12 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   }
   video.addEventListener('timeupdate', function () {
     var tc = $('dsh-tcode');
-    if (!tc) return;
-    var d = video.duration || 0;
-    tc.textContent = fmtT(video.currentTime) + (d > 0 && isFinite(d) ? ' / ' + fmtT(d) : '');
+    if (tc) {
+      var d = video.duration || 0;
+      tc.textContent = fmtT(video.currentTime) + (d > 0 && isFinite(d) ? ' / ' + fmtT(d) : '');
+    }
+    // 上报播放位置给宿主(退出快照用;timeupdate 天然 ~4Hz,低带宽)
+    post({ player: 'position', pos: video.currentTime || 0 });
   });
   applyRate();
 })();

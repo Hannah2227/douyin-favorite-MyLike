@@ -17,9 +17,9 @@
       <button class="top-btn primary" id="btn-search" title="执行搜索">搜索</button>
     </div>
     <div class="top-actions">
+      <button class="top-btn" id="btn-theme" title="切换深色/浅色">🌙</button>
       <button class="top-btn primary" id="btn-tutorial" title="查看使用教程">使用教程</button>
-      <button class="top-btn" id="btn-login" title="登录抖音">登录</button>
-      <button class="top-btn danger hidden" id="btn-logout" title="清除登录信息">退出登录</button>
+      <button class="top-btn faq" id="btn-faq" title="查看常见问题">常见问题</button>
     </div>
     <div class="win-controls">
       <button class="wc-btn" id="win-min" title="最小化">&#8722;</button>
@@ -47,10 +47,12 @@
       <div class="side-item" id="btn-refresh-list" title="手动刷新列表(采集/导入等操作后点击)">
         <span class="side-label">刷新</span>
       </div>
-      <div class="side-help">
-        <button class="help-btn primary" id="btn-faq" title="查看常见问题">&#10067; 常见问题</button>
+      <!-- 账号入口(点击弹账号面板:切换/新增/重命名;未登录时等同登录入口) -->
+      <div class="account-entry" id="account-entry" title="账号">
+        <img class="account-avatar hidden" id="account-avatar" referrerpolicy="no-referrer" onerror="this.classList.add('broken')" />
+        <span class="account-avatar account-avatar-ph hidden" id="account-avatar-ph">&#128100;</span>
+        <span class="account-name" id="account-name">未登录</span>
       </div>
-      <div class="side-foot" id="login-state">未登录</div>
     </nav>
     <main class="content">
       <!-- 采集进度条 -->
@@ -65,6 +67,14 @@
         <div class="collect-note">提示:最终采集数量可能与抖音显示的不一致(大量内容可能下架、删除),少几千到几万条为正常现象</div>
       </section>
       <section class="dashboard">
+        <!-- 继续上次播放提示条(有手动退出快照时显示) -->
+        <div class="resume-bar hidden" id="resume-bar">
+          <span class="resume-icon">&#9654;</span>
+          <span class="resume-text" id="resume-text"></span>
+          <button class="mini-btn primary" id="btn-resume-continue">继续播放</button>
+          <button class="mini-btn" id="btn-resume-new">重新洗牌</button>
+          <button class="mini-btn" id="btn-resume-dismiss" title="忽略">&#10005;</button>
+        </div>
         <div class="dash-card">
           <div class="dash-left">
             <div class="dash-label">MY LIKES</div>
@@ -78,7 +88,7 @@
         <div class="dash-stats">
           <div class="stat-box"><div class="s-v" id="stat-videos">0</div><div class="s-l">视频</div></div>
           <div class="stat-box"><div class="s-v" id="stat-gallery">0</div><div class="s-l">图集</div></div>
-          <div class="stat-box"><div class="s-v" id="stat-invalid">0</div><div class="s-l">失效</div></div>
+          <div class="stat-box"><div class="s-v" id="stat-disk">0</div><div class="s-l">占用 (MB)</div></div>
           <div class="stat-box"><div class="s-v" id="stat-years">0</div><div class="s-l">年份</div></div>
         </div>
       </section>
@@ -147,6 +157,22 @@
       <button class="modal-close" id="help-close" title="关闭(Esc)">&#10005;</button>
     </div>
     <div class="modal-body" id="help-body"></div>
+  </div>
+</div>
+<!-- 账号面板(多账号切换/新增/重命名) -->
+<div class="modal-mask hidden" id="account-modal">
+  <div class="modal-box" style="width:min(420px,90vw)">
+    <div class="modal-head">
+      <span class="modal-title">账号</span>
+      <button class="modal-close" id="account-modal-close" title="关闭(Esc)">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <div id="account-list"></div>
+      <div class="account-actions">
+        <button class="ub-btn primary" id="btn-add-account" style="flex:1">＋ 添加账号</button>
+      </div>
+      <div class="account-tip">每个账号独立保存喜欢的列表与采集进度;切换约需几秒。</div>
+    </div>
   </div>
 </div>
 <script src="ui.js"></script>

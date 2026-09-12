@@ -22,9 +22,10 @@ namespace DouyinShuffle.Win;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private readonly string _dataDir;
+    private readonly string _rootDir;      // DouyinShuffle 根(账号清单所在)
+    private string _dataDir;               // 当前账号数据目录(Data\<profile>)
     private readonly string _uiDir;
-    private readonly string _profileDir;
+    private string _profileDir;            // 当前账号 WebView2 profile(Profiles\<profile>)
     private CoreWebView2Environment? _env;
     private DouyinAuthWindow? _authWindow;
     private DouyinPageWindow? _pageWindow;
@@ -37,6 +38,18 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _unlikeCts;   // 批量取消点赞:运行中令牌(防重入 + 停止)
     private bool _playerUnlikeBusy;                 // 播放页内单条取消点赞:忙标志(防重复)
     private CollectOrchestrator? _orchestrator;
+
+    /// <summary>账号清单(多账号:每账号独立 profile + 数据目录;单账号/老用户只有一项)。</summary>
+    private AccountRegistry _accounts = new();
+
+    /// <summary>当前在线账号(随切换变更;ProfileName 是 Data\Profiles 目录名主键)。</summary>
+    private AccountInfo _account = new() { ProfileName = "default" };
+
+    /// <summary>应用级设置(settings.json:主题等,与账号无关 —— 换账号不该改外观)。</summary>
+    private Storage.AppSettings _settings = new();
+
+    /// <summary>WebView 体系是否已初始化(幂等闸;换舱走 Teardown/Init 不经此标志)。</summary>
+    private bool _coreReadyOnce;
 
     /// <summary>抖音引擎页的 Core(屏幕外常显窗口里;登录态/签名/采集引擎)。</summary>
     private CoreWebView2? DouyinCore => _engineWindow?.Core;
@@ -51,15 +64,22 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _dataDir = Path.Combine(
+        _rootDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DouyinShuffle", "Data", "default");
+            "DouyinShuffle");
         _uiDir = Path.Combine(Path.GetTempPath(), "dsh_ui_" + Process.GetCurrentProcess().Id);
-        _profileDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DouyinShuffle", "Profiles", "default");
+        // 账号解析:老用户(default 目录)迁移成 user1;之后按 accounts.json 记录恢复上次账号。
+        // 目录结构:%LOCALAPPDATA%\DouyinShuffle\{accounts.json,settings.json, Profiles\<profile>, Data\<profile>}
+        _settings = Storage.AppSettings.Load(_rootDir);
+        // 启动即套用记忆的主题(窗口露边底色在页面加载前就要对,否则深色下先闪一帧浅色)
+        ApplyWindowTheme(_settings.Theme);
+        _account = ResolveStartupAccount(out _dataDir, out _profileDir);
         Closed += OnClosed;
-        Loaded += OnLoadedAsync;
+        // WebView2 控件初始化必须在窗口完全呈现后(ContentRendered):
+        // 代码注入的 WebView2 控件在 Loaded 阶段 EnsureCoreWebView2Async 会因视觉树
+        // 尚未完成呈现而 HwndHost 创建失败(ObjectDisposedException)。
+        // ★Loaded 不再订阅 OnLoadedAsync(它曾先于 ContentRendered 触发,用未呈现控件初始化即崩)。
+        ContentRendered += (_, _) => { if (!_coreReadyOnce) OnLoadedAsync(this, new RoutedEventArgs()); };
         StateChanged += OnStateChanged;
         SizeChanged += (_, _) => QueueNudgeSettled();   // 尺寸变化后 WebView(HwndHost)可能错位(连续缩放时去抖,停稳再排)
         DpiChanged += (_, _) => QueueNudgeAll();   // 跨屏拖动/系统缩放比变化:DIP 尺寸不变但物理像素变,
@@ -73,13 +93,367 @@ public partial class MainWindow : Window
         try { Icon = CreateHeartIcon(); } catch { }
         SourceInitialized += (_, _) =>
         {
-            // 挂 WndProc 钩子:捕获 WM_EXITSIZEMOVE(拖动/缩放模态循环结束的精确信号)
+            // 挂 WndProc 钩子:捕获 WM_EXITSIZEMOVE(拖动/缩放模态循环结束的精确信号)。
+            // ★句柄此时必须已存在(SourceInitialized 语义保证);仍判空防御,避免
+            // HwndSource.FromHwnd(0) 抛 "Hwnd of zero is not valid" 连锁崩溃。
             var helper = new System.Windows.Interop.WindowInteropHelper(this);
-            System.Windows.Interop.HwndSource.FromHwnd(helper.Handle)?.AddHook(WndProcHook);
+            var hwnd = helper.Handle;
+            if (hwnd == IntPtr.Zero) { AppLog.Write("wndproc hook skipped: hwnd zero"); return; }
+            System.Windows.Interop.HwndSource.FromHwnd(hwnd)?.AddHook(WndProcHook);
         };
     }
 
     // ---------- 无边框窗口:状态联动 ----------
+
+    /// <summary>
+    /// 启动时账号解析(v1.0.7 终版:零拷贝、零询问、秒开):
+    /// ① 老用户(无 accounts.json + 存在 Data\default)→ **不复制任何数据**,
+    ///    首个账号 user1 **直接指到 default 目录**(数据+登录态原地就是它的)。
+    ///    旧版曾整体复制 Data+Profiles(数百 MB,启动卡数秒)——纯浪费,default
+    ///    本来就是它的数据,引用即可。default 仅在被多账号覆盖后留作回退,无需备份。
+    /// ② 有清单 → 恢复上次使用账号(CurrentProfile)。
+    /// ③ 全新安装 → 建首个 user1(目录空,登录时生成)。
+    /// </summary>
+    private AccountInfo ResolveStartupAccount(out string dataDir, out string profileDir)
+    {
+        _accounts = AccountRegistry.Load(_rootDir);
+        var legacyData = Path.Combine(_rootDir, "Data", "default");
+        var legacyProfile = Path.Combine(_rootDir, "Profiles", "default");
+
+        // ① 老用户:清单为空 + 存在老 default 数据 → user1 直接"指到"default 目录(零拷贝)
+        if (_accounts.Accounts.Count == 0 && Directory.Exists(legacyData))
+        {
+            var acc = new AccountInfo
+            {
+                ProfileName = "user1",
+                DisplayName = "账号1",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                LastUsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            };
+            // ★回填 sec_uid:老 state.json 里的 SecUserId 是同人检测的依据
+            try
+            {
+                var st = Path.Combine(legacyData, "state.json");
+                if (File.Exists(st))
+                {
+                    var state = Newtonsoft.Json.JsonConvert.DeserializeObject<Storage.SyncState>(File.ReadAllText(st));
+                    acc.SecUid = state?.SecUserId ?? "";
+                }
+            }
+            catch { }
+            _accounts.Accounts.Add(acc);
+            _accounts.CurrentProfile = acc.ProfileName;
+            // ★零拷贝引用写进清单:default 原地就是它的数据/登录态,以后新增、删除、切换
+            //   账号都按这条绑定走,不会因为"账号数变了"而改指到别的目录
+            if (Directory.Exists(legacyData)) acc.DataDirName = "default";
+            if (Directory.Exists(legacyProfile)) acc.ProfileDirName = "default";
+            _accounts.Save(_rootDir);
+            AppLog.Write($"ACCOUNT legacy default -> user1 (zero-copy reference, secUid={(acc.SecUid.Length > 0 ? "filled" : "empty")}, data={acc.DataDirName})");
+        }
+        else if (_accounts.Accounts.Count == 0)
+        {
+            // ③ 全新安装:建首个账号
+            var acc = new AccountInfo
+            {
+                ProfileName = "user1",
+                DisplayName = "账号1",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            };
+            _accounts.Accounts.Add(acc);
+            _accounts.CurrentProfile = acc.ProfileName;
+            _accounts.Save(_rootDir);
+        }
+        else
+        {
+            // ② 有清单:确认上次账号存在(被手动删目录等异常时回退到第一个)
+            if (_accounts.Current == null)
+            {
+                _accounts.CurrentProfile = _accounts.Accounts[0].ProfileName;
+                _accounts.Save(_rootDir);
+            }
+        }
+
+        // ★历史清单(没有绑定字段)先修复绑定,再解析目录 —— 顺序不能反,否则本次运行
+        //   仍会按"账号名拼目录"给出另一个答案,和上次运行的数据目录对不上
+        RepairLegacyDirBinding(legacyData, legacyProfile);
+
+        var cur = _accounts.Current!;
+        cur.LastUsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        _accounts.Save(_rootDir);
+        dataDir = DataDirOf(cur);
+        profileDir = ProfileDirOf(cur);
+        return cur;
+    }
+
+    /// <summary>修复"清单里没记绑定、而 default 与同名目录并存"的历史状态(自检发现的目录改指问题)。
+    /// 判定依据:谁最近被写过(items.dylist 最后写入时间)谁就是本机实际在用的那份。
+    /// 只写清单里的绑定名,不移动/不复制/不删除任何目录 —— 另一份原样留着可找回。</summary>
+    private void RepairLegacyDirBinding(string legacyData, string legacyProfile)
+    {
+        if (!Directory.Exists(legacyData)) return;
+        var changed = false;
+        foreach (var a in _accounts.Accounts)
+        {
+            if (a.DataDirName.Length > 0 || a.ProfileDirName.Length > 0) continue;   // 已有绑定:不动
+            var ownData = Path.Combine(_rootDir, "Data", a.ProfileName);
+            if (!Directory.Exists(ownData)) continue;
+            var legacyNewer = LastWriteOf(Path.Combine(legacyData, "items.dylist"))
+                              > LastWriteOf(Path.Combine(ownData, "items.dylist"));
+            AppLog.Write($"ACCOUNT binding check {a.ProfileName}: defaultNewer={legacyNewer}");
+            if (!legacyNewer) continue;
+            a.DataDirName = "default";
+            if (Directory.Exists(legacyProfile)) a.ProfileDirName = "default";
+            changed = true;
+            AppLog.Write($"ACCOUNT binding repaired {a.ProfileName} -> default (profile-named dir kept aside)");
+        }
+        if (changed) _accounts.Save(_rootDir);
+    }
+
+    private static DateTime LastWriteOf(string path)
+    {
+        try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
+        catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>持久化账号清单(切换/重命名/头像更新后调用)。</summary>
+    private void SaveAccounts()
+    {
+        _account.LastUsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        _accounts.Save(_rootDir);
+    }
+
+    // ---------- 账号目录绑定(单一真源) ----------
+    // ★修复(自检发现):早期版本"数据目录/登录态目录"有两条推断路径 ——
+    //   ① ResolveStartupAccount:账号数==1 且存在 default → 指到 default(零拷贝)
+    //   ② SwitchAccountAsync / 删除 / 合并:直接按 ProfileName 拼目录
+    //   两条路径对同一账号给出不同答案,而清单里没有任何记录 → 用户新增第二个账号或
+    //   从别的账号切回来时,user1 会静默从 `Data\default` 改指到 `Data\user1`(旧拷贝)。
+    //   现在:目录名一律经这两个方法取,且解析结果写进 accounts.json(AccountInfo.DataDirName)。
+    private string DataDirOf(AccountInfo a)
+        => Path.Combine(_rootDir, "Data", string.IsNullOrEmpty(a.DataDirName) ? a.ProfileName : a.DataDirName);
+
+    private string ProfileDirOf(AccountInfo a)
+        => Path.Combine(_rootDir, "Profiles", string.IsNullOrEmpty(a.ProfileDirName) ? a.ProfileName : a.ProfileDirName);
+
+    // ---------- 外观主题(应用级,存 settings.json;见 Storage/AppSettings.cs) ----------
+    /// <summary>应用窗口露边底色(WebView 是 HwndHost 不透明,露边区域必须与页面主题配套)。
+    /// 传空 = 宿主还没记过主题 → 不动(保持 XAML 默认浅色,等页面上报后采纳)。</summary>
+    private void ApplyWindowTheme(string theme)
+    {
+        if (theme.Length == 0) return;
+        var dark = theme == "dark";
+        try
+        {
+            Background = new System.Windows.Media.SolidColorBrush(
+                (System.Windows.Media.Color)System.Windows.Media.ColorConverter
+                    .ConvertFromString(dark ? "#16171B" : "#F5F6F8"));
+        }
+        catch { }
+    }
+
+    // ---------- 账号切换(轻量换舱) ----------
+    // 流程:确认可切 → Teardown(停任务/收口互斥/落盘旧账号/拆 WebView)→ 切 profile/数据目录
+    //       → InitWebViewCoreAsync 重建(登录态在新 profile 里,无需重新扫码)→ UI 推送新账号身份。
+    private volatile bool _switchingAccount;
+
+    private async Task SwitchAccountAsync(AccountInfo target, bool openLoginAfterSwitch = false)
+    {
+        if (!Dispatcher.CheckAccess()) { _ = Dispatcher.BeginInvoke(() => SwitchAccountAsync(target, openLoginAfterSwitch)); return; }
+        if (_switchingAccount) return;
+        _switchingAccount = true;
+        try
+        {
+            // 1. 过场页(主题底色 + 三步进度,替代黑盒等待)
+            DispatchUi("window.__dsh_accountSwitching && window.__dsh_accountSwitching(true, 1)");
+            _windowFullscreen = false;   // 退出全屏状态(重建后 z-order/尺寸重新校准)
+            ExitFullscreen();
+
+            // 2. 拆旧舱(停任务/落盘/拆 WebView;此时数据仍指向旧账号目录)
+            await TeardownWebViewCoreAsync();
+            DispatchUi("window.__dsh_accountSwitching && window.__dsh_accountSwitching(true, 2)");
+
+            // 3. 切账号身份与目录
+            _account = target;
+            _account.LastUsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _accounts.CurrentProfile = target.ProfileName;
+            _accounts.Save(_rootDir);
+            _dataDir = DataDirOf(target);
+            _profileDir = ProfileDirOf(target);
+            AppLog.Write($"ACCOUNT switch -> {target.ProfileName} ({target.DisplayName}) data={Path.GetFileName(_dataDir)} profile={Path.GetFileName(_profileDir)}");
+
+            // 4. 建新舱(登录态随 profile 恢复;数据源已指向新账号目录)
+            await InitWebViewCoreAsync();
+            DispatchUi("window.__dsh_accountSwitching && window.__dsh_accountSwitching(true, 3)");
+
+            // 5. 新增账号模式:首次进入新 profile → 必然未登录 → 直接弹登录窗
+            if (openLoginAfterSwitch)
+            {
+                if (!await IsLoggedInAsync())
+                    OpenAuthWindow(DouyinAuthWindow.AuthMode.Login);
+            }
+
+            // 6. UI 推送新账号身份(头像面板 + 登录态)
+            DispatchUi("window.__dsh_accountsChanged && window.__dsh_accountsChanged()");
+            await PushStateAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("ACCOUNT SWITCH ERR " + ex);
+            MessageBox.Show(this, $"切换账号失败:{ex.Message}\n\n请重启应用重试。", "MyLike",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _switchingAccount = false;
+            DispatchUi("window.__dsh_accountSwitching && window.__dsh_accountSwitching(false)");
+        }
+    }
+
+    /// <summary>登录成功后回填账号档案(sec_uid/头像昵称),账号面板显示用。
+    /// ★同一性归一(v1.0.7 终版,无弹窗):一个抖音号只允许属于一个"应用账号"。
+    /// 若登录的抖音号此前登记在其他档案下,自动把那份档案**并入当前账号**
+    /// (数据目录改名跟随当前 profile,旧档案删除)——用户视角:"我登录了,数据就在",
+    /// 零决策零弹窗。多账号的存在意义由此收敛为:不同抖音号 = 不同应用账号。</summary>
+    private async Task RefreshCurrentAccountProfileAsync()
+    {
+        try
+        {
+            var core = DouyinCore;
+            if (core == null) return;
+            var (health, secUid) = await DouyinProbe.CheckHealthAsync(core);
+            if (health != ApiHealth.Ok || secUid.Length == 0) return;
+
+            // ★同一性归一:sec_uid 命中其他档案 → 整个旧档案并入当前账号(静默)
+            var prior = _accounts.Accounts.FirstOrDefault(a =>
+                a.ProfileName != _account.ProfileName && a.SecUid == secUid && a.SecUid.Length > 0);
+            if (prior != null)
+            {
+                MergeAccountsIntoCurrent(prior);
+                toast($"已合并同一抖音号的数据(来自 {prior.DisplayName})");
+                await ReloadDataLayerAsync();
+                await PushStateAsync();
+                DispatchUi("window.__dsh_accountsChanged && window.__dsh_accountsChanged()");
+                return;
+            }
+
+            _account.SecUid = secUid;
+            // 头像/昵称:复用引擎页上下文抓 profile/self(轻量,仅登录后一次)
+            var raw = await core.ExecuteScriptAsync(
+                "fetch('https://www.douyin.com/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383&version_code=290100&cookie_enabled=true&platform=PC',{credentials:'include'})" +
+                ".then(function(r){return r.text()}).catch(function(e){return 'err'})");
+            try
+            {
+                var jo = Newtonsoft.Json.Linq.JObject.Parse(raw?.Trim('"').Replace("\\\"", "\"") ?? "{}");
+                var user = jo["user"];
+                if (user != null)
+                {
+                    var nick = user.Value<string>("nickname");
+                    var avatar =
+                        (user["avatar_larger"]?["url_list"]?.First as Newtonsoft.Json.Linq.JValue)?.Value as string ??
+                        (user["avatar_medium"]?["url_list"]?.First as Newtonsoft.Json.Linq.JValue)?.Value as string ?? "";
+                    if (!string.IsNullOrWhiteSpace(nick)) _account.DisplayName = nick;
+                    _account.AvatarUrl = avatar;
+                }
+            }
+            catch { }
+            SaveAccounts();
+            DispatchUi("window.__dsh_accountsChanged && window.__dsh_accountsChanged()");
+        }
+        catch (Exception ex) { AppLog.Write("ACCOUNT profile refresh err " + ex.Message); }
+    }
+
+    /// <summary>
+    /// 把 other 档案并入当前账号(_account):同一抖音号的两种壳归一为一个。
+    /// 数据迁移方向:谁的目录里有真数据(items.Count>0),就并入谁;
+    /// 双方都有数据时保守处理:保留当前账号的数据,把 other 的数据目录改名为
+    /// otherProfile_merged_<时间戳> 留档(绝不删除用户数据)。
+    /// 完成后:other 档案从清单删除,登录态(other profile)随目录一并归档。
+    /// </summary>
+    private void MergeAccountsIntoCurrent(AccountInfo other)
+    {
+        try
+        {
+            var curData = DataDirOf(_account);
+            var othData = DataDirOf(other);
+            long curCount = 0, othCount = 0;
+            try { curCount = ReadItemCount(curData); } catch { }
+            try { othCount = ReadItemCount(othData); } catch { }
+
+            if (othCount > 0 && curCount == 0)
+            {
+                // 数据在旧壳,当前是空壳 → 整目录交换:旧数据目录改名成当前 profile 名
+                var moved = Path.Combine(_rootDir, "Data", _account.ProfileName + "_old_" + DateTime.Now.ToString("MMdd_HHmmss"));
+                if (Directory.Exists(curData)) Directory.Move(curData, moved);
+                if (Directory.Exists(othData)) Directory.Move(othData, curData);
+                _dataDir = curData;
+            }
+            else if (othCount > 0 && curCount > 0)
+            {
+                // 双方都有数据:当前优先,旧数据留档不删
+                var keep = Path.Combine(_rootDir, "Data", other.ProfileName + "_merged_" + DateTime.Now.ToString("MMdd_HHmmss"));
+                if (Directory.Exists(othData)) Directory.Move(othData, keep);
+                AppLog.Write($"ACCOUNT merge: both sides had data, old kept at {keep}");
+            }
+            // othCount==0:旧壳无数据,直接删档案即可(目录留空壳无妨)
+
+            // 登录态目录:other profile 里有登录 cookie,当前壳现在也登录着同一号;
+            // 把 other 的 profile 目录改名留档(不删,防用户想找回),清单删除 other
+            var othProfile = ProfileDirOf(other);
+            if (Directory.Exists(othProfile))
+            {
+                try { Directory.Move(othProfile, othProfile + "_merged_" + DateTime.Now.ToString("MMdd_HHmmss")); } catch { }
+            }
+
+            _account.SecUid = secUidOf(other) ?? _account.SecUid;
+            if (string.IsNullOrWhiteSpace(_account.DisplayName) || _account.DisplayName.StartsWith("账号"))
+                _account.DisplayName = other.DisplayName;   // 继承更友好的名字
+            _accounts.Accounts.Remove(other);
+            if (_accounts.CurrentProfile == other.ProfileName) _accounts.CurrentProfile = _account.ProfileName;
+            SaveAccounts();
+            AppLog.Write($"ACCOUNT merged {other.ProfileName} into {_account.ProfileName} (cur={curCount}, other={othCount})");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("ACCOUNT merge err " + ex);
+        }
+    }
+
+    /// <summary>读某账号数据目录的 items count(合并决策用;异常返回 0)。</summary>
+    private long ReadItemCount(string dataDir)
+    {
+        var p = Path.Combine(dataDir, "items.dylist");
+        if (!File.Exists(p)) return 0;
+        using var fs = File.OpenRead(p);
+        using var sr = new StreamReader(fs);
+        var head = sr.ReadLine() ?? "";
+        // 文件是单行紧凑 JSON:{"app":...,"count":N,...}
+        var m = System.Text.RegularExpressions.Regex.Match(head, "\"count\":(\\d+)");
+        return m.Success ? long.Parse(m.Groups[1].Value) : 0;
+    }
+
+    private string? secUidOf(AccountInfo a) => string.IsNullOrEmpty(a.SecUid) ? null : a.SecUid;
+
+    /// <summary>换数据目录后重建数据层(store/collector 重读新目录;UI 列表刷新)。
+    /// 仅轻量重载(不动 WebView 体系,登录态不受影响)。</summary>
+    private async Task ReloadDataLayerAsync()
+    {
+        try
+        {
+            _orchestrator?.Stop();
+            for (var i = 0; i < 20 && _orchestrator is { IsCollecting: true }; i++) await Task.Delay(250);
+            _store = new LikeListStore(_dataDir);
+            var (saved, state) = await Task.Run(() => (_store.LoadItems(), _store.LoadState()));
+            _collector?.Clear();
+            _collector?.Seed(saved, state.MaxCursor);
+            _orchestrator?.SeedState(state.SecUserId, state.CollectIncomplete);
+            DispatchUi("window.__dsh_refresh && window.__dsh_refresh()");
+            await PushStateAsync();
+        }
+        catch (Exception ex) { AppLog.Write("ACCOUNT data reload err " + ex.Message); }
+    }
+
+    /// <summary>给当前账号数据域弹 toast 的便捷方法(账号面板流程用)。</summary>
+    private void toast(string msg) => DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(msg)},false)");
 
     /// <summary>拖动窗口(Win32 模态拖动循环)。CSS app-region 失效时的兜底。</summary>
     private void DragWindow()
@@ -151,6 +525,7 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         IsShuttingDown = true;
+        TrySaveResumeSnapshot();   // ★直接关窗口时的进度补记(否则这次播放位置不会被记住)
         try { FlushSaveSync(); } catch { }
         try { if (_uiDir.StartsWith(Path.GetTempPath())) Directory.Delete(_uiDir, true); } catch { }
         _authWindow?.Close();
@@ -160,6 +535,8 @@ public partial class MainWindow : Window
 
     private async void OnLoadedAsync(object? sender, RoutedEventArgs e)
     {
+        if (_coreReadyOnce) return;   // 幂等:ContentRendered 只初始化一次(换舱走 SwitchAccountAsync)
+        _coreReadyOnce = true;
         try
         {
             // WebView2 Runtime 前置检测:缺失时(Win10 LTSC/精简系统常见)给明确指引,
@@ -180,83 +557,7 @@ public partial class MainWindow : Window
             }
 
             ExtractWebUi();
-            Directory.CreateDirectory(_profileDir);
-
-            var env = await CoreWebView2Environment.CreateAsync(null, _profileDir);
-            _env = env;
-            await Task.WhenAll(
-                UiWebView.EnsureCoreWebView2Async(env),
-                PlayerWebView.EnsureCoreWebView2Async(env));
-#if !DEBUG
-            // 发布版关闭 DevTools(防 F12/右键检查被浏览器层截获,与页面快捷键自定义冲突)
-            try { UiWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
-            try { PlayerWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
-#endif
-            // 关闭浏览器层加速键(F5 刷新/Ctrl+R/F3 查找等):本地应用页无浏览器刷新语义,
-            // 且会与播放页"自定义快捷键"冲突(F5 等被浏览器层吃掉,页面收不到)。
-            try { UiWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
-            try { PlayerWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
-            // 抖音引擎页:独立屏幕外窗口(HwndHost 不受 WPF z-order 裁剪,不能在主窗口里叠放)
-            _engineWindow = new DouyinEngineWindow();
-            _engineWindow.Owner = this;
-            _engineWindow.Show();
-            await _engineWindow.EnsureAsync(env);
-            AppLog.Write("webview cores ready");
-
-            // 播放页媒体请求改写 Referer/UA(防盗链):只对播放页开,不影响抖音页签名
-            InstallMediaHeaderRewrite(PlayerWebView.CoreWebView2!);
-
-            // 存储 + 采集器(挂在抖音页)
-            _store = new LikeListStore(_dataDir);
-            if (_store.HasLegacyData()) { _store.MigrateLegacy(); }
-            // 大数据量(几十万条 = 几十 MB JSON)启动读盘耗时秒级,放后台线程避免卡启动画面
-            var (saved, state) = await Task.Run(() => (_store.LoadItems(), _store.LoadState()));
-
-            _collector = new LikeCollector(DouyinCore!);
-            _unlikeService = new UnlikeService(DouyinCore!);   // 进度/结果由 UnlikeRunAsync 统一转发
-            _collector.Seed(saved, state.MaxCursor);
-            var collecting = false;
-            _collector.StatusChanged += msg =>
-            {
-                AppLog.Write("DIAG " + msg);
-                if (collecting) DispatchUi($"window.__dsh_collectStatus && window.__dsh_collectStatus({JsonText(msg)})");
-            };
-            _collector.Diagnostic += msg => AppLog.Write("DIAG " + msg);
-            _collector.CountChanged += count => DispatchUi($"window.__dsh_count && window.__dsh_count({count})");
-
-            // 采集编排器(风控事件接线)
-            _orchestrator = new CollectOrchestrator(this);
-            _orchestrator.SeedState(state.SecUserId, state.CollectIncomplete);
-            collecting = true;   // StatusChanged 闭包用(与编排器生命周期一致,简化传参)
-            _collector.RiskDetected += _orchestrator.OnCollectRisk;
-            await _collector.InstallAsync();
-            // 注意:引擎页保持"零初始化脚本"的干净状态:
-            // 任何文档创建时的 fetch 包装都会干扰 webmssdk 签名层 → 直连被黑洞。
-
-            InitPlayer();
-
-            // 播放页导航到本地 player.html(与 UI 同目录提取)
-            _playerPageTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            PlayerWebView.CoreWebView2!.NavigationCompleted += (_, npc) =>
-            {
-                if (npc.IsSuccess) _playerPageTcs.TrySetResult(true);
-            };
-            PlayerWebView.CoreWebView2!.Navigate(Path.Combine(_uiDir, "player.html"));
-
-            // UI 异步桥接(唯一通道:postMessage;不再用同步 host object,避免死锁)
-            UiWebView.CoreWebView2!.WebMessageReceived += OnUiMessage;
-            UiWebView.CoreWebView2!.Navigate(Path.Combine(_uiDir, "index.html"));
-
-            // 隐藏抖音页,静默导航建立登录态(若已登录;未登录不弹窗)
-            DouyinCore!.NavigationCompleted += OnDouyinNavCompleted;
-            DouyinCore!.Navigate(DouyinProbe.DouyinHomeUrl);
-
-            // ★启动 z-order 钉死:两个 WebView 常驻可见(z-order 切换方案),谁在上层必须显式
-            // 声明 —— 若播放页(黑底)排在主界面上,启动就是黑屏。主界面为启动视图。
-            RaiseWebViewToTop(UiWebView);
-            UiWebView.Focus();
-
-            await PushStateAsync();
+            await InitWebViewCoreAsync();
         }
         catch (Exception ex)
         {
@@ -267,9 +568,237 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// WebView 体系构建(启动与"换账号舱"共用):
+    /// ① 按当前账号 profile 创建 CoreWebView2Environment(登录态所在);
+    /// ② Ui/Player WebView(必要时先 Dispose 旧的)→ EnsureCoreWebView2Async;
+    /// ③ 引擎窗/存储/采集器/编排器/播放器重建并接线;
+    /// ④ 导航本地 UI + 抖音引擎页,恢复 z-order。
+    /// 换账号 = TeardownWebViewCoreAsync() → 改 _account/_dataDir/_profileDir → 本方法。
+    /// </summary>
+    private async Task InitWebViewCoreAsync()
+    {
+        Directory.CreateDirectory(_profileDir);
+        Directory.CreateDirectory(_dataDir);
+
+        // ① 环境:profile 目录绑定在 Environment 上(换账号 = 换目录 = 新环境)。
+        // Chromium 子进程退出有延迟,防 profile 锁冲突:短重试。
+        CoreWebView2Environment env = null!;
+        for (var attempt = 0; ; attempt++)
+        {
+            try { env = await CoreWebView2Environment.CreateAsync(null, _profileDir); break; }
+            catch (Exception ex) when (attempt < 3)
+            {
+                AppLog.Write($"ENV create retry {attempt + 1}: {ex.Message}");
+                await Task.Delay(1500);
+            }
+        }
+        _env = env;
+
+        // ② 两个 WebView:已有实例(换舱)→ 先拆再建(WebView2 控件的 CoreWebView2 一经创建
+        //    不能换环境,必须 Dispose 控件重建;这是官方支持的生命周期用法)。
+        //    ★顺序注意:必须只经 ReplaceWebView 完成替换+Dispose 旧控件 + 挂新控件,
+        //    然后才赋 UiWebView/PlayerWebView 属性 —— 若先赋属性(=把 _uiWebViewHost 指向新控件)
+        //    再 Replace,slot 已指向新控件,Remove/Dispose 会把刚建的新控件销毁(启动崩溃真因)。
+        var newUi = CreateWebView();
+        var newPlayer = CreateWebView();
+        ReplaceWebView(ref _uiWebViewHost, newUi);
+        ReplaceWebView(ref _playerWebViewHost, newPlayer);
+        UiWebView = newUi;
+        PlayerWebView = newPlayer;
+        // ★双保险:EnsureCoreWebView2Async 要求控件已连接到"已呈现"的视觉树。
+        // 若此刻控件尚未完成 Loaded 路由(刚挂进视觉树,下一拍才置位),延后到 Dispatcher.Loaded
+        // 再 Ensure。★注意:InvokeAsync(async lambda) 是 async void 语义、立即返回 —— 必须用
+        // TCS 真正等待内部 await 完成,否则后续 CoreWebView2 访问全是 null(换账号崩溃真因)。
+        if (!UiWebView.IsLoaded)
+        {
+            AppLog.Write("INIT: webview not routed-loaded yet, defer core init one beat");
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await Dispatcher.InvokeAsync(async () =>
+            {
+                try
+                {
+                    await UiWebView.EnsureCoreWebView2Async(env);
+                    await PlayerWebView.EnsureCoreWebView2Async(env);
+                }
+                finally { tcs.TrySetResult(true); }
+            }, System.Windows.Threading.DispatcherPriority.Loaded);
+            await tcs.Task;   // 等 async 委托真正跑完(含内部 await)
+        }
+        else
+        {
+            await Task.WhenAll(
+                UiWebView.EnsureCoreWebView2Async(env),
+                PlayerWebView.EnsureCoreWebView2Async(env));
+        }
+#if !DEBUG
+        // 发布版关闭 DevTools(防 F12/右键检查被浏览器层截获,与页面快捷键自定义冲突)
+        try { UiWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
+        try { PlayerWebView.CoreWebView2!.Settings.AreDevToolsEnabled = false; } catch { }
+#endif
+        // 关闭浏览器层加速键(F5 刷新/Ctrl+R/F3 查找等):本地应用页无浏览器刷新语义,
+        // 且会与播放页"自定义快捷键"冲突(F5 等被浏览器层吃掉,页面收不到)。
+        try { UiWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
+        try { PlayerWebView.CoreWebView2!.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch { }
+        // 抖音引擎页:独立屏幕外窗口(HwndHost 不受 WPF z-order 裁剪,不能在主窗口里叠放)
+        _engineWindow = new DouyinEngineWindow();
+        _engineWindow.Owner = this;
+        _engineWindow.Show();
+        await _engineWindow.EnsureAsync(env);
+        // ★引擎页静音(v1.0.7:修复"登录后有声音,隐藏抖音页在放视频"):
+        // 隐藏页在 douyin.com 首页会自动起播 feed 视频。认证窗早就注册了 mute-media.js
+        // (文档创建时注入),引擎窗漏了 —— 补上同样的文档级注入,每次导航新文档都自动静音。
+        try { await _engineWindow.EngineWebView.CoreWebView2!.AddScriptToExecuteOnDocumentCreatedAsync(ScriptLoader.Get("mute-media.js")); }
+        catch (Exception ex) { AppLog.Write("engine mute script err " + ex.Message); }
+        AppLog.Write("webview cores ready");
+        // 播放页媒体请求改写 Referer/UA(防盗链):只对播放页开,不影响抖音页签名
+        InstallMediaHeaderRewrite(PlayerWebView.CoreWebView2!);
+
+        // 存储 + 采集器(挂在抖音页)
+        _store = new LikeListStore(_dataDir);
+        if (_store.HasLegacyData()) { _store.MigrateLegacy(); }
+        // 大数据量(几十万条 = 几十 MB JSON)启动读盘耗时秒级,放后台线程避免卡启动画面
+        var (saved, state) = await Task.Run(() => (_store.LoadItems(), _store.LoadState()));
+
+        _collector = new LikeCollector(DouyinCore!);
+        _unlikeService = new UnlikeService(DouyinCore!);   // 进度/结果由 UnlikeRunAsync 统一转发
+        _collector.Seed(saved, state.MaxCursor);
+        var collecting = false;
+        _collector.StatusChanged += msg =>
+        {
+            AppLog.Write("DIAG " + msg);
+            if (collecting) DispatchUi($"window.__dsh_collectStatus && window.__dsh_collectStatus({JsonText(msg)})");
+        };
+        _collector.Diagnostic += msg => AppLog.Write("DIAG " + msg);
+        _collector.CountChanged += count => DispatchUi($"window.__dsh_count && window.__dsh_count({count})");
+
+        // 采集编排器(风控事件接线)
+        _orchestrator = new CollectOrchestrator(this);
+        _orchestrator.SeedState(state.SecUserId, state.CollectIncomplete);
+        collecting = true;   // StatusChanged 闭包用(与编排器生命周期一致,简化传参)
+        _collector.RiskDetected += _orchestrator.OnCollectRisk;
+        await _collector.InstallAsync();
+        // 注意:引擎页保持"零初始化脚本"的干净状态:
+        // 任何文档创建时的 fetch 包装都会干扰 webmssdk 签名层 → 直连被黑洞。
+
+        InitPlayer();
+
+        // 播放页导航到本地 player.html(与 UI 同目录提取)
+        _playerPageTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        PlayerWebView.CoreWebView2!.NavigationCompleted += (_, npc) =>
+        {
+            if (npc.IsSuccess) _playerPageTcs.TrySetResult(true);
+        };
+        PlayerWebView.CoreWebView2!.Navigate(Path.Combine(_uiDir, "player.html"));
+
+        // UI 异步桥接(唯一通道:postMessage;不再用同步 host object,避免死锁)
+        UiWebView.CoreWebView2!.WebMessageReceived += OnUiMessage;
+        UiWebView.CoreWebView2!.Navigate(Path.Combine(_uiDir, "index.html"));
+
+        // 隐藏抖音页,静默导航建立登录态(若已登录;未登录不弹窗)
+        DouyinCore!.NavigationCompleted += OnDouyinNavCompleted;
+        DouyinCore!.Navigate(DouyinProbe.DouyinHomeUrl);
+
+        // ★启动 z-order 钉死:两个 WebView 常驻可见(z-order 切换方案),谁在上层必须显式
+        // 声明 —— 若播放页(黑底)排在主界面上,启动就是黑屏。主界面为启动视图。
+        RaiseWebViewToTop(UiWebView);
+        UiWebView.Focus();
+
+        AppLog.Write($"ACCOUNT online: {_account.ProfileName} ({_account.DisplayName}) data={Path.GetFileName(_dataDir)} profile={Path.GetFileName(_profileDir)}");
+        await PushStateAsync();
+    }
+
+    /// <summary>换账号前的拆卸:停任务、关窗、Dispose WebView 控件(环境随最后一个引用释放)。</summary>
+    private async Task TeardownWebViewCoreAsync()
+    {
+        IsShuttingDown = true;   // 复用总开关:挡住所有 DispatchUi/SaveLoop 异步尾
+        try
+        {
+            // 停采集(等退出,防编排器在旧 Core 上继续跑)
+            _orchestrator?.Stop();
+            for (var i = 0; i < 20 && _orchestrator is { IsCollecting: true }; i++) await Task.Delay(250);
+            // 停批量 unlike
+            _unlikeCts?.Cancel();
+            for (var i = 0; i < 20 && _unlikeCts != null; i++) await Task.Delay(250);
+            // 收尾落盘(旧账号数据)★顺序:必须在换 _dataDir 之前,快照才落在旧账号目录里
+            TrySaveResumeSnapshot();
+            try { FlushSaveSync(); } catch { }
+            // 关窗(引擎/认证/原页都持旧 env 引用)
+            _authWindow?.Close(); _authWindow = null;
+            try { _engineWindow?.Close(); } catch { }
+            _engineWindow = null;
+            _pageWindow?.Close(); _pageWindow = null;
+            // 拆播放器与采集器引用(事件订阅随对象丢弃)
+            _player = null;
+            _collector = null;
+            _unlikeService = null;
+            _orchestrator = null;
+            _store = null;
+            // 拆两个 WebView 控件(Grid 中移除 + Dispose;CoreWebView2 不能换环境必须重建)
+            await Dispatcher.InvokeAsync(() =>
+            {
+                ReplaceWebView(ref _uiWebViewHost, null);
+                ReplaceWebView(ref _playerWebViewHost, null);
+            });
+            _env = null;
+            // 给 Chromium 子进程退出时间(防新 profile 被锁)
+            await Task.Delay(1500);
+        }
+        finally
+        {
+            IsShuttingDown = false;
+        }
+        GC.Collect();   // 提前回收旧 WebView2 包装对象,加速浏览器进程退出
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+    }
+
+    // ---------- WebView 控件管理(账号"换舱"时 Dispose 重建,引用经属性转发全代码零改动) ----------
+    // XAML 只留容器 Grid(WebViewHost);两个控件实例由代码注入,以下属性供既有代码按原名访问。
+    private Microsoft.Web.WebView2.Wpf.WebView2? _uiWebViewHost;
+    private Microsoft.Web.WebView2.Wpf.WebView2? _playerWebViewHost;
+
+    /// <summary>主界面 WebView(原 XAML x:Name="UiWebView",现为代码管理的实例)。</summary>
+    public Microsoft.Web.WebView2.Wpf.WebView2 UiWebView
+    {
+        get => _uiWebViewHost ?? throw new InvalidOperationException("UiWebView not initialized");
+        private set => _uiWebViewHost = value;
+    }
+
+    /// <summary>播放页 WebView(原 XAML x:Name="PlayerWebView",现为代码管理的实例)。</summary>
+    public Microsoft.Web.WebView2.Wpf.WebView2 PlayerWebView
+    {
+        get => _playerWebViewHost ?? throw new InvalidOperationException("PlayerWebView not initialized");
+        private set => _playerWebViewHost = value;
+    }
+
+    private Microsoft.Web.WebView2.Wpf.WebView2 CreateWebView()
+    {
+        return new Microsoft.Web.WebView2.Wpf.WebView2
+        {
+            DefaultBackgroundColor = System.Drawing.Color.Black   // 该属性是 Drawing.Color(Web 控件历史签名)
+        };
+    }
+
+    /// <summary>把容器里的旧 WebView 控件替换为新实例(null = 仅移除并 Dispose)。</summary>
+    private void ReplaceWebView(ref Microsoft.Web.WebView2.Wpf.WebView2? slot, Microsoft.Web.WebView2.Wpf.WebView2? newInstance)
+    {
+        if (slot != null)
+        {
+            try { WebViewHost.Children.Remove(slot); } catch { }
+            try { slot.Dispose(); } catch { }
+        }
+        slot = newInstance;
+        if (newInstance != null)
+        {
+            WebViewHost.Children.Add(newInstance);
+        }
+    }
+
     /// <summary>播放器初始化与事件接线(原 OnLoadedAsync 的一段,拆出便于阅读)。</summary>
     private void InitPlayer()
     {
+        _lastExitWasManual = false;
         _player = new PlaybackController(PlayerWebView.CoreWebView2!);
         _player.FreshUrlFetcher = id => _collector?.FetchFreshUrlsByApiAsync(id)
             ?? Task.FromResult<FreshMedia?>(null);
@@ -285,7 +814,23 @@ public partial class MainWindow : Window
             ShowUiOnly();
             DispatchUi("window.__dsh_onPlaying && window.__dsh_onPlaying('')");
         };
+        // 播放进度保留:手动退出 → 落盘快照(队列 id 顺序 + 当前条目 + 位置);下次播放前提示"继续/重新洗牌"
+        _player.Stopped += manual =>
+        {
+            if (manual) _lastExitWasManual = true;
+            else ClearResumeSnapshot();   // manual=false 只出现在"整轮播完"这一种情况 → 没有继续的意义
+        };
+        _player.SnapshotRequested += (awemeId, pos) =>
+        {
+            SaveResumeSnapshot(awemeId, pos, _player?.Queue.Select(i => i.AwemeId).ToList() ?? new List<string>());
+        };
         _player.Notice += msg => DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(msg)},false)");
+        // 播放页窗口控制(拖动热区/最小化/最大化/关闭):复用自绘标题栏的 Win32 通道
+        _player.WindowCommand += cmd =>
+        {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => WindowCommandHandler(cmd)); return; }
+            WindowCommandHandler(cmd);
+        };
         _player.RiskDetected += OnPlayerRisk;
         _player.FullscreenToggleRequested += ToggleFullscreen;
         _player.UnlikeRequested += OnPlayerUnlikeRequested;
@@ -326,6 +871,58 @@ public partial class MainWindow : Window
     // 与批量 unlike(_unlikeCts 通道)相互独立:播放中批量 unlike 已被互斥拦截,
     // 故播放页单条执行时不存在并发批量;单条忙标志仅防本入口重复点击。
     // 成功(HTTP 2xx + status_code=0)才删本地并落盘;失败保留(与批量口径一致)。
+    // ---------- 播放进度快照("继续上次播放"的数据来源) ----------
+    private bool _lastExitWasManual;   // 上次播放退出是否手动(false=自然播完;决定是否提示"继续上次")
+
+    /// <summary>落盘续播快照(写当前账号数据目录;失败只记日志,绝不影响退出流程)。</summary>
+    private void SaveResumeSnapshot(string awemeId, double posSec, List<string> queueIds)
+    {
+        if (awemeId.Length == 0) return;
+        try
+        {
+            new ResumeStore(_dataDir).Save(new ResumeSnapshot
+            {
+                AwemeId = awemeId,
+                PositionSec = posSec,
+                QueueIds = queueIds,
+                ManualExit = _lastExitWasManual
+            });
+        }
+        catch (Exception ex) { AppLog.Write("RESUME save err " + ex.Message); }
+    }
+
+    /// <summary>清掉续播快照(整轮播完 / 用户主动放弃续播):之后主界面不再提示"继续上次播放"。</summary>
+    private void ClearResumeSnapshot()
+    {
+        try { new ResumeStore(_dataDir).Delete(); }
+        catch (Exception ex) { AppLog.Write("RESUME clear err " + ex.Message); }
+    }
+
+    /// <summary>收尾时补记快照(直接关窗口 / 切换账号拆舱):播放页回包通道已经不可用,
+    /// 只能同步取宿主已知的最后位置。仅在"确实在播"时写 —— 否则会覆盖掉用户上次手动退出的快照。</summary>
+    private void TrySaveResumeSnapshot()
+    {
+        try
+        {
+            var snap = _player?.SnapshotNow();
+            if (snap == null) return;
+            _lastExitWasManual = true;   // 直接关窗 = 用户主动中断,下次应提示"继续上次播放"
+            SaveResumeSnapshot(snap.Value.Id, snap.Value.Pos, snap.Value.QueueIds);
+            AppLog.Write($"RESUME snapshot on exit: {snap.Value.Id} @ {snap.Value.Pos:0.#}s (queue={snap.Value.QueueIds.Count})");
+        }
+        catch (Exception ex) { AppLog.Write("RESUME exit save err " + ex.Message); }
+    }
+    /// <summary>播放页窗口命令处理(拖动/最小化/最大化/关闭应用;与自绘标题栏同一套机制)。</summary>
+    private void WindowCommandHandler(string cmd)
+    {
+        switch (cmd)
+        {
+            case "winDrag": DragWindow(); break;
+            case "winMin": WindowState = WindowState.Minimized; break;
+            case "winMax": WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; break;
+            case "winClose": Close(); break;
+        }
+    }
     private void OnPlayerUnlikeRequested(AwemeItem? item)
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(() => OnPlayerUnlikeRequested(item)); return; }
@@ -418,6 +1015,24 @@ public partial class MainWindow : Window
         // 兜底重排(硬归位仅在检测到 >2px 偏差时才动,平时零操作)
         NudgeWebView(PlayerWebView);
         QueueNudgeAll();
+    }
+
+    /// <summary>★顺序契约:先拉起播放页、再加载直链。
+    /// 点播/续播的第一步永远是"播放页出现"(抬 z-order + 硬归位 + 页面进入加载态),
+    /// 取链(网络,数百 ms~数秒)排在它之后 —— 既消除"点了没反应"的等待感,
+    /// 也避免直链首帧落在播放页尚未对齐宿主的陈旧视口上(内容偏到左上角的诱因之一)。</summary>
+    private async Task PreparePlayerAsync(string loadingText)
+    {
+        ShowPlayer();
+        if (_player != null) await _player.ShowLoadingAsync(loadingText);
+    }
+
+    /// <summary>播放页已拉起、但后续校验(条目失效/快照过期/队列为空)失败 → 退回主界面。
+    /// 不能让用户停在"什么都没在播的播放页"上;返回原错误串给 UI,提示语不变。</summary>
+    private string PlayerBackToUi(string message)
+    {
+        ShowUiOnly();
+        return message;
     }
 
     /// <summary>把 WebView 的 HwndHost 抬到兄弟窗口最顶(z-order 切换的核心)。
@@ -516,7 +1131,10 @@ public partial class MainWindow : Window
         QueueNudgeAll();
     }
 
-    /// <summary>窗口尺寸/状态变化后节流触发两个 WebView 重排(HwndHost 错位兜底)。</summary>
+    /// <summary>窗口尺寸/状态变化后节流触发两个 WebView 重排(HwndHost 错位兜底)。
+    /// ★取控件一律走可空字段:启动/换舱期间存在"窗口事件先到、WebView 还没建好"的时间窗
+    /// (初始布局的 SizeChanged、拆舱后重建前的尺寸变化),此时属性 getter 会抛
+    /// InvalidOperationException —— 它跑在 Dispatcher 回调里,会直接弹"未处理的错误"。</summary>
     private void QueueNudgeAll()
     {
         if (_nudgeQueued) return;
@@ -524,8 +1142,10 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(new Action(() =>
         {
             _nudgeQueued = false;
-            NudgeWebView(PlayerWebView);
-            NudgeWebView(UiWebView);
+            var pw = _playerWebViewHost;
+            if (pw != null) NudgeWebView(pw);
+            var uw = _uiWebViewHost;
+            if (uw != null) NudgeWebView(uw);
         }), System.Windows.Threading.DispatcherPriority.SystemIdle);
     }
 
@@ -650,7 +1270,11 @@ public partial class MainWindow : Window
             if (mode == DouyinAuthWindow.AuthMode.Verify)
                 DispatchUi("window.__dsh_verifyLock && window.__dsh_verifyLock(false)");
             // 登录可能换了账号 → 清 sec_uid 缓存,采集时由 ProbeAccountAsync 重新探测
-            if (mode == DouyinAuthWindow.AuthMode.Login) _orchestrator?.ClearSecUid();
+            if (mode == DouyinAuthWindow.AuthMode.Login)
+            {
+                _orchestrator?.ClearSecUid();
+                _ = RefreshCurrentAccountProfileAsync();   // 多账号:登录后回填当前账号档案(昵称/头像/sec_uid)
+            }
             DispatchUi($"window.__dsh_toast && window.__dsh_toast({JsonText(mode == DouyinAuthWindow.AuthMode.Login ? "登录成功" : "验证通过")},false)");
             await AfterAuthSuccessAsync(mode);
         };
@@ -811,7 +1435,8 @@ public partial class MainWindow : Window
         {
             var loggedIn = await IsLoggedInAsync();
             var count = _collector?.Count ?? 0;
-            DispatchUi($"window.__dsh_state && window.__dsh_state({{loggedIn:{(loggedIn ? "true" : "false")},count:{count}}})");
+            // theme 随每次状态广播下发:换账号 = 换 WebView/profile,页面重载后靠这条恢复外观
+            DispatchUi($"window.__dsh_state && window.__dsh_state({{loggedIn:{(loggedIn ? "true" : "false")},count:{count},theme:{JsonText(_settings.Theme)}}})");
             AppLog.Write($"STATE loggedIn={loggedIn} count={count}");
         }
         catch (Exception ex) { AppLog.Write("STATE ERR " + ex.Message); }
@@ -917,7 +1542,18 @@ public partial class MainWindow : Window
                     {
                         var loggedIn = await IsLoggedInAsync();
                         var autoNext = _player?.AutoNext ?? false;
-                        return $"{{\"loggedIn\":{(loggedIn ? "true" : "false")},\"count\":{_collector?.Count ?? 0},\"autoNext\":{(autoNext ? "true" : "false")}}}";
+                        // 数据占用:当前账号数据目录(items/state/resume/export)总大小,MB 保留 1 位
+                        var dataMb = 0.0;
+                        try
+                        {
+                            if (Directory.Exists(_dataDir))
+                                dataMb = new DirectoryInfo(_dataDir)
+                                    .EnumerateFiles("*", SearchOption.AllDirectories)
+                                    .Sum(f => (double)f.Length) / 1048576.0;
+                        }
+                        catch { }
+                        var dataMbText = dataMb.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+                        return $"{{\"loggedIn\":{(loggedIn ? "true" : "false")},\"count\":{_collector?.Count ?? 0},\"autoNext\":{(autoNext ? "true" : "false")},\"dataMb\":{dataMbText},\"theme\":{JsonText(_settings.Theme)}}}";
                     }
 
                 case "collect":
@@ -937,6 +1573,8 @@ public partial class MainWindow : Window
                         var source = _collector.Items;   // 单次快照(每次访问都全量复制,避免重复取)
                         if (source.Count == 0) return "empty";
                         if (!await IsLoggedInAsync()) return "err:未登录,请先点登录";
+                        // ★先拉起播放页(加载态),再筛队列、再取直链
+                        await PreparePlayerAsync("正在获取播放地址…");
                         // 支持按当前筛选条件洗牌:UI 传入选中的 awemeId 列表(可选)
                         var ids = Newtonsoft.Json.JsonConvert.DeserializeObject<string[]>(jsonArgs) ?? Array.Empty<string>();
                         if (ids.Length > 0)
@@ -945,8 +1583,7 @@ public partial class MainWindow : Window
                             source = source.Where(i => idSet.Contains(i.AwemeId)).ToList();
                         }
                         var filtered = source.Where(i => i.Status != 1).OrderByDescending(i => i.CreateTime).ToList();
-                        if (filtered.Count == 0) return "empty";
-                        ShowPlayer();
+                        if (filtered.Count == 0) return PlayerBackToUi("empty");
                         if (_player != null)
                         {
                             _playerRiskReloadCount = 0;   // 用户主动操作 → 重置取链自愈重试上限
@@ -964,6 +1601,8 @@ public partial class MainWindow : Window
                         var awemeId = args.Length > 0 ? args[0] : "";
                         if (awemeId.Length == 0 || _collector == null || _player == null) return "err";
                         if (!await IsLoggedInAsync()) return "err:未登录,请先点登录";
+                        // ★先拉起播放页(加载态):队列筛选/条目定位/取直链都在其后
+                        await PreparePlayerAsync("正在获取播放地址…");
                         // 单次快照:Items 每次访问都全量复制(数万条时数 ms),一条命令只取一次
                         var all = _collector.Items;
                         // 队列 = UI 传入的当前筛选列表(图集/视频/年月/搜索,与 shuffle 同一来源);
@@ -989,15 +1628,14 @@ public partial class MainWindow : Window
                         {
                             // 点击项不在筛选队列(异常兜底):回退全量队列定位,保证能播
                             item = all.FirstOrDefault(i => i.AwemeId == awemeId);
-                            if (item == null) return "err:not found";
+                            if (item == null) return PlayerBackToUi("err:not found");
                             // 失效内容:队列已排除它,播了必黑屏 → 明确报错(而非静默切黑屏播放页)
-                            if (item.Status == 1) return "err:该内容已失效(已删除或私密),无法播放";
+                            if (item.Status == 1) return PlayerBackToUi("err:该内容已失效(已删除或私密),无法播放");
                             queue = all
                                 .Where(i => i.Status != 1)
                                 .OrderByDescending(i => i.CreateTime)
                                 .ToList();
                         }
-                        ShowPlayer();
                         _playerRiskReloadCount = 0;   // 用户主动操作 → 重置取链自愈重试上限
                         _player.SetQueue(queue);
                         var idx = queue.FindIndex(i => i.AwemeId == item.AwemeId);
@@ -1092,8 +1730,167 @@ public partial class MainWindow : Window
                 case "logout":
                     return await LogoutAsync();
 
+                case "accounts":
+                    // 账号面板数据:全部账号 + 当前(头像/显示名/secUid 由登录后采集回填)
+                    {
+                        var list = _accounts.Accounts
+                            .OrderByDescending(a => a.LastUsedAt)
+                            .Select(a => new
+                            {
+                                profileName = a.ProfileName,
+                                displayName = a.DisplayName,
+                                avatarUrl = a.AvatarUrl,
+                                current = a.ProfileName == _account.ProfileName
+                            });
+                        return Newtonsoft.Json.JsonConvert.SerializeObject(new
+                        {
+                            current = _account.ProfileName,
+                            accounts = list
+                        });
+                    }
+
+                case "renameAccount":
+                    {
+                        var args = Newtonsoft.Json.JsonConvert.DeserializeObject<string[]>(jsonArgs) ?? Array.Empty<string>();
+                        if (args.Length >= 2)
+                        {
+                            var acc = _accounts.Find(args[0]);
+                            var name = (args[1] ?? "").Trim();
+                            if (acc != null && name.Length > 0)
+                            {
+                                acc.DisplayName = name.Length > 20 ? name[..20] : name;
+                                if (acc.ProfileName == _account.ProfileName) _account = acc;
+                                SaveAccounts();
+                                return "ok";
+                            }
+                        }
+                        return "err:参数无效";
+                    }
+
+                case "switchAccount":
+                    {
+                        // 轻量换舱:目标账号 profile → 拆旧 WebView 体系 → 按新 profile 重建 → 数据源全量刷新
+                        var args = Newtonsoft.Json.JsonConvert.DeserializeObject<string[]>(jsonArgs) ?? Array.Empty<string>();
+                        var target = args.Length > 0 ? _accounts.Find(args[0]) : null;
+                        if (target == null) return "err:账号不存在";
+                        if (target.ProfileName == _account.ProfileName) return "already";
+                        if (_switchingAccount) return "err:正在切换账号,请稍候";
+                        _ = SwitchAccountAsync(target);
+                        return "ok";
+                    }
+
+                case "addAccount":
+                    {
+                        // 新增账号:新 profile(userN)→ 换舱到空 profile → 弹登录窗
+                        if (_switchingAccount) return "err:正在切换账号,请稍候";
+                        var acc = new AccountInfo
+                        {
+                            ProfileName = _accounts.NextProfileName(),
+                            DisplayName = "账号" + _accounts.NextProfileName().Replace("user", ""),   // 与 profile 名对齐:profile=userN → 显示名"账号N"
+                            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                        };
+                        _accounts.Accounts.Add(acc);
+                        _accounts.Save(_rootDir);
+                        _ = SwitchAccountAsync(acc, openLoginAfterSwitch: true);
+                        return "ok";
+                    }
+
+                case "deleteAccount":
+                    // 删除指定"应用账号"(数据+登录态目录改名留档,清单移除;当前在线账号不可删,须先切换)
+                    {
+                        var args = Newtonsoft.Json.JsonConvert.DeserializeObject<string[]>(jsonArgs) ?? Array.Empty<string>();
+                        var target = args.Length > 0 ? _accounts.Find(args[0]) : null;
+                        if (target == null) return "err:账号不存在";
+                        if (target.ProfileName == _account.ProfileName) return "err:不能删除当前正在使用的账号,请先切换到其他账号";
+                        if (_accounts.Accounts.Count <= 1) return "err:至少保留一个账号";
+                        if (_switchingAccount) return "err:正在切换账号,请稍候";
+
+                        // 数据目录改名留档(绝不物理删除用户数据;用户可手动找回或后续提供恢复入口)
+                        var stamp = DateTime.Now.ToString("MMdd_HHmmss");
+                        var dataDir = DataDirOf(target);
+                        var profDir = ProfileDirOf(target);
+                        try
+                        {
+                            if (Directory.Exists(dataDir)) Directory.Move(dataDir, dataDir + "_deleted_" + stamp);
+                            if (Directory.Exists(profDir)) Directory.Move(profDir, profDir + "_deleted_" + stamp);
+                        }
+                        catch (Exception ex)
+                        {
+                            AppLog.Write("ACCOUNT delete dir err " + ex.Message);
+                            return "err:目录占用,无法删除(请稍后再试)";
+                        }
+                        _accounts.Accounts.Remove(target);
+                        _accounts.Save(_rootDir);
+                        AppLog.Write($"ACCOUNT deleted {target.ProfileName} (dirs kept with _deleted_{stamp})");
+                        return "ok";
+                    }
+
                 case "stop":
                     if (_player != null) await _player.StopAsync();
+                    return "ok";
+
+                case "resumeInfo":
+                    // "继续上次播放"提示条数据:上次手动退出时的条目/位置/队列长度(与当前账号数据域一致)
+                    {
+                        if (_collector == null || _collector.Items.Count == 0) return "null";
+                        var snap = new ResumeStore(_dataDir).Load();
+                        if (snap == null || !snap.ManualExit || snap.QueueIds.Count == 0) return "null";
+                        var alive = new HashSet<string>(_collector.Items.Select(i => i.AwemeId));
+                        var item = _collector.Items.FirstOrDefault(i => i.AwemeId == snap.AwemeId);
+                        if (item == null || !alive.Contains(snap.AwemeId)) return "null";
+                        var usable = snap.QueueIds.Count(alive.Contains);
+                        return Newtonsoft.Json.JsonConvert.SerializeObject(new
+                        {
+                            awemeId = snap.AwemeId,
+                            desc = Truncate(item.Desc, 24),
+                            posSec = (int)snap.PositionSec,
+                            queueCount = usable
+                        });
+                    }
+
+                case "resumePlayback":
+                    // 继续上次播放:先拉起播放页 → 按快照重建队列 → 跳到记忆条目 → seek 记忆位置
+                    {
+                        if (_unlikeCts != null) return "err:批量取消点赞运行中,请先完成或停止";
+                        if (_collector == null || _player == null) return "err";
+                        if (!await IsLoggedInAsync()) return "err:未登录,请先点登录";
+                        // ★先拉起播放页(加载态),再读快照/重建队列/取直链:
+                        //   点击后立刻看到播放页,等待感落在"页面已在加载"上,而不是主界面纹丝不动
+                        await PreparePlayerAsync("正在恢复上次播放…");
+                        var snap = new ResumeStore(_dataDir).Load();
+                        if (snap == null) return PlayerBackToUi("err:没有播放快照");
+                        var all = _collector.Items;
+                        var alive = all.Where(i => snap.QueueIds.Contains(i.AwemeId) && i.Status != 1)
+                                       .OrderBy(i => snap.QueueIds.IndexOf(i.AwemeId))
+                                       .ToList();
+                        var idx = alive.FindIndex(i => i.AwemeId == snap.AwemeId);
+                        if (idx < 0) return PlayerBackToUi("err:上次的条目已失效");
+                        _playerRiskReloadCount = 0;
+                        _player.SetQueue(alive);
+                        _player.SetResumeTarget(snap.AwemeId, snap.PositionSec);   // 播到该条时 seek
+                        await _player.PlayAtAsync(idx, userInitiated: true);
+                        return "ok";
+                    }
+
+                case "themeChanged":
+                    // 深色模式联动:UI 页主题已切换( resolved 为 light/dark ),同步窗口底色
+                    // (WebView 是 HwndHost 不透明,窗口露边区域必须配套,否则深色下露白刺眼)
+                    // ★同时落盘到 settings.json:主题是应用级偏好,不能只存在各账号 profile 的
+                    //   localStorage 里(换账号 = 换 profile → 深色会"丢失")。
+                    // ★采纳规则:宿主还没记过 → 采纳页面这次上报的值(老用户的深色偏好原先就存在
+                    //   profile 的 localStorage 里,不能因"清单里还没这项"把他刷回浅色);记过之后
+                    //   以宿主为准 —— 页面加载时带着另一个 profile 的旧值上报,不再覆盖它。
+                    {
+                        var args = Newtonsoft.Json.JsonConvert.DeserializeObject<string[]>(jsonArgs) ?? Array.Empty<string>();
+                        var reported = Storage.AppSettings.Normalize(args.Length > 0 ? args[0] : null);
+                        if (_settings.Theme.Length == 0)
+                        {
+                            _settings.Theme = reported;
+                            _settings.Save(_rootDir);
+                            AppLog.Write($"THEME adopt {reported} (first run, settings.json created)");
+                        }
+                        ApplyWindowTheme(_settings.Theme);
+                    }
                     return "ok";
 
                 case "autonext":

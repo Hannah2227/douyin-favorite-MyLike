@@ -31,6 +31,7 @@ let selected = new Set();
 let yearFilter = '', monthFilter = '', searchText = '';
 let navFilter = 'all';     // all | video | gallery
 let loggedIn = false;
+let curTheme = 'light';    // 当前主题(宿主 settings.json 为准,localStorage 仅首帧回显)
 let collecting = false;
 let selectMode = false;    // 选择模式:点卡片=勾选,不播放
 let renderedCount = 0;     // 分批渲染游标
@@ -100,24 +101,20 @@ function fmtDate(ts) {
 }
 
 // ---------- 登录态 ----------
+// v1.0.7:登录/退出统一收进左下角账号入口(未登录点击=登录;已登录=账号面板),顶栏不再有登录按钮
 function applyLoginState() {
-  const btnLogin = document.getElementById('btn-login');
-  const btnLogout = document.getElementById('btn-logout');
-  if (loggedIn) {
-    btnLogin.classList.add('hidden');
-    btnLogout.classList.remove('hidden');
-    setText('login-state', '已登录');
-  } else {
-    btnLogin.classList.remove('hidden');
-    btnLogout.classList.add('hidden');
-    setText('login-state', '未登录');
-  }
+  loadAccountEntry();   // 入口显示随登录态刷新(头像/昵称/占位)
 }
 window.__dsh_state = function (st) {
   loggedIn = !!st.loggedIn;
   applyLoginState();
   setText('stat-total', st.count || items.length);
+  // 数据占用(MB):"失效"卡已替换为"占用 (MB)"卡(v1.0.7,失效数卡片信息量低)
+  if (typeof st.dataMb === 'number') setText('stat-disk', st.dataMb);
   if (typeof st.autoNext === 'boolean' && window.__dsh_autoNext) window.__dsh_autoNext(st.autoNext);
+  // 主题:宿主为准(settings.json,应用级)。localStorage 只是首帧快速回显,
+  // 换账号会换 WebView2 profile → localStorage 是另一份,必须靠这里校正回来。
+  if (st.theme === 'dark' || st.theme === 'light') window.__dsh_setTheme(st.theme);
 };
 
 // 自动连播开关回显(宿主广播;元素惰性获取,任意时机可调)
@@ -174,7 +171,7 @@ function renderStats() {
   setText('stat-total', total);
   setText('stat-videos', videos);
   setText('stat-gallery', gallery);
-  setText('stat-invalid', invalid);
+  // stat-invalid 已被"占用 (MB)"卡替换(占用由 __dsh_state 的 dataMb 驱动;采集期间也随刷新更新)
   setText('stat-years', years.size);
   setText('nav-all-count', total);
   setText('nav-gallery-count', gallery);
@@ -391,25 +388,14 @@ on('btn-stop-collect', 'click', async () => {
 });
 on('btn-shuffle', 'click', async () => {
   if (filtered.length === 0) { toast('当前筛选下没有可播放的内容', true); return; }
-  if (!loggedIn) { toast('请先点右上角「登录」', true); return; }
+  if (!loggedIn) { toast('请先点左下角「账号」登录', true); return; }
   // 按当前筛选条件(年份/月份/分类/搜索)洗牌
   const ids = filtered.map(i => i.awemeId);
   const r = await call('shuffle', ids);
   if (r === 'empty') toast('没有可播放的内容', true);
   else if (r && String(r).indexOf('err') === 0) toast(String(r), true);
 });
-on('btn-login', 'click', async () => {
-  const r = await call('login');
-  if (r === 'already') toast('已是登录状态');
-  else if (r && String(r).indexOf('err') === 0) toast(String(r), true);
-  else toast('已打开抖音登录页,登录成功后会自动关闭');
-});
-on('btn-logout', 'click', async () => {
-  if (!confirm('确定退出登录吗?\n退出后将清除本机保存的抖音登录信息,下次使用需重新登录。')) return;
-  const r = await call('logout');
-  if (r === 'ok') { toast('已退出登录'); }
-  else toast(r || '操作失败', true);
-});
+// 退出登录入口移入账号面板(账号面板内按 profile 触发)
 on('btn-select', 'click', () => {
   selectMode = !selectMode;
   if (selectMode) toast('点击卡片勾选内容,再点「删除」或「取消点赞」');
@@ -520,7 +506,9 @@ document.querySelector('.topbar').addEventListener('dblclick', e => {
 // 拖动窗口兜底:CSS app-region 不生效时,按住顶栏/侧栏空白处拖动(经宿主 Win32 发起)
 function startWindowDrag(e) {
   if (e.button !== 0) return;                                    // 只响应左键
-  if (e.target.closest('button, input, select, .side-item, .win-controls')) return;
+  // ★排除可交互元素与账号入口(否则 mousedown 先启动 Win32 模态拖动循环,click 永远不会触发
+  //   —— 这就是"点账号没反应"的根因:account-entry 在 .sidenav 里被拖动兜底劫持)
+  if (e.target.closest('button, input, select, .side-item, .win-controls, .account-entry, .help-btn')) return;
   call('winDrag');
 }
 ['.topbar', '.sidenav'].forEach(sel => {
@@ -540,141 +528,172 @@ function setPlaying(text) {
   if (text) { document.getElementById('playing-text').textContent = text; bar.classList.remove('hidden'); }
   else bar.classList.add('hidden');
 }
-window.__dsh_onPlaying = setPlaying;
+// ★播放结束/关掉播放页(宿主 Closed → text 为空)时,立刻回读一次快照刷新"继续上次播放"提示条。
+// 宿主落盘顺序是 Stopped → SnapshotRequested(写 resume.json)→ Closed(推这里),所以此刻读到的
+// 就是刚退出的那条进度;此前只在页面加载时查一次,用户必须刷新主界面才看得到。
+function setPlayingAndSyncResume(text) {
+  setPlaying(text);
+  if (!text) checkResume();
+}
+window.__dsh_onPlaying = setPlayingAndSyncResume;
 window.__dsh_refresh = refresh;
 window.__dsh_toast = toast;
 
 // ---------- 帮助弹窗(使用教程 / 常见问题) ----------
 const HELP_TUTORIAL = `
-<h4>一、快速上手(三步)</h4>
+<h4>一、三步上手</h4>
 <ol>
-  <li><b>登录</b>:点右上角「登录」→ 在弹出的页面完成抖音登录(支持扫码)→ 成功后窗口自动关闭。</li>
-  <li><b>采集</b>:点右上角红色「采集」按钮,自动抓取你抖音账号的「喜欢列表」;顶部进度条实时显示新增数量,采完自动停止。</li>
-  <li><b>播放</b>:点任意卡片,从该卡片开始顺序播放;或点「洗牌播放」随机播放当前筛选下的全部内容。播放页底部一排按钮都能点(连播 / 倍速 / 评论 / 全屏 / 播放列表)。</li>
+  <li><b>登录</b>:点左下角<b>账号区</b>(写着「未登录」的那一栏)→ 在弹出的账号面板里点当前这条 → 弹出抖音登录页(支持扫码 / 手机号),登录成功后窗口自动关闭。</li>
+  <li><b>采集</b>:点仪表盘右侧的红色「<b>&#10084; 采集</b>」按钮,抓取你抖音账号的「喜欢」列表;顶部进度条实时显示进度,采完自动停止。</li>
+  <li><b>播放</b>:点任意卡片从这条开始顺序播放;或点「<b>洗牌播放</b>」随机播放当前筛选下的全部内容。</li>
 </ol>
 
-<h4>二、采集说明</h4>
+<h4>二、账号(支持多账号)</h4>
 <ul>
-  <li><b>采集前预检</b>:每次点「采集」会先检查接口状态(几秒到十几秒),显示「正在检查接口状态…」属正常流程。</li>
-  <li><b>增量采集</b>:再次点「采集」会先自动补上新喜欢的内容(已采集的自动去重),补完即停,没新内容时几秒内结束。</li>
-  <li><b>断点续采</b>:采集中途失败、被限流或手动停止后,再点「采集」会先补头部新内容,再自动从上次的进度继续采未完成的旧内容,两边都不会遗漏。</li>
-  <li><b>超长列表</b>:单轮最多翻 200 页(约 3600 条),到达上限自动从断点分轮继续,进度条会显示「第 N 轮」,全程无需手动操作。</li>
-  <li><b>限流与验证</b>:采集过快可能触发抖音限流,此时会弹出验证窗口——窗口会一直等到接口恢复才自动关闭并继续采集,期间请勿反复点「采集」。</li>
-  <li><b>数量说明</b>:抖音接口每页固定返回 18 条;最终总数可能与抖音显示的喜欢数不一致(部分内容已失效、下架或删除)。</li>
+  <li>左下角账号区随时打开<b>账号面板</b>:切换、新增、改名、退出登录、删除都在里面。</li>
+  <li><b>添加账号</b>:点「＋ 添加账号」→ 自动切到新账号并弹出登录页。每个账号有<b>独立的登录态、独立的列表与采集进度</b>,互不干扰。</li>
+  <li><b>切换账号</b>:点面板里其他账号那一行,约几秒(屏幕中间转圈),切完列表就换成那个账号的数据。</li>
+  <li><b>改名</b>:鼠标移到账号行右侧点「改名」,起个你认得出的名字(比如"小号")。</li>
+  <li><b>删除账号</b>:数据与登录态会改名留档(不会立即物理删除),但列表里不再显示。</li>
+  <li><b>退出登录</b>(只作用于当前账号):清除本机登录信息,已采集的数据保留;下次用该账号需重新登录。</li>
+  <li><b>同一个抖音号只算一个账号</b>:如果在新账号里登录了老的抖音号,两份数据会自动合并(旧的留档),不需要你手工处理。</li>
 </ul>
 
-<h4>三、播放页功能</h4>
+<h4>三、采集</h4>
 <ul>
-  <li><b>播放队列</b>:点控制条「播放列表」或按 <kbd>Q</kbd> 展开右侧队列(当前在播的红色呼吸高亮、自动居中)。点任意条目立即跳到那一条;列表很长时向下滚动会自动继续加载。连播 / 跳转时高亮自动跟随。</li>
-  <li><b>倍速</b>:控制条「1x」按钮循环切换 0.75x → 1x → 1.25x → 1.5x → 2x,切歌后保持你的倍速。</li>
-  <li><b>自动连播</b>:点「连播关/开」或按 <kbd>A</kbd>;开启后一条播完自动播下一条,播到队尾自动停止返回列表,选择会记忆。</li>
-  <li><b>评论</b>:点「评论」打开该内容的抖音原页面看评论,关闭后回到原进度继续播放。</li>
-  <li><b>全屏 / 时间码</b>:点「全屏」或双击画面进入全屏;右下角实时显示当前 / 总时长。</li>
-  <li><b>播放范围跟筛选走</b>:在图集分类下点卡片,顺序播放的都是图集;洗牌播放同样只播当前筛选结果。</li>
-  <li><b>实时取链</b>:每次播放都实时向抖音获取最新播放地址(保证链接新鲜),打开前等待 1~2 秒属正常。</li>
+  <li><b>预检</b>:每次点「采集」先检查接口状态,显示「正在检查接口状态…」属正常(几秒到几十秒),通过后自动翻页。</li>
+  <li><b>增量</b>:再次采集只补新点赞的内容,已采的自动去重;没有新内容时几秒内结束。</li>
+  <li><b>断点续采</b>:中途失败、被限流或手动停止后,再点「采集」会先补头部新内容,再从断点继续采没采完的旧内容,两边都不漏。</li>
+  <li><b>超长列表</b>:单轮最多翻 200 页(约 3600 条),到上限自动从断点开下一轮,进度条显示「第 N 轮」,"已采 X 条"一直累加。</li>
+  <li><b>限流与验证</b>:采集过快会被抖音限流,此时弹出验证窗口 —— 拖完滑块(或纯限流时等接口自己恢复)就自动关闭并继续采集;这期间请勿反复点「采集」。</li>
+  <li><b>数量说明</b>:最终数量通常少于抖音显示的喜欢数,因为已删除 / 下架 / 私密的内容接口不再返回。</li>
 </ul>
 
-<h4>四、播放快捷键</h4>
+<h4>四、播放页</h4>
 <ul>
-  <li>以下键位均可在播放页控制条「快捷键」面板<b>自定义</b>(点「改键」后直接按新键;支持单个动作还原或全部恢复默认),设置保存在本机。</li>
-  <li><kbd>空格</kbd> 播放 / 暂停</li>
-  <li><kbd>↑</kbd> / <kbd>PageUp</kbd> 上一首;<kbd>↓</kbd> / <kbd>PageDown</kbd> 下一首</li>
-  <li><kbd>←</kbd> / <kbd>→</kbd> 快退 / 快进 10 秒;图集中为上一张 / 下一张</li>
-  <li><kbd>F</kbd> 或双击画面 全屏;<kbd>M</kbd> 静音;<kbd>A</kbd> 自动连播;<kbd>Q</kbd> 播放列表;<kbd>Esc</kbd> 停止并返回列表(<kbd>Esc</kbd> 固定不可改)</li>
-  <li>播放页空白处<b>滚动滚轮</b> = 上 / 下一首(抖音式);播放列表展开后,在列表范围内滚动只滚动列表、不切歌。</li>
+  <li><b>先出画面再取链</b>:点播放会立刻打开播放页,再实时获取播放地址(1~2 秒);链接不落盘,所以每次拿到的都是新鲜直链。</li>
+  <li><b>控制条</b>:快捷键 · 取消点赞 · 倍速 · 评论 · 上一首 · 播放暂停 · 下一首 · 音量 · 连播 · 全屏 · 播放列表;鼠标不动几秒自动淡出,动一下鼠标就回来。</li>
+  <li><b>播放列表</b>:点「播放列表」或按 <kbd>Q</kbd> 展开右侧队列(当前条目红色高亮、自动跟随);点任意条目直接跳播,长列表滚动自动续载。</li>
+  <li><b>倍速</b>:点「1x」循环 0.75x → 1x → 1.25x → 1.5x → 2x,切歌后保持。</li>
+  <li><b>自动连播</b>:主界面「自动连播」勾选框、播放页「连播」按钮、快捷键 <kbd>A</kbd> 三处同源,选择会记忆。</li>
+  <li><b>图集与实况</b>:图集自动轮播,进度条可预览并跳选任意一张,<kbd>←</kbd> <kbd>→</kbd> 手动翻张;带实况(动图)的图集会播放动态画面,播完停一下再继续,和抖音里的节奏一致。</li>
+  <li><b>看评论</b>:点「评论」打开抖音原页,关掉后回到刚才的进度继续播。</li>
+  <li><b>移动窗口</b>:播放页最顶部一条是拖动区(按住可拖窗口),右上角是最小化;按 <kbd>Esc</kbd> 或点 ✕ 停止播放回到列表。</li>
 </ul>
 
-<h4>五、图集</h4>
+<h4>五、播放快捷键(可自定义)</h4>
 <ul>
-  <li>打开图集后自动轮播;<kbd>空格</kbd> 暂停 / 继续轮播。</li>
-  <li>鼠标悬停进度条可预览并直接跳选任意一张;<kbd>←</kbd> <kbd>→</kbd> 手动翻张。</li>
-  <li>图文/图集作品的文字想看全文:标题旁有「展开」按钮(简介超过两行时出现),点开可查看完整文案,文字可选中复制。</li>
+  <li>控制条「快捷键」里可以<b>改键</b>:点「改键」后直接按新键;也能单个还原或全部恢复默认,设置保存在本机。</li>
+  <li><kbd>空格</kbd> 播放 / 暂停 · <kbd>↑</kbd> <kbd>PageUp</kbd> 上一首 · <kbd>↓</kbd> <kbd>PageDown</kbd> 下一首</li>
+  <li><kbd>←</kbd> <kbd>→</kbd> 快退 / 快进 10 秒(图集里是上一张 / 下一张)</li>
+  <li><kbd>F</kbd> 全屏 · <kbd>M</kbd> 静音 · <kbd>A</kbd> 自动连播 · <kbd>Q</kbd> 播放列表 · <kbd>Esc</kbd> 停止并返回(固定不可改)</li>
+  <li>「取消点赞 / 倍速 / 打开原页」默认没有键位,想要就到「快捷键」里自己配。</li>
+  <li>播放页空白处<b>滚动滚轮</b> = 上 / 下一首;播放列表展开时,在列表范围内滚动只滚列表、不切歌。</li>
 </ul>
 
-<h4>六、筛选与搜索</h4>
+<h4>六、主界面</h4>
 <ul>
-  <li>左栏「全部 / 图集 / 视频」切换分类,右侧数字为各分类数量。</li>
-  <li>列表上方的年份、月份筛选与「洗牌播放」联动:筛选后洗牌只播筛选出的内容。</li>
-  <li>顶部搜索框支持按标题、作者搜索;输入后按回车或点「搜索」执行(不实时过滤,避免大列表卡顿)。<b>清空搜索框即恢复全部列表</b>(退格删空立即生效,无需回车)。</li>
+  <li><b>分类</b>:左栏「全部 / 图集 / 视频」,右侧数字是各分类条数。</li>
+  <li><b>筛选与搜索</b>:年份、月份下拉与「洗牌播放」联动(筛选后只播筛选结果);搜索按标题 / 作者,<b>按回车或点「搜索」执行</b>(不实时过滤,避免大列表卡顿),<b>清空输入框立即恢复全部</b>。</li>
+  <li><b>继续上次播放</b>:上次是手动退出播放页(或播放中直接关掉应用)的话,这里会出现一条提示,点「继续播放」回到那条与那个位置;不想要点 ✕ 忽略。整轮播完不会有这条提示。</li>
+  <li><b>占用 (MB)</b>:当前账号数据目录的体积(含导出文件),只是让你心里有数。</li>
 </ul>
 
 <h4>七、数据管理</h4>
 <ul>
-  <li><b>删除</b>:点「选择」进入勾选模式 → 勾选条目 → 「删除」。删除仅移除本地记录,不可恢复。</li>
-  <li><b>取消点赞</b>:同样的勾选模式点「取消点赞」,逐个在抖音侧取消(同时移除本地)。逐条自动节流、进度条可随时停止;触发风控会自动暂停并弹验证,验证后可继续(未成功的保留本地)。几百条大操作与采集 / 播放互斥,运行中那两处入口会置灰。</li>
-  <li><b>备份</b>:「导出」生成 .dylist 备份文件;「导入」可随时恢复,适合换电脑或重装系统。</li>
-  <li><b>退出登录</b>:仅清除本机登录信息,不影响已采集的数据。</li>
+  <li><b>删除</b>:点「选择」→ 勾选 → 「删除」。只删本地记录,抖音上的点赞还在。</li>
+  <li><b>取消点赞</b>:勾选后点「取消点赞」,会真的去抖音取消(成功后同步移出本地)。逐条节流、底部进度条随时可「停止」;触发风控会自动暂停,验证后继续;一次超过 50 条会先让你确认一次风险。</li>
+  <li><b>导出 / 导入</b>:「导出」生成 .dylist 备份;「导入」是<b>合并式</b>的(按内容去重),所以也能用它把多个账号的内容汇总到一个账号里看。</li>
+  <li><b>数据在哪</b>:全部在本机 <b>%LOCALAPPDATA%\DouyinShuffle</b>,每个账号一个子目录。换电脑 / 重装系统前请先「导出」。</li>
+</ul>
+
+<h4>八、外观与窗口</h4>
+<ul>
+  <li>右上角 <b>🌙 / ☀️</b> 一键切换深色 / 浅色;这是应用级设置,<b>切换账号也会保持</b>。</li>
+  <li>窗口无边框:按住顶部空白处可拖动窗口,右上角三个按钮是最小化 / 最大化 / 关闭;调整大小用「最大化」或 <kbd>Win</kbd>+<kbd>↑</kbd> / <kbd>Win</kbd>+<kbd>↓</kbd>。</li>
 </ul>`;
 
 const HELP_FAQ = `
-<p class="faq-q">点了「采集」,进度条显示「正在检查接口状态…」要等多久?</p>
-<p class="faq-a">这是采集前的接口预检,正常几秒到十几秒,目的是提前发现接口是否可用(而不是开始采集后黑等半分钟)。通过后自动开始翻页;没通过会给出明确提示,不会干等。</p>
+<p class="faq-q">点「采集」后一直显示「正在检查接口状态…」,要等多久?</p>
+<p class="faq-a">这是采集前的接口预检,正常几秒到几十秒,目的是提前发现接口能不能用(而不是开始采集后干等)。通过后自动开始翻页;没通过会明确提示,不会无意义地等。</p>
 
-<p class="faq-q">采集进行中反复点「采集」会加快速度吗?</p>
-<p class="faq-a">不会,反而有害。采集是单线程队列,反复点击只会得到「已有采集在进行」的提示;更糟糕的是频繁请求更容易触发抖音限流。点一次后耐心等进度即可,采完自动停止。</p>
+<p class="faq-q">采集过程中反复点「采集」会更快吗?</p>
+<p class="faq-a">不会,反而有害。采集是单线程队列,重复点击只会得到「已有采集在进行」的提示,而频繁请求更容易触发抖音限流。点一次等进度就好。</p>
 
-<p class="faq-q">为什么进度条显示的页数会重新从「第 1 页」开始?</p>
-<p class="faq-a">列表超过约 3600 条时,单轮翻页达到 200 页上限,应用会自动开新的一轮接着采(不是重采!)。进度条上的「第 N 轮」就是当前轮次,总进度看「已采 X 条」那个数字,它是一直累加的。</p>
+<p class="faq-q">进度条怎么又从「第 1 页」开始了?</p>
+<p class="faq-a">列表超过约 3600 条时,单轮翻页达到 200 页上限,应用会自动开新一轮接着采(不是重采)。「第 N 轮」是当前轮次,总进度看「已采 X 条」,它一直累加。</p>
 
-<p class="faq-q">弹出滑块验证窗口后,我该做什么?</p>
-<p class="faq-a">三选一:① 有滑块就拖完它;② 页面没有滑块(纯接口限流)就放着等,接口恢复的瞬间窗口自动关闭并继续采集;③ 等不及可以点右上角 × 关闭窗口,稍后再点「采集」(断点会保留,不会重复采)。切忌:验证窗口开着的时候反复点「采集」。</p>
+<p class="faq-q">弹出滑块验证窗口后我该做什么?</p>
+<p class="faq-a">三选一:① 有滑块就拖完;② 页面没有滑块(纯接口限流)就放着等,接口恢复的瞬间窗口自动关闭并继续采集;③ 等不及可以关掉窗口,稍后再点「采集」(断点保留,不会重复采)。切忌验证窗口开着的时候反复点「采集」。</p>
 
-<p class="faq-q">限流了是什么体验?要等多久?</p>
-<p class="faq-a">表现:采集停止并弹出验证窗口,或提示「接口被限」。等待时间由抖音决定,一般几分钟到几十分钟。期间:已采到的数据全部安全保留;不要反复点「采集」刺激接口;实在等不了就关掉验证窗,过段时间再点「采集」自动断点续采。</p>
+<p class="faq-q">被限流了是什么体验?要等多久?</p>
+<p class="faq-a">表现为采集停止并弹出验证窗口,或提示接口被限。等待时间由抖音决定,一般几分钟到几十分钟。期间已采到的数据全部安全保留;不要反复点「采集」刺激接口;实在等不了就关掉验证窗,过段时间再点「采集」自动断点续采。</p>
 
-<p class="faq-q">采集中途失败了(网络断/限流/手动停止),之前的进度会丢吗?</p>
-<p class="faq-a">不会。已采到的内容实时落盘,断点自动保存;再点「采集」从断点继续,不重复也不遗漏。中途关掉应用甚至重启电脑,断点同样有效。</p>
+<p class="faq-q">采集中途失败 / 网络断 / 手动停止,之前的进度会丢吗?</p>
+<p class="faq-a">不会。已采内容实时落盘,断点自动保存;再点「采集」从断点继续,不重复也不遗漏。中途关掉应用甚至重启电脑,断点同样有效。</p>
 
-<p class="faq-q">采集会重复抓取吗?</p>
-<p class="faq-a">不会。已入库内容自动去重;上次采完后再次采集,翻到断点即自动完成,只补新内容。</p>
-
-<p class="faq-q">搜索完清空输入框,列表怎么还是搜索结果?</p>
-<p class="faq-a">旧版本需要再按一次回车才会恢复,现在<b>清空输入框立即恢复全部列表</b>(退格删空或剪切清空都生效);也可以清空后按回车。如果搜索词还在框里,按回车重新执行即可。</p>
-
-<p class="faq-q">为什么每次点「采集」有时候不加、最多只加几条?</p>
-<p class="faq-a">这是增量采集的正常表现,不是漏采:每次采集只抓"上次采集之后新点赞的那几条"——如果你在这期间没怎么点赞,自然不增加或只加几条。想验证:先在抖音里给几条新视频点赞,再点一次「采集」,它们就会进来。真正需要担心的是"上次没采完被中断"(界面会提示"可从断点续采"),那种情况再点一次会从断点补全,而不是走上面的增量。</p>
+<p class="faq-q">为什么每次点「采集」只加几条,甚至一条都不加?</p>
+<p class="faq-a">这是增量采集的正常表现:每次只抓"上次采集之后新点赞的那几条"。想验证:先在抖音里给几条新视频点赞,再点「采集」,它们就会进来。真正需要留意的是"上次没采完被中断"(界面会提示可从断点续采),那种情况再点一次会从断点补全。</p>
 
 <p class="faq-q">为什么采集到的数量比抖音里显示的喜欢数少?</p>
-<p class="faq-a">正常现象。部分内容已被删除、下架或设为私密,接口不再返回;能返回但无法播放的在列表中标记「失效」。最终数量 ≤ 抖音显示的喜欢数。</p>
+<p class="faq-a">正常现象。部分内容已被删除、下架或设为私密,接口不再返回。最终数量 ≤ 抖音显示的喜欢数,少几千到几万条都属正常。</p>
 
-<p class="faq-q">点「停止」之后马上又点「采集」,怎么没反应?</p>
-<p class="faq-a">停止需要几秒钟收尾(旧循环退出+数据落盘),应用会等收尾完成后再接受新一次采集。稍等几秒再点即可,进度条消失后再点最稳。</p>
+<p class="faq-q">怎么添加 / 切换账号?切换要多久?</p>
+<p class="faq-a">左下角账号区 → 面板里「＋ 添加账号」(会直接进登录页)或点其他账号那一行切换。切换要重启一遍内置浏览器环境,约几秒,期间屏幕中间转圈,属正常;每个账号的列表、采集进度、登录态都是独立的。</p>
 
-<p class="faq-q">为什么有些条目标着「失效」?</p>
-<p class="faq-a">内容已被作者删除或设为私密。失效条目不参与播放与洗牌;可以留着,也可以在「选择」模式下勾选删除。</p>
+<p class="faq-q">我在新账号里登录了同一个抖音号,数据怎么合到一起了?</p>
+<p class="faq-a">这是有意的:一个抖音号只对应一个应用账号。检测到你登录的抖音号和另一个账号是同一个人时,那份数据会自动合并过来(旧的改名留档,不删除),避免同一个号在本地出现两份互相矛盾的数据。</p>
 
-<p class="faq-q">点卡片后提示「正在获取播放地址…」要等一下?</p>
-<p class="faq-a">正常现象。播放地址实时向抖音获取(不落盘,保证链接始终可播),首次打开需 1~2 秒。</p>
+<p class="faq-q">我有多个抖音号,能把它们的内容放在一个列表里看吗?</p>
+<p class="faq-a">可以,用「导出 / 导入」实现:在账号 A 点「导出」,切到账号 B 点「导入」选择这个文件。导入是<b>合并式</b>的(按内容去重),B 里已有的不会重复,没有的会补进来。多个号就重复"导出 → 切换 → 导入"几次,最终一个账号里就是合集(各账号自己的原始数据不受影响)。</p>
 
-<p class="faq-q">播放失败、黑屏,或播了几秒卡住怎么办?</p>
-<p class="faq-a">播放页有「跳过」按钮,点它直接切下一首;也可以按 <kbd>→</kbd> 快进看看是否是卡顿。长时间暂停后播不动,切下一首再切回来即可(会重新取链)。</p>
-
-<p class="faq-q">视频有声音但没有画面(或整个画面白屏)?</p>
-<p class="faq-a">分两种:① 部分内容为 H.265 编码,系统没装 HEVC 解码时会「有声无画」,会自动尝试备用链接,仍不行请安装 Windows「HEVC 视频扩展」;② 如果整个播放界面都白(连按钮都没有)而浏览器打开抖音正常,多半是 WebView2 Runtime 版本太旧,请到微软官网下载安装最新 Evergreen 版后重启应用。</p>
-
-<p class="faq-q">「取消点赞」中途停住/失败了,会不会把数据弄乱?</p>
-<p class="faq-a">不会。只有抖音确认取消成功的条目才会从本地移除,失败/被风控拦下的都会保留;成功一条立即保存,随时可停止,重跑只处理剩余。勾选数量大时请耐心(每条有节流间隔),并留意弹窗里的验证提示。</p>
-
-<p class="faq-q">「删除」和「取消点赞」有什么区别?</p>
-<p class="faq-a">「删除」只把这条从本地列表移除,抖音上的点赞还在;「取消点赞」是真正去抖音取消点赞(成功后本地同步移除),请看清按钮再点。</p>
-
-<p class="faq-q">播放列表里为什么看不到全部几千条?</p>
-<p class="faq-a">列表按需加载:打开时围绕当前播放条目加载一段,向下滚动会自动继续加载后面的条目,不必一次渲染几万行。播放列表只是当前这次播放会话的队列,关闭应用不保存。</p>
-
-<p class="faq-q">窗口能自由拖动大小吗?感觉边缘拖不动。</p>
-<p class="faq-a">应用是无边框窗口,边缘缩放被播放内核占满,无法拖边;调整大小请用右上角「最大化 / 还原」,或 Windows 快捷键 <kbd>Win</kbd>+<kbd>↑</kbd>(最大化)、<kbd>Win</kbd>+<kbd>↓</kbd>(还原)、<kbd>Win</kbd>+<kbd>←</kbd>/<kbd>→</kbd>(贴半屏)。</p>
-
-<p class="faq-q">数据保存在哪里?重装系统会丢吗?</p>
-<p class="faq-a">全部数据在本机:C:\\Users\\&lt;用户名&gt;\\AppData\\Local\\DouyinShuffle\\Data。重装系统或换电脑前请先用「导出」备份,新环境用「导入」恢复。</p>
+<p class="faq-q">删除账号后,那个号的数据去哪了?</p>
+<p class="faq-a">数据目录与登录态会被改名留档(形如 <code>user2_deleted_0913_0040</code>),不会立即物理删除,账号面板里不再显示。想找回可以在 <b>%LOCALAPPDATA%\DouyinShuffle</b> 里找到对应目录。</p>
 
 <p class="faq-q">退出登录会删掉采集的数据吗?</p>
-<p class="faq-a">不会。退出登录只清除登录信息,数据完整保留;重新登录后可继续增量采集。</p>
+<p class="faq-a">不会。退出登录只清除本机登录信息(仅当前账号),数据完整保留,重新登录后可继续增量采集。</p>
+
+<p class="faq-q">点卡片后要等一下才出画面,正常吗?</p>
+<p class="faq-a">正常。点下去会立刻打开播放页,然后实时向抖音获取播放地址(1~2 秒);播放地址不落盘,每次都是新的,这是为了链接永久可用。</p>
+
+<p class="faq-q">播放失败、黑屏,或播了几秒卡住怎么办?</p>
+<p class="faq-a">播放页有「跳过」逻辑会自动切下一条,也可以直接按 <kbd>↓</kbd> 切歌或 <kbd>→</kbd> 试着快进。长时间暂停后播不动时,切下一条再切回来即可(会重新取链)。</p>
+
+<p class="faq-q">视频有声音但没有画面(或整页白屏)?</p>
+<p class="faq-a">分两种:① 内容为 H.265 编码、系统没装 HEVC 解码时会"有声无画",应用会自动尝试备用链接,仍不行请安装 Windows「HEVC 视频扩展」;② 如果整个播放界面都白(连按钮都没有)而用浏览器打开抖音正常,多半是 WebView2 Runtime 版本太旧,装最新 Evergreen 版后重启应用。</p>
+
+<p class="faq-q">实况(动图)为什么有的会动、有的不动?</p>
+<p class="faq-a">取决于抖音接口有没有给这条内容返回"动态子链"。给了就按实况播放(动一下、停一下再继续,和抖音一致),接口没给就只能显示静态图 —— 那不是显示问题,是这条内容在网页接口里没有动态版本。</p>
+
+<p class="faq-q">「继续上次播放」什么时候出现?什么时候消失?</p>
+<p class="faq-a">出现:上次是手动退出播放页(点 ✕ / 按 Esc),或播放中直接关掉了应用窗口 —— 下次打开主界面就会看到这条提示,点「继续播放」回到那条与那个位置。消失:整轮播完(没有继续的意义)、点 ✕ 忽略、或该内容已被删除 / 取消点赞。想重新开始就点「重新洗牌」。</p>
+
+<p class="faq-q">播放列表里为什么看不到全部几千条?</p>
+<p class="faq-a">列表按需加载:打开时围绕当前播放条目加载一段,向下滚动会自动续载后面的条目,不必一次渲染几万行。播放队列只属于本次播放会话,关闭应用不保存(但会用「继续上次播放」记住你的位置)。</p>
 
 <p class="faq-q">全屏后怎么退出?</p>
 <p class="faq-a">按 <kbd>F</kbd>、<kbd>Esc</kbd>,或再双击一次画面。</p>
 
+<p class="faq-q">数据保存在哪里?重装系统会丢吗?</p>
+<p class="faq-a">全部在本机:<b>%LOCALAPPDATA%\DouyinShuffle</b>。里面按账号分目录 —— <code>Data\&lt;账号&gt;\items.dylist</code> 是列表、<code>state.json</code> 是采集断点、<code>resume.json</code> 是上次播放位置;<code>Profiles\&lt;账号&gt;</code> 是登录态;<code>accounts.json</code> 是账号清单、<code>settings.json</code> 是外观设置;<code>init.log</code> 是运行日志。重装系统 / 换电脑前请先「导出」,新环境用「导入」恢复(登录态需要重新登录)。</p>
+
+<p class="faq-q">仪表盘上的「占用 (MB)」是什么?</p>
+<p class="faq-a">当前账号数据目录的体积(含你导出的 .dylist / .csv 文件),纯展示用。如果数字明显偏大,通常是导出文件占的,可以自己清理旧导出文件;列表本体几万条也就二三十 MB。</p>
+
+<p class="faq-q">「删除」和「取消点赞」有什么区别?</p>
+<p class="faq-a">「删除」只把这条从本地列表移除,抖音上的点赞还在;「取消点赞」是真的去抖音取消点赞(成功后同步移出本地)。请看清按钮再点:「删除」不可恢复,「取消点赞」在抖音侧也不可逆。</p>
+
+<p class="faq-q">「取消点赞」中途停住 / 失败了,会不会把数据弄乱?</p>
+<p class="faq-a">不会。只有抖音确认取消成功的条目才会从本地移除,失败或被风控拦下的都保留;成功一条立即保存,随时可停,重跑只处理剩余的。数量大时请耐心(每条有节流间隔),并留意弹窗里的验证提示。</p>
+
+<p class="faq-q">深色模式切换账号后会丢吗?</p>
+<p class="faq-a">不会。外观是应用级设置(存在 settings.json),不属于某个账号,所以切到另一个账号依然是深色。</p>
+
+<p class="faq-q">窗口边缘拖不动、不能自由缩放?</p>
+<p class="faq-a">应用是无边框窗口,边缘缩放区域被播放内核占满,属架构限制。调整大小请用右上角「最大化 / 还原」,或 <kbd>Win</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd>(最大化 / 还原)、<kbd>Win</kbd>+<kbd>←</kbd> / <kbd>→</kbd>(贴半屏)。</p>
+
 <p class="faq-q">搜索框为什么输入时不过滤,要按回车?</p>
-<p class="faq-a">列表可能有几万条,实时过滤会造成输入卡顿,所以按回车或点「搜索」手动执行。</p>
+<p class="faq-a">列表可能有几万条,实时过滤会造成输入卡顿,所以按回车或点「搜索」执行;清空输入框会立即恢复全部列表,不用再按回车。</p>
 
 <p class="faq-q">支持采集「收藏夹」吗?</p>
 <p class="faq-a">当前版本仅支持「喜欢」列表。</p>`;
@@ -688,6 +707,20 @@ function closeHelp() {
   document.getElementById('help-modal').classList.add('hidden');
   document.getElementById('help-body').innerHTML = '';
 }
+// 主题按钮:浅 ↔ 深 两档循环;按钮图标随状态
+on('btn-theme', 'click', () => {
+  const next = curTheme === 'light' ? 'dark' : 'light';   // 两档:浅色 ↔ 深色(v1.0.7 用户反馈去掉"跟随系统")
+  applyTheme(next);
+  call('themeChanged', next);   // ★用户主动切换:回报宿主(同步窗口底色 + 落盘 settings.json)
+  toast(next === 'dark' ? '外观:深色' : '外观:浅色');
+});
+function syncThemeBtn(theme) {
+  const btn = document.getElementById('btn-theme');
+  if (!btn) return;
+  btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+  btn.title = `外观:${theme === 'dark' ? '深色' : '浅色'}(点击切换)`;
+}
+// 主题按钮:浅 ↔ 深 两档循环;按钮图标随状态
 on('btn-tutorial', 'click', () => openHelp('使用教程', HELP_TUTORIAL));
 on('btn-faq', 'click', () => openHelp('常见问题', HELP_FAQ));
 on('help-close', 'click', closeHelp);
@@ -698,10 +731,210 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeHelp();
 });
 
+// ---------- 继续上次播放提示条(v1.0.7) ----------
+async function checkResume() {
+  try {
+    const bar = document.getElementById('resume-bar');
+    if (!bar) return;
+    const r = await call('resumeInfo');
+    if (!r || r === 'null') { bar.classList.add('hidden'); return; }
+    const info = typeof r === 'string' ? JSON.parse(r) : r;
+    if (!info || !info.awemeId) { bar.classList.add('hidden'); return; }
+    const pos = `${Math.floor((info.posSec || 0) / 60)}:${String((info.posSec || 0) % 60).padStart(2, '0')}`;
+    document.getElementById('resume-text').textContent =
+      `上次播放到「${info.desc}」(队列 ${info.queueCount} 条, ${pos})`;
+    bar.classList.remove('hidden');
+  } catch (e) { }
+}
+on('btn-resume-continue', 'click', async () => {
+  const r = await call('resumePlayback');
+  if (r && String(r).startsWith('err')) toast(String(r), true);
+  else document.getElementById('resume-bar')?.classList.add('hidden');
+});
+on('btn-resume-new', 'click', () => {
+  document.getElementById('resume-bar')?.classList.add('hidden');
+  document.getElementById('btn-shuffle')?.click();
+});
+on('btn-resume-dismiss', 'click', () => document.getElementById('resume-bar')?.classList.add('hidden'));
+
+// ---------- 账号面板(多账号:v1.0.7) ----------
+// 入口:侧栏底部头像区 → 弹面板(列表/切换/新增/重命名);宿主命令:accounts / switchAccount / addAccount / renameAccount
+function escH(s) { return escapeHtml(s || ''); }
+function fmtLastUsed(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const that = new Date(d); that.setHours(0, 0, 0, 0);
+  const days = Math.round((today - that) / 86400000);
+  if (days === 0) return '今天使用';
+  if (days === 1) return '昨天使用';
+  return `上次使用 ${d.getMonth() + 1}/${d.getDate()}`;
+}
+async function renderAccountPanel() {
+  const listEl = document.getElementById('account-list');
+  if (!listEl) return;
+  const r = await call('accounts');
+  let data;
+  try { data = typeof r === 'string' ? JSON.parse(r) : r; } catch (e) { data = null; }
+  if (!data || !Array.isArray(data.accounts)) { listEl.innerHTML = '<div class="account-tip">账号信息读取失败</div>'; return; }
+  listEl.innerHTML = data.accounts.map(a => `
+    <div class="account-list-item ${a.current ? 'current' : ''}" data-profile="${escH(a.profileName)}">
+      ${a.avatarUrl
+        ? `<img class="account-avatar" src="${escH(a.avatarUrl)}" referrerpolicy="no-referrer" onerror="this.outerHTML='<span class=&quot;account-avatar account-avatar-ph&quot;>👤</span>'" />`
+        : '<span class="account-avatar account-avatar-ph">👤</span>'}
+      <span class="a-info">
+        <span class="a-name">${escH(a.displayName)}</span>
+        <span class="a-sub">${a.current ? loggedIn ? '已登录' : '未登录 — 点此登录' : fmtLastUsed(a.lastUsedAt) || '尚未使用(点击切换)'}</span>
+      </span>
+      ${a.current
+        ? (loggedIn ? `<button class="a-rename a-logout" data-profile="${escH(a.profileName)}" title="清除该账号本机登录信息">退出登录</button>` : '')
+        : `<span class="a-ops"><button class="a-rename" data-profile="${escH(a.profileName)}" title="重命名">改名</button>${data.accounts.length > 1 ? `<button class="a-rename a-del" data-profile="${escH(a.profileName)}" title="删除该账号(数据留档可手动找回)">删除</button>` : ''}</span>`}
+    </div>`).join('');
+  // 事件:点其他账号=切换;点当前未登录条目=登录当前账号;改名/退出/删除各自处理
+  listEl.querySelectorAll('.account-list-item').forEach(item => {
+    item.addEventListener('click', async e => {
+      if (e.target.closest('.a-rename')) return;
+      const profile = item.dataset.profile;
+      if (profile === data.current) {
+        // 点当前账号条目:未登录 → 触发登录(登录的是这个壳,数据也是这个壳的)
+        if (profile === data.current && !loggedIn) {
+          const r = await call('login');
+          if (r && String(r).startsWith('err')) toast(String(r), true);
+          else { toast('已打开抖音登录页,登录成功后会自动关闭'); hideAccountModal(); }
+        }
+        return;
+      }
+      if (!confirm(`切换账号?\n当前播放/采集将停止,内容将刷新为新账号的数据。`)) return;
+      const r2 = await call('switchAccount', profile);
+      if (r2 && String(r2).startsWith('err')) toast(String(r2), true);
+      else hideAccountModal();
+    });
+  });
+  listEl.querySelectorAll('.a-rename').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const profile = btn.dataset.profile;
+      if (btn.classList.contains('a-logout')) {
+        // 当前账号的「退出登录」:仅清该账号登录态,数据保留
+        if (!confirm('确定退出登录吗?\n将清除该账号在本机的登录信息(采集的数据保留),下次使用该账号需重新登录。')) return;
+        const r = await call('logout');
+        if (r === 'ok') { toast('已退出登录'); renderAccountPanel(); loadAccountEntry(); }   // 面板保持打开:用户可直接点其他账号切换
+        else toast(r || '操作失败', true);
+        return;
+      }
+      if (btn.classList.contains('a-del')) {
+        // 删除整个"应用账号"(数据目录改名留档,不物理删除)
+        const item = data.accounts.find(a => a.profileName === profile);
+        if (!confirm(`删除「${item?.displayName || profile}」?\n\n该账号的采集数据与登录信息将移入回收目录(不会立即删除,可手动找回)。\n应用账号列表中将不再显示。`)) return;
+        const r = await call('deleteAccount', profile);
+        if (r === 'ok') { toast('已删除(数据已留档)'); renderAccountPanel(); }
+        else toast(r || '删除失败', true);
+        return;
+      }
+      const item = data.accounts.find(a => a.profileName === profile);
+      const name = prompt('修改显示名:', (item && item.displayName) || '');
+      if (name && name.trim()) {
+        await call('renameAccount', profile, name.trim());
+        renderAccountPanel();
+        loadAccountEntry();
+      }
+    });
+  });
+}
+function showAccountModal() {
+  document.getElementById('account-modal').classList.remove('hidden');
+  renderAccountPanel();
+}
+function hideAccountModal() {
+  document.getElementById('account-modal').classList.add('hidden');
+}
+// 侧栏账号入口点击:总是弹账号面板(v1.0.7 修正:退出登录后面板保持打开,
+// 用户可直接点其他账号切换,而不是被迫先重新登录当前壳)。
+// 未登录时面板同样可用:点其他账号=切换过去再登录;点当前账号条目=登录当前账号。
+on('account-entry', 'click', () => showAccountModal());
+on('account-modal-close', 'click', hideAccountModal);
+document.getElementById('account-modal').addEventListener('mousedown', e => {
+  if (e.target.id === 'account-modal') hideAccountModal();
+});
+on('btn-add-account', 'click', async () => {
+  if (!confirm('添加新账号?\n将进入登录页,登录后内容会切换到新账号。')) return;
+  hideAccountModal();
+  const r = await call('addAccount');
+  if (r && String(r).startsWith('err')) toast(String(r), true);
+});
+// 宿主广播:账号档案变化(登录成功回填昵称头像/切换完成)→ 刷新入口显示
+window.__dsh_accountsChanged = function () {
+  loadAccountEntry();
+};
+async function loadAccountEntry() {
+  const r = await call('accounts');
+  let data;
+  try { data = typeof r === 'string' ? JSON.parse(r) : r; } catch (e) { return; }
+  if (!data || !Array.isArray(data.accounts)) return;
+  const cur = data.accounts.find(a => a.current) || {};
+  const avatarImg = document.getElementById('account-avatar');
+  const avatarPh = document.getElementById('account-avatar-ph');
+  const nameEl = document.getElementById('account-name');
+  if (nameEl) nameEl.textContent = cur.displayName || (loggedIn ? '已登录' : '未登录');
+  if (avatarImg && avatarPh) {
+    if (cur.avatarUrl) {
+      avatarImg.src = cur.avatarUrl;
+      avatarImg.classList.remove('hidden');
+      avatarPh.classList.add('hidden');
+    } else {
+      avatarImg.classList.add('hidden');
+      avatarPh.classList.remove('hidden');
+    }
+  }
+}
+// 换舱过场(宿主广播):居中转圈,极简(用户反馈三步文案生硬,已简化)
+window.__dsh_accountSwitching = function (on) {
+  let el = document.querySelector('.account-switching');
+  if (on) {
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'account-switching';
+      el.innerHTML = '<div class="as-spin"></div>';
+      document.body.appendChild(el);
+    }
+  } else if (el) {
+    el.classList.add('fade-out');
+    setTimeout(() => el.remove(), 400);
+  }
+};
+
+// ---------- 深色模式(两档:light/dark) ----------
+// ★真源在宿主(settings.json,应用级):换账号 = 换 WebView2 profile,localStorage 是另一份,
+// 所以这里只做"首帧快速回显",随后由宿主 state 广播里的 theme 校正(见 __dsh_state)。
+// ★回报宿主的时机:只有"用户点了按钮"才 call('themeChanged') —— 页面加载时把 localStorage
+// 的旧值报上去会把宿主里记着的主题覆盖掉(新 profile 里 localStorage 是空的 → 报 light),
+// 于是换账号后深色白丢一次。启动/校正一律只应用、不回报(宿主本来就是对的)。
+function applyTheme(theme) {
+  curTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', curTheme);
+  try { localStorage.setItem('dshTheme', curTheme); } catch (e) { }   // 本 profile 缓存:下次首帧不闪
+  syncThemeBtn(curTheme);
+}
+function initTheme() {
+  let theme = 'light';
+  try { theme = localStorage.getItem('dshTheme') || 'light'; } catch (e) { }
+  if (theme !== 'dark' && theme !== 'light') theme = 'light';   // 兼容旧存储的 'system' 档
+  applyTheme(theme);
+  // 加载时上报一次:宿主"还没记过主题"(首次运行/旧版本升级)时采纳这个值 —— 老用户的
+  // 深色偏好就存在 profile 的 localStorage 里,不能被默认值刷掉。宿主已记过则这次上报被忽略,
+  // 随后 state 广播把主题校正回来(换账号后本 profile 的 localStorage 是另一份)。
+  call('themeChanged', theme);
+}
+window.__dsh_setTheme = function (theme) {
+  applyTheme(theme);   // 宿主下发(启动校正/换账号后):只应用,不回报
+};
+
 // ---------- 初始 ----------
 window.addEventListener('DOMContentLoaded', () => {
   bindGrid();
   updateSelectUi();
+  initTheme();
+  loadAccountEntry();
   // 自动连播开关(与播放页 🔁 / 快捷键 A 同源;宿主广播 __dsh_autoNext 回显勾选态)
   const autoNextEl = document.getElementById('auto-next');
   const autoNextLabel = document.getElementById('auto-next-label');
@@ -717,6 +950,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const hasPost = !!(window.chrome && window.chrome.webview && window.chrome.webview.postMessage);
   if (!hasPost) toast('桥接未就绪', true);
   refresh();
+  checkResume();
   call('state').then(r => {
     if (typeof r === 'string' && r.startsWith('{')) {
       try { window.__dsh_state(JSON.parse(r)); } catch (e) { }
