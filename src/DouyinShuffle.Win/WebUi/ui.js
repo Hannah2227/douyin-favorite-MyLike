@@ -30,6 +30,8 @@ let filtered = [];
 let selected = new Set();
 let yearFilter = '', monthFilter = '', searchText = '';
 let navFilter = 'all';     // all | video | gallery
+let sortOrder = 'newest';
+let batchScopeIds = null;  // Snapshot of the exact preview, never an approximate search.
 let loggedIn = false;
 let collecting = false;
 let selectMode = false;    // 选择模式:点卡片=勾选,不播放
@@ -159,11 +161,14 @@ function renderMonthOptions() {
     : Array.from({ length: 12 }, (_, i) => i + 1);
   ms.innerHTML = '<option value="">全部月份</option>' + months.map(m => `<option value="${m}">${m}月</option>`).join('');
   if (months.includes(parseInt(cur))) ms.value = cur;
+  yearFilter = document.getElementById('year-filter').value;
+  monthFilter = ms.value;
 }
 
 // ---------- 筛选 ----------
 function applyFilter() {
   filtered = items.filter(i => {
+    if (batchScopeIds && !batchScopeIds.has(i.awemeId)) return false;
     if (navFilter === 'video' && i.status !== 0) return false;
     if (navFilter === 'gallery' && i.status !== 2) return false;
     if (yearFilter && new Date(i.createTime * 1000).getFullYear() !== parseInt(yearFilter)) return false;
@@ -175,6 +180,10 @@ function applyFilter() {
     }
     return true;
   });
+  filtered = MyLikeLibrary.sortItems(filtered, sortOrder);
+  // Hidden selections must not leak into delete/unlike after changing a filter.
+  const visibleIds = new Set(filtered.map(i => i.awemeId));
+  selected = new Set([...selected].filter(id => visibleIds.has(id)));
   renderedCount = 0;
   renderGrid();
 }
@@ -182,7 +191,7 @@ function applyFilter() {
 // ---------- 网格(分批渲染 + 点击即播) ----------
 function renderGrid() {
   const grid = document.getElementById('list-grid');
-  setText('list-info', `共 ${filtered.length} 条`);
+  updateSelectUi();
   if (filtered.length === 0) {
     grid.innerHTML = `<div class="empty">${items.length === 0
       ? '还没有数据。<br>点右上角「登录」登录抖音,再点「已采集」栏的「采集」抓取你的喜欢列表。'
@@ -329,7 +338,7 @@ on('btn-unlike-stop', 'click', () => { call('unlikeStop'); toast('正在停止�
 // ---------- 批量取消点赞(按筛选条件) ----------
 // 筛选范围(全部/时间/作者)→ 目标 id 集合;取消模式(全部取消/选择性取消)决定是否全量执行。
 // 全部取消:把筛选条件交给宿主 UnlikeBatchService.ResolveTargets 解析后逐个取消;
-// 选择性取消:把筛选条件映射到主网格(作者→搜索框,时间→年份/月份),进入选择模式后人工勾选。
+// 选择性取消:保存预览的精确 ID 范围,进入选择模式后人工勾选。
 function ubScope() {
   const el = document.querySelector('input[name="ub-scope"]:checked');
   return el ? el.value : 'all';
@@ -341,9 +350,7 @@ function ubMode() {
 function ubTimeRange() {
   const s = document.getElementById('ub-time-start').value;
   const e = document.getElementById('ub-time-end').value;
-  const start = s ? Math.floor(Date.parse(s) / 1000) : 0;
-  const end = e ? Math.floor(Date.parse(e) / 1000) + 86399 : 0;
-  return { start, end };
+  return MyLikeLibrary.dateRange(s, e);
 }
 function ubAuthors() {
   const v = document.getElementById('ub-author').value || '';
@@ -351,21 +358,8 @@ function ubAuthors() {
 }
 function ubMatchIds() {
   const scope = ubScope();
-  const { start, end } = ubTimeRange();
-  const authors = ubAuthors();
-  const authorSet = new Set(authors);
-  const ids = [];
-  for (const it of items) {
-    if (it.status === 1) continue;
-    if (scope === 'time') {
-      if (start && it.createTime < start) continue;
-      if (end && it.createTime > end) continue;
-    } else if (scope === 'author') {
-      if (authors.length && !authorSet.has(it.author)) continue;
-    }
-    ids.push(it.awemeId);
-  }
-  return ids;
+  const range = scope === 'time' ? ubTimeRange() : { start: 0, end: 0 };
+  return MyLikeLibrary.batchIds(items, scope, range, ubAuthors());
 }
 function ubRefreshCond() {
   const scope = ubScope();
@@ -373,7 +367,14 @@ function ubRefreshCond() {
   document.getElementById('ub-author-cond').classList.toggle('hidden', scope !== 'author');
 }
 function ubUpdatePreview() {
-  setText('ub-preview', `匹配 ${ubMatchIds().length} 条`);
+  try {
+    const count = ubMatchIds().length;
+    setText('ub-preview', `匹配 ${count} 条`);
+    document.getElementById('ub-start').disabled = count === 0;
+  } catch (e) {
+    setText('ub-preview', e.message);
+    document.getElementById('ub-start').disabled = true;
+  }
 }
 function ubOpen() {
   document.getElementById('unlike-batch-modal').classList.remove('hidden');
@@ -385,35 +386,20 @@ function ubClose() {
 }
 function ubApplySelective() {
   const scope = ubScope();
-  if (scope === 'author') {
-    const authors = ubAuthors();
-    if (authors.length) {
-      const el = document.getElementById('search');
-      if (el) el.value = authors.join(' ');
-      searchText = authors.join(' ').toLowerCase();
-    }
-  } else if (scope === 'time') {
-    const { start, end } = ubTimeRange();
-    if (start) {
-      const d = new Date(start * 1000);
-      yearFilter = String(d.getFullYear());
-      const ys = document.getElementById('year-filter');
-      if (ys) ys.value = yearFilter;
-      monthFilter = '';
-      if (end) {
-        const de = new Date(end * 1000);
-        if (de.getFullYear() === d.getFullYear() && de.getMonth() === d.getMonth()) {
-          monthFilter = String(d.getMonth() + 1);
-          const ms = document.getElementById('month-filter');
-          if (ms) ms.value = monthFilter;
-        }
-      }
-      renderMonthOptions();
-    }
-  }
+  batchScopeIds = new Set(ubMatchIds());
+  selected.clear();
+  searchText = yearFilter = monthFilter = '';
+  document.getElementById('search').value = '';
+  document.getElementById('year-filter').value = '';
+  document.getElementById('month-filter').value = '';
+  renderMonthOptions();
+  const description = scope === 'author' ? `作者：${ubAuthors().join('、')}`
+    : scope === 'time' ? `发布时间：${document.getElementById('ub-time-start').value || '不限'} 至 ${document.getElementById('ub-time-end').value || '不限'}`
+    : '全部有效内容';
+  setText('scope-text', `批量范围 · ${description}（${batchScopeIds.size} 条）`);
+  document.getElementById('scope-bar').classList.remove('hidden');
   selectMode = true;
-  updateSelectUi();
-  applyFilter();
+  setNav('all');
   ubClose();
   toast('已进入选择模式:勾选后点工具栏「取消点赞」', false);
 }
@@ -425,12 +411,14 @@ document.getElementById('unlike-batch-modal').addEventListener('mousedown', e =>
 document.addEventListener('keydown', e => { if (e.key === 'Escape') ubClose(); });
 
 on('ub-start', 'click', () => {
-  const count = ubMatchIds().length;
+  let count;
+  try { count = ubMatchIds().length; }
+  catch (e) { toast(e.message, true); return; }
   if (count === 0) { toast('筛选条件下没有可取消的内容', true); return; }
   if (ubMode() === 'selective') { ubApplySelective(); return; }
   const warn = count > 50 ? `\n\n⚠ 已匹配 ${count} 条,数量较大:抖音对批量取消有限流/风控风险,触发后会暂停并弹验证。建议先小批量试或分批操作。` : '';
   if (!confirm(`确定取消筛选范围内的 ${count} 个作品的抖音点赞吗?\n程序会逐个处理,速度较慢属正常,可随时点底部进度条旁「停止」。\n只有成功取消的条目才会从本地列表移除。${warn}`)) return;
-  const { start, end } = ubTimeRange();
+  const { start, end } = ubScope() === 'time' ? ubTimeRange() : { start: 0, end: 0 };
   const req = { scope: ubScope(), startTime: start, endTime: end, authors: ubAuthors(), ids: [] };
   call('unlikeBatch', req).then(r => {
     if (r === 'busy') toast('已有取消点赞任务正在执行', true);
@@ -546,6 +534,13 @@ on('btn-import', 'click', async () => { const r = await call('import'); toast(r 
 on('btn-stop', 'click', async () => { await call('stop'); setPlaying(''); });
 on('year-filter', 'change', e => { yearFilter = e.target.value; renderMonthOptions(); applyFilter(); });
 on('month-filter', 'change', e => { monthFilter = e.target.value; applyFilter(); });
+on('sort-order', 'change', e => { sortOrder = e.target.value; applyFilter(); });
+on('btn-clear-scope', 'click', () => {
+  batchScopeIds = null;
+  selected.clear();
+  document.getElementById('scope-bar').classList.add('hidden');
+  applyFilter();
+});
 // 搜索:点击按钮(或回车)后才执行,不再随输入实时过滤
 function doSearch() {
   const el = document.getElementById('search');

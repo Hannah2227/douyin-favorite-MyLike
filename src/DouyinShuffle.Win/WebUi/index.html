@@ -86,6 +86,12 @@
         <div class="filters">
           <select id="year-filter"><option value="">全部年份</option></select>
           <select id="month-filter"><option value="">全部月份</option></select>
+          <select id="sort-order" aria-label="列表排序">
+            <option value="newest">发布时间：最新优先</option>
+            <option value="oldest">发布时间：最早优先</option>
+            <option value="author">按作者排序</option>
+            <option value="title">按标题排序</option>
+          </select>
           <button class="top-btn primary" id="btn-shuffle" title="按当前筛选条件洗牌播放">洗牌播放</button>
           <label class="auto-next-toggle" id="auto-next-label" title="一条播放结束后自动播放下一条(默认关;播放中可按 A 或点播放页 🔁 切换)">
             <input type="checkbox" id="auto-next" />
@@ -106,6 +112,10 @@
           <span class="page-info" id="list-info">共 0 条</span>
         </div>
       </section>
+      <div class="scope-bar hidden" id="scope-bar">
+        <span id="scope-text"></span>
+        <button class="mini-btn" id="btn-clear-scope">清除批量范围</button>
+      </div>
       <section class="list-grid" id="list-grid"></section>
       <div class="load-more hidden" id="load-more">下拉加载更多…</div>
     </main>
@@ -167,6 +177,7 @@
     </div>
   </div>
 </div>
+<script src="library.js"></script>
 <script src="ui.js"></script>
 </body>
 </html>

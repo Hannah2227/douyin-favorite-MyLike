@@ -698,10 +698,12 @@ public partial class MainWindow : Window
                         List<AwemeItem> queue;
                         if (args.Length > 1)
                         {
-                            var idSet = new HashSet<string>(args[1..]);
-                            queue = all
-                                .Where(i => i.Status != 1 && idSet.Contains(i.AwemeId))
-                                .OrderByDescending(i => i.CreateTime)
+                            // Follow the visible UI order, including the user's sort choice.
+                            var playable = all.Where(i => i.Status != 1)
+                                .ToDictionary(i => i.AwemeId);
+                            queue = args.Skip(1).Distinct()
+                                .Where(playable.ContainsKey)
+                                .Select(id => playable[id])
                                 .ToList();
                         }
                         else

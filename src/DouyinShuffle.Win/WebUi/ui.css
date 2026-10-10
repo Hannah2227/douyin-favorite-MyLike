@@ -122,7 +122,8 @@ body { font-family:system-ui,"Microsoft YaHei",sans-serif; background:var(--bg);
 
 /* 列表工具栏 */
 .list-toolbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; background:#fff; border:1px solid var(--border); border-radius:10px; padding:10px 14px; flex-wrap:wrap; gap:8px; }
-.filters { display:flex; gap:8px; }
+.filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.scope-bar { display:flex; align-items:center; gap:12px; margin-bottom:14px; font-size:13px; }
 .filters select { padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:#fff; font-size:13px; }
 /* 自动连播开关 */
 .auto-next-toggle { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text-dim); cursor:pointer; user-select:none; padding:0 2px; white-space:nowrap; }
