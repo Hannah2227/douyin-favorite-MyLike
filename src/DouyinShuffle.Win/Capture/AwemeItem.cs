@@ -45,6 +45,11 @@ public sealed class AwemeItem
     [JsonIgnore]
     public List<string> ImageUrls { get; set; } = new();
 
+    /// <summary>动图图集(实况)每张图的动态视频子链(与 ImageUrls 索引对齐;null=该张为纯图)。
+    /// 运行时取链填充,不持久化。v1.0.7 实况适配。</summary>
+    [JsonIgnore]
+    public List<string?> LiveImageUrls { get; set; } = new();
+
     /// <summary>背景音乐直链(图集帖等)。运行时取链填充。</summary>
     [JsonIgnore]
     public string MusicUrl { get; set; } = "";
@@ -57,11 +62,15 @@ public sealed class AwemeItem
     public string ShareUrl => $"https://www.douyin.com/video/{AwemeId}";
 }
 
-/// <summary>实时取链结果(视频直链 / 图集图片 / 背景音乐 / 封面)。</summary>
+/// <summary>实时取链结果(视频直链 / 图集图片 / 实况动态子链 / 背景音乐 / 封面)。</summary>
 public sealed class FreshMedia
 {
     public List<string> PlayUrls { get; set; } = new();
     public List<string> ImageUrls { get; set; } = new();
+
+    /// <summary>动图图集(实况)每张图的动态视频子链(索引对齐 ImageUrls;null=纯图)。</summary>
+    public List<string?> LiveImageUrls { get; set; } = new();
+
     public string MusicUrl { get; set; } = "";
     public string CoverUrl { get; set; } = "";
 

@@ -59,7 +59,9 @@ function ui() {
   for (const [, id] of fs.readFileSync(path.join(web, 'index.html'), 'utf8').matchAll(/id="([^"]+)"/g))
     elements.set(id, element());
   const radios = { scope: 'all', mode: 'selective' };
-  const document = { getElementById: id => elements.get(id), querySelectorAll: () => [], addEventListener() {},
+  const attributes = {};
+  const document = { documentElement: { setAttribute: (key, value) => { attributes[key] = value; } },
+    getElementById: id => elements.get(id), querySelectorAll: () => [], addEventListener() {},
     querySelector(selector) {
       if (selector.includes('ub-scope')) return { value: radios.scope };
       if (selector.includes('ub-mode')) return { value: radios.mode };
@@ -72,7 +74,7 @@ function ui() {
   vm.runInContext(fs.readFileSync(path.join(web, 'ui.js'), 'utf8'), context);
   const run = source => vm.runInContext(source, context);
   run(`items = ${JSON.stringify(rows)};`);
-  return { elements, radios, run, click: id => elements.get(id).handlers.click() };
+  return { elements, radios, run, attributes, click: id => elements.get(id).handlers.click() };
 }
 test('selective author scope replaces stale filters and selections with exact preview', () => {
   const app = ui();
@@ -117,4 +119,33 @@ test('invalid dates and empty authors disable the batch start button', () => {
   app.radios.scope = 'author';
   app.run('ubUpdatePreview();');
   assert.equal(app.elements.get('ub-start').disabled, true);
+});
+
+test('upstream theme updates coexist with sorting and batch scope', () => {
+  const app = ui();
+  app.radios.scope = 'author';
+  app.elements.get('ub-author').value = 'Alice';
+  app.run("ubApplySelective(); sortOrder = 'oldest'; applyFilter(); window.__dsh_setTheme('dark');");
+  assert.equal(app.attributes['data-theme'], 'dark');
+  assert.equal(app.run('JSON.stringify(filtered.map(i => i.awemeId))'), '["2","3"]');
+  app.run("window.__dsh_setTheme('light');");
+  assert.equal(app.attributes['data-theme'], 'light');
+});
+
+test('a rebuilt account page starts without the previous account batch selection', () => {
+  const oldAccount = ui();
+  oldAccount.run("ubApplySelective(); selected.add('3');");
+  const newAccount = ui();
+  assert.equal(newAccount.run('batchScopeIds'), null);
+  assert.equal(newAccount.run('selected.size'), 0);
+  assert.equal(newAccount.run('selectMode'), false);
+});
+
+test('merged page has unique IDs and contains both account and batch controls', () => {
+  const html = fs.readFileSync(path.join(web, 'index.html'), 'utf8');
+  const elementIds = [...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]);
+  assert.equal(new Set(elementIds).size, elementIds.length);
+  for (const id of ['account-modal', 'btn-theme', 'resume-bar', 'unlike-batch-modal', 'sort-order', 'scope-bar'])
+    assert.ok(elementIds.includes(id), `Missing ${id}`);
+  assert.ok(html.indexOf('src="library.js"') < html.indexOf('src="ui.js"'));
 });

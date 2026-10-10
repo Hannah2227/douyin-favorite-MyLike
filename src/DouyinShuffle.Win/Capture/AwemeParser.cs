@@ -86,6 +86,23 @@ public static class AwemeParser
                     .Where(u => !string.IsNullOrEmpty(u))
                     .Select(u => u!)
                     .ToList();
+                // 动图图集(实况)适配 v1.0.7:每张图的动态视频子链(与静态图索引对齐;无动态版 = null)。
+                // 已知位置(按优先级探测):images[i].video.play_addr.url_list /
+                //   images[i].live_image.url_list / images[i].video.url_list / images[i].urls(冗余数组)。
+                // 若全部未命中, dump 首图的键集合到日志供排查(诊断行)。
+                item.LiveImageUrls = imgs.Select(img =>
+                {
+                    var u1 = (img["video"]?["play_addr"]?["url_list"] as JArray)?.FirstOrDefault()?.Value<string>();
+                    var u2 = (img["live_image"]?["url_list"] as JArray)?.FirstOrDefault()?.Value<string>();
+                    var u3 = (img["video"]?["url_list"] as JArray)?.FirstOrDefault()?.Value<string>();
+                    var u4 = (img["urls"] as JArray)?.FirstOrDefault()?["url_list"]?.FirstOrDefault()?.Value<string>();
+                    return u1 ?? u2 ?? u3 ?? u4;
+                }).ToList();
+                var firstKeys = string.Join(",", ((JObject)imgs[0]!).Properties().Select(p => p.Name));
+                // 诊断降级:只在"一张都没命中动态子链"时记 —— 命中是常态,每张图集都记会把日志刷成噪声
+                // (排查"实况显示为静态"时,真正需要看的就是未命中那些的键集合)
+                if (item.LiveImageUrls.All(u => u == null))
+                    AppLog.Write($"LIVE-PROBE miss images={imgs.Count} keys[{imgs[0]!.Path}]={firstKeys}");
             }
         }
 

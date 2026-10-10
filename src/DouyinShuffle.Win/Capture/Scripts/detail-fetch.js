@@ -3,6 +3,7 @@
 // 不依赖页面卡片/位置,比"模拟点击卡片"更稳更快,适合每条播放前刷新。
 (function () {
   var AID = '{{AID}}';
+  var RID = {{RID}};   // 探测专用关联 token(null = 播放取链通道,按 awemeId 回传;非 null = 探测通道,按 token 回传)
   function post(d) {
     try { window.chrome.webview.postMessage(d); } catch (e) {}
   }
@@ -26,7 +27,7 @@
   Promise.race([
     fetch(url, { method: 'GET', credentials: 'include', headers: { 'accept': 'application/json, text/plain, */*' } })
       .then(function (r) { return r.text(); })
-      .then(function (body) { post({ type: 'detail_resp', id: AID, body: body }); }),
+      .then(function (body) { post({ type: 'detail_resp', id: RID || AID, body: body }); }),
     timeout
-  ]).catch(function (e) { post({ type: 'detail_resp', id: AID, err: String(e) }); });
+  ]).catch(function (e) { post({ type: 'detail_resp', id: RID || AID, err: String(e) }); });
 })();

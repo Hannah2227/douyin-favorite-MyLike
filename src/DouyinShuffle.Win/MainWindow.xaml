@@ -1,7 +1,6 @@
 <Window x:Class="DouyinShuffle.Win.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="MyLike"
         Height="820" Width="1400"
         WindowStartupLocation="CenterScreen"
@@ -15,11 +14,10 @@
                       UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
     <Grid x:Name="RootGrid">
-        <!-- 本地主界面(卡片列表) -->
-        <wv2:WebView2 x:Name="UiWebView" Visibility="Visible"/>
-
-        <!-- 独立纯净播放页(方案 B):自有播放器,无抖音页面干扰。
-             Collapsed(非 Hidden):显示时强制重新布局,规避旧版 WebView2 白屏不重绘 bug -->
-        <wv2:WebView2 x:Name="PlayerWebView" Visibility="Collapsed" DefaultBackgroundColor="Black"/>
+        <!-- ★双 WebView 容器(账号"换舱"时控件 Dispose 重建,CoreWebView2 不能换环境必须重建控件):
+             UiWebView(主界面)/ PlayerWebView(播放页)实例由 MainWindow.CreateWebView 注入,
+             引用经 MainWindow.UiWebView/PlayerWebView 属性转发(全代码零改动)。
+             两个 WebView 常驻可见,视图切换 = Win32 z-order 抬升/压底(见 ShowPlayer 注释)。 -->
+        <Grid x:Name="WebViewHost"/>
     </Grid>
 </Window>

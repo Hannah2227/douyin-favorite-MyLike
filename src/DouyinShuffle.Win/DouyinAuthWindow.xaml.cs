@@ -72,7 +72,18 @@ public partial class DouyinAuthWindow : Window
         catch (Exception ex)
         {
             AppLog.Write("AUTH-WINDOW init err " + ex.Message);
+            // 初始化失败(WebView2 环境异常等):窗口留空只会让用户干等扫码/滑块 → 明确提示后自关,
+            // 走 Abandoned 通道(宿主复位验证锁/状态),由用户稍后再试。
+            try { HintText.Text = "页面初始化失败(" + ex.Message + ")。即将自动关闭,请稍后重试。"; } catch { }
+            var _ = AutoCloseAfterInitFailure();
         }
+    }
+
+    private async Task AutoCloseAfterInitFailure()
+    {
+        try { await Task.Delay(2500); } catch { }
+        if (!_finished && Dispatcher.CheckAccess()) Close();
+        else if (!_finished) Dispatcher.Invoke(Close);
     }
 
     private void StartPolling()

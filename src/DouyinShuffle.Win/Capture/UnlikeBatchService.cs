@@ -34,7 +34,7 @@ public sealed class UnlikeBatchRequest
 /// </summary>
 public sealed class UnlikeBatchService
 {
-    private readonly UnlikeService _unlike;
+    private readonly Func<string, CancellationToken, Task<UnlikeOneResult>> _unlike;
     private readonly UnlikeLogStore _log;
     private readonly Func<IReadOnlyCollection<AwemeItem>> _itemProvider;
     private readonly Action<string> _onSuccess;
@@ -49,12 +49,13 @@ public sealed class UnlikeBatchService
 
     private CancellationTokenSource? _cts;
     private volatile bool _running;
+    private Task _runTask = Task.CompletedTask;
 
     /// <summary>是否正在运行(宿主据此做与采集/播放的互斥)。</summary>
     public bool IsRunning => _running;
 
     public UnlikeBatchService(
-        UnlikeService unlike,
+        Func<string, CancellationToken, Task<UnlikeOneResult>> unlike,
         UnlikeLogStore log,
         Func<IReadOnlyCollection<AwemeItem>> itemProvider,
         Action<string> onSuccess,
@@ -126,11 +127,18 @@ public sealed class UnlikeBatchService
         if (_running || ids.Count == 0) return;
         _cts = new CancellationTokenSource();
         _running = true;
-        _ = RunAsync(ids, _cts.Token);
+        _runTask = RunAsync(ids, _cts.Token);
     }
 
     /// <summary>停止当前批次(用户点「停止」)。</summary>
     public void Stop() => _cts?.Cancel();
+
+    /// <summary>等待旧账号批次完全收尾后才允许拆卸 WebView/更换数据目录。</summary>
+    public async Task StopAsync()
+    {
+        Stop();
+        await _runTask;
+    }
 
     // ---------- 主循环(移植自原 MainWindow.UnlikeRunAsync,逻辑保持一致) ----------
 
@@ -165,7 +173,7 @@ public sealed class UnlikeBatchService
                 _onProgress(i + 1, ids.Count, $"正在取消 {i + 1}/{ids.Count}…已成功 {ok} 条");
                 meta.TryGetValue(id, out var item);
 
-                var r = await _unlike.UnlikeOneAsync(id, ct);
+                var r = await _unlike(id, ct);
                 if (r.Success)
                 {
                     ok++;

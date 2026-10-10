@@ -62,6 +62,11 @@ public partial class DouyinPageWindow : Window
             _core.Navigate($"https://www.douyin.com/video/{awemeId}");
             AppLog.Write($"PAGE-WINDOW nav {awemeId}");
         }
-        catch (Exception ex) { AppLog.Write("PAGE-WINDOW init err " + ex.Message); }
+        catch (Exception ex)
+        {
+            AppLog.Write("PAGE-WINDOW init err " + ex.Message);
+            // 初始化失败:窗口留空不如直接关闭,走 ClosedByUser 让宿主回播放页续播
+            try { if (Dispatcher.CheckAccess()) Close(); else Dispatcher.Invoke(Close); } catch { }
+        }
     }
 }

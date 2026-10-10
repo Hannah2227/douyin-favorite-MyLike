@@ -19,21 +19,25 @@ public partial class DouyinEngineWindow : Window
     public DouyinEngineWindow()
     {
         InitializeComponent();
+        // Show 前先定位(防首帧在主屏 (0,0) 闪现);Loaded 再校一次(多屏热插拔/DPI 变化后兜底)
+        PositionOffscreen();
         Loaded += (_, _) => PositionOffscreen();
     }
 
     /// <summary>
-    /// 定位到主屏幕左侧屏幕外(不可见但持续渲染)。
-    /// 注:不能用右侧 —— 多显示器用户右副屏起点通常正是主屏右缘,
-    /// 引擎窗会完整暴露在副屏左上角(幽灵抖音页面)。
+    /// 定位到所有显示器左侧之外(不可见但持续渲染)。
+    /// 注:不能用主屏右缘 —— 右侧副屏起点常正好在主屏右缘,引擎窗会完整暴露在副屏左上角
+    /// (幽灵抖音页面);也不能只按主屏 WorkArea.Left 左移 —— 若副屏在主屏左侧
+    /// (Left 为负的扩展布局),按主屏左缘外移仍会落在副屏可视区内。
+    /// 正确锚点:虚拟屏幕最左缘(VirtualScreenLeft,多屏合一的左边界,负值即代表左侧有副屏),
+    /// 再左移一个窗口宽 + 余量 → 必然在所有显示器可视区之外。
     /// </summary>
     private void PositionOffscreen()
     {
         try
         {
-            var screen = SystemParameters.WorkArea;
-            Left = screen.Left - Width - 50;   // 主屏幕左侧外 50px
-            Top = screen.Top;
+            Left = SystemParameters.VirtualScreenLeft - Width - 50;
+            Top = SystemParameters.VirtualScreenTop;
         }
         catch { }
     }

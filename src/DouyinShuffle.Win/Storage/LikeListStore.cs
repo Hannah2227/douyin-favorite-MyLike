@@ -39,6 +39,11 @@ public sealed class LikeListStore
     /// <summary>state.json 内存缓存:Save 高频调用(采集每轮落盘),避免每次都读盘取旧值。</summary>
     private SyncState? _stateCache;
 
+    /// <summary>state.json + 缓存的跨线程保护:后台 SaveLoop(采集/删除)与 UI 线程
+    /// SaveAutoNext(自动连播开关)会并发读写同一份状态,不加锁会有丢失更新
+    /// (如采集落盘把用户刚开的自动连播覆盖回关)。items.dylist 只有后台线程写,无需此锁。</summary>
+    private readonly object _stateGate = new();
+
     public LikeListStore(string dataDir)
     {
         _dir = dataDir;
@@ -83,15 +88,18 @@ public sealed class LikeListStore
 
     public SyncState LoadState()
     {
-        if (_stateCache != null) return _stateCache;
-        try
+        lock (_stateGate)
         {
-            _stateCache = File.Exists(StatePath)
-                ? JsonConvert.DeserializeObject<SyncState>(File.ReadAllText(StatePath)) ?? new SyncState()
-                : new SyncState();
+            if (_stateCache != null) return _stateCache;
+            try
+            {
+                _stateCache = File.Exists(StatePath)
+                    ? JsonConvert.DeserializeObject<SyncState>(File.ReadAllText(StatePath)) ?? new SyncState()
+                    : new SyncState();
+            }
+            catch { _stateCache = new SyncState(); }
+            return _stateCache;
         }
-        catch { _stateCache = new SyncState(); }
-        return _stateCache;
     }
 
     public void Save(List<AwemeItem> items, long cursor, string? secUserId = null, bool? collectIncomplete = null)
@@ -107,27 +115,34 @@ public sealed class LikeListStore
         };
         // 原子写:tmp + Replace,防写一半崩溃损坏列表(数万条数据是用户核心资产)
         AtomicFile.WriteAllText(ItemsPath, root.ToString(Formatting.None));
-        var prev = _stateCache ?? LoadState();
-        var state = new SyncState
+        lock (_stateGate)
         {
-            MaxCursor = cursor,
-            CollectedCount = items.Count,
-            LastSyncAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            SecUserId = secUserId?.Length > 0 ? secUserId : prev.SecUserId,
-            CollectIncomplete = collectIncomplete ?? prev.CollectIncomplete,
-            AutoNext = prev.AutoNext   // UI 偏好:采集保存时保留用户上次选择
-        };
-        AtomicFile.WriteAllText(StatePath, JsonConvert.SerializeObject(state, Formatting.Indented));
-        _stateCache = state;
+            // 并发安全:与 SaveAutoNext(UI 线程)互斥;prev 取自缓存(含用户最新偏好)
+            var prev = _stateCache ?? LoadState();
+            var state = new SyncState
+            {
+                MaxCursor = cursor,
+                CollectedCount = items.Count,
+                LastSyncAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                SecUserId = secUserId?.Length > 0 ? secUserId : prev.SecUserId,
+                CollectIncomplete = collectIncomplete ?? prev.CollectIncomplete,
+                AutoNext = prev.AutoNext   // UI 偏好:采集保存时保留用户上次选择
+            };
+            AtomicFile.WriteAllText(StatePath, JsonConvert.SerializeObject(state, Formatting.Indented));
+            _stateCache = state;
+        }
     }
 
     /// <summary>单独持久化 UI 偏好(自动连播开关),不触碰列表文件。</summary>
     public void SaveAutoNext(bool autoNext)
     {
-        var state = _stateCache ?? LoadState();
-        if (state.AutoNext == autoNext) return;
-        state.AutoNext = autoNext;
-        AtomicFile.WriteAllText(StatePath, JsonConvert.SerializeObject(state, Formatting.Indented));
+        lock (_stateGate)
+        {
+            var state = _stateCache ?? LoadState();
+            if (state.AutoNext == autoNext) return;
+            state.AutoNext = autoNext;
+            AtomicFile.WriteAllText(StatePath, JsonConvert.SerializeObject(state, Formatting.Indented));
+        }
     }
 
     /// <summary>
@@ -146,10 +161,19 @@ public sealed class LikeListStore
     public void ClearAll()
     {
         _stateCache = null;   // 状态缓存随磁盘一起失效
-        foreach (var f in new[] { ItemsPath, LegacyItemsPath, StatePath, ItemsPath + ".tmp", StatePath + ".tmp" })
+        foreach (var f in new[] { ItemsPath, LegacyItemsPath, StatePath })
         {
             try { if (File.Exists(f)) File.Delete(f); } catch { }
         }
+        // 原子写改唯一 .tmp 命名后,崩溃残留的 .tmp 不再有固定名可逐条删,统一按模式清理
+        try
+        {
+            foreach (var t in Directory.GetFiles(_dir, "*.tmp"))
+            {
+                try { File.Delete(t); } catch { }
+            }
+        }
+        catch { }
         var exportDir = Path.Combine(_dir, "export");
         try { if (Directory.Exists(exportDir)) Directory.Delete(exportDir, true); } catch { }
     }

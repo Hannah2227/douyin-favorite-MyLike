@@ -19,6 +19,17 @@
     <Authors>MyLike</Authors>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- CET(硬件强制的堆栈保护 / Intel CET Shadow Stack)策略说明:
+         为 FALSE(不声明 CETCOMPAT)。原因:.NET 9+ 的 singlefilehost 默认按 CET 兼容编译并在
+         Windows 上默认启用影子栈;而影子栈要求操作系统提供完整的"用户态 CET 支持"(Win10 21H2/22H2
+         需 ≥ 2024-10 累积更新,即 Build 19045.5007;更早系统/Win11 早期版本缺支持)。
+         真实用户案例:未打补丁的系统上应用"启动即崩/无界面"(coreclr: Your Windows doesn't fully
+         support CET)。置 false 让宿主不声明 CET 兼容 → 进程不启用影子栈 → 这类机器可正常启动
+         (代价:少一层针对 ROP 攻击的硬件防护,本地工具可接受)。
+         反方向提醒:若某用户报 0xC0000409 且确认是"安全软件/系统强制 BlockNonCetBinaries"导致,
+         不要全局改 true(会让上述老系统用户复发);应让该用户在其安全软件/Windows 安全中心里把
+         MyLike.exe 加入排除或关闭对该进程的强制堆栈保护。 -->
+    <CETCompat>false</CETCompat>
     <!-- 发布参数(仅 dotnet publish -c Release 生效;普通 build 仍走框架依赖,便于日常调试) -->
     <SelfContained Condition="'$(Configuration)'=='Release'">true</SelfContained>
     <RuntimeIdentifier Condition="'$(Configuration)'=='Release'">win-x64</RuntimeIdentifier>
