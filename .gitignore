@@ -13,6 +13,3 @@ artifacts/
 # 日志
 *.log
 
-# 本地工作区数据(勿提交)
-.workbuddy/
-
