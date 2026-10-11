@@ -1006,6 +1006,9 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     var arr = items || [];
     if (qItems.length === 0 && from === qStart) {
       qItems = arr;                                    // 初始窗口
+      // ★打开面板即跟随当前行:此前初始窗口只按 scrollTop=0 渲染,当前行在窗内第 60 行
+      //   (约 60×52px 之外),高亮在视口外"看不见"——只有切歌路径才调 qSyncCur,重开面板永远停在窗口顶部。
+      qSyncCur();
     } else if (from === qStart + qItems.length) {
       qItems = qItems.concat(arr);                     // 尾部续段(视口不动)
     } else if (qItems.length > 0 && from >= 0 && from + arr.length === qStart && arr.length > 0) {
@@ -1074,8 +1077,15 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   // 当前行跟随(切歌/打开):在窗内 → 置顶;不在 → 围绕它重建窗口
   function qSyncCur() {
     if (!qOpen) return;
+    // ★护栏:还没有在播条目(curIdxShown<0,面板在无播放内容时被打开)时只渲染不重建,
+    //   否则 else 分支的 qOpenLoad 会再次落进"不在窗内"判断,和 slice 回调互踢成死循环
+    if (curIdxShown == null || curIdxShown < 0) { qRender(); return; }
     var local = (curIdxShown || 0) - qStart;
     if (local >= 0 && local < qItems.length) {
+      // ★先撑起可滚高度,再设 scrollTop:面板刚打开时 sizer 还是 0px 高,
+      //   对零高度滚动容器赋 scrollTop 会被浏览器静默钳回 0
+      //   (表现:打开列表停在窗口顶部 1-20 条,切下一条视频才突然跟随)。
+      sizer.style.height = (qItems.length * ROWH) + 'px';
       qList.scrollTop = Math.max(0, local * ROWH);
       qRender();
       qEdgeDetect();

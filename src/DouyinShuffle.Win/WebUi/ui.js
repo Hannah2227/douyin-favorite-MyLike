@@ -215,6 +215,11 @@ function applyFilter() {
     }
     return true;
   });
+  // ★筛选变化后清掉"已看不见条目"上的旧勾选(隐藏勾选泄漏):
+  // 否则切年份/分类/搜索后点「删除」或「取消点赞」,会把屏幕外早已不可见的勾选一起带走。
+  // 所见即所选:工具栏"已选 N"从此只数看得见的。
+  const visibleIds = new Set(filtered.map(i => i.awemeId));
+  selected = new Set([...selected].filter(id => visibleIds.has(id)));
   renderedCount = 0;
   renderGrid();
 }
