@@ -212,6 +212,9 @@ public partial class DouyinAuthWindow : Window
         try { _core?.ExecuteScriptAsync(PauseMediaJs); } catch { }
         try { _core?.Navigate("about:blank"); } catch { }
         try { _core?.Stop(); } catch { }
+        // 确定性销毁渲染器:只导航 about:blank 会留下空壳渲染器进程(同原页窗的修复)
+        try { AuthWebView.Dispose(); } catch { }
+        _core = null;
         if (!_finished)
         {
             _finished = true;

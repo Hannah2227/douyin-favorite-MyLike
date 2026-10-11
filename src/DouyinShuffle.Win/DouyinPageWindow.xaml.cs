@@ -37,11 +37,14 @@ public partial class DouyinPageWindow : Window
         };
         Closed += (_, _) =>
         {
-            // 关窗即停止:暂停所有媒体 + 导航到空白页销毁原页面
-            // (浏览器进程不随窗口销毁,不清页面音频会继续播)
+            // 关窗即销毁:停媒体 → Dispose 控件(关闭 CoreWebView2Controller → 该页渲染器进程立即退出)。
+            // 只导航 about:blank 不够:页面内容清了,但控件包装对象未释放,渲染器进程滞留,
+            // 反复开关「评论」窗口会在任务管理器里堆积 WebView2 子进程(实测可复现)。
             try { _core?.ExecuteScriptAsync(PauseMediaJs); } catch { }
             try { _core?.Navigate("about:blank"); } catch { }
             try { _core?.Stop(); } catch { }
+            try { PageWebView.Dispose(); } catch { }
+            _core = null;
             ClosedByUser?.Invoke();
         };
         BtnClose.Click += (_, _) => Close();

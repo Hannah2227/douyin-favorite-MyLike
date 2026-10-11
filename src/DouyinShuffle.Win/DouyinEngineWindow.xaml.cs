@@ -22,6 +22,12 @@ public partial class DouyinEngineWindow : Window
         // Show 前先定位(防首帧在主屏 (0,0) 闪现);Loaded 再校一次(多屏热插拔/DPI 变化后兜底)
         PositionOffscreen();
         Loaded += (_, _) => PositionOffscreen();
+        // 账号切换/退出会 Close 本窗:必须确定性销毁引擎页(整页 douyin.com 很大),
+        // 否则渲染器进程滞留,旧账号的内存不回落(同原页窗/登录窗的修复)。
+        Closed += (_, _) =>
+        {
+            try { EngineWebView.Dispose(); } catch { }
+        };
     }
 
     /// <summary>
