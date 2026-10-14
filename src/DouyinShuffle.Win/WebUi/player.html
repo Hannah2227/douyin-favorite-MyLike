@@ -218,9 +218,13 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   }
 
   // ---------- 播放页内单条取消点赞 ----------
-  var unlikeDoneIdx = -1;   // 本次会话已取消的队列序号(切歌后按序号复位/置灰)
+  // 已取消点赞的条目集合(按 aweme_id 记):必须"按条目"记忆 —— 单槽位序号记录会被下一次取消覆盖,
+  // 表现为"连续取消几条后,回到早先取消过的那条又能再取消一次"(2026-10 实测复现)。
+  // 按 id 记同时免疫队列重排(重新洗牌后序号会指向别的条目)。
+  var unlikeDoneIds = {};
+  var curId = '';           // 当前条目 id(cfg.id,宿主下发)
   var unlikeBusy = false;   // 单条 unlike 请求在途(host 异步执行数秒)→ 防重复触发
-  var unlikeTargetIdx = -1; // 在途请求对应的队列序号(回执据此归位,防切歌后误标新条目)
+  var unlikeTargetId = '';  // 在途请求对应的条目 id(回执据此归位,防切歌后误标新条目)
   // 简介展开面板(issue #3):当前条目的完整文案/作者/时间(切歌时更新,面板开着即同步刷新)
   var lastDesc = '', lastAuthor = '', lastTime = '';
   var moreOpen = false;
@@ -254,24 +258,25 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   function syncUnlikeBtn() {
     var b = $('dsh-unlike');
     if (!b) return;
-    var done = curIdxShown === unlikeDoneIdx;
+    var done = !!unlikeDoneIds[curId];   // 按条目 id 判定(单槽位序号记录会被下一次取消覆盖)
     // 在途期间全局禁用(切歌也不放开):宿主单飞,避免"切歌→再点→二次请求→回执错位"。
     // 文案仅在"当前条目就是请求目标"时显示"取消中…",其余显示灰态"取消点赞"。
     var busy = unlikeBusy;
     b.disabled = done || busy;
-    b.textContent = done ? '已取消' : unlikeBusy && curIdxShown === unlikeTargetIdx ? '取消中…' : '取消点赞';
+    b.textContent = done ? '已取消' : busy && curId === unlikeTargetId ? '取消中…' : '取消点赞';
     b.title = done ? '本条已取消点赞' : '在抖音取消这条的点赞(不可逆),并从本地移除';
   }
-  // 宿主单条 unlike 回执:ok=true → 把"请求发起时那条"(unlikeTargetIdx,而非回执时的
-  // curIdxShown)标记为已取消 —— 执行期间用户可能已切歌,按当前序号标记会误伤新条目。
-  // 失败 → 复位按钮可重试。
+  // 宿主单条 unlike 回执:ok=true → 把"请求发起时那条"(unlikeTargetId,而非回执时的
+  // curId)标记为已取消 —— 执行期间用户可能已切歌,按当前条目标记会误伤新条目。
+  // 标记按 id 存进 unlikeDoneIds(单槽位记录会被下一次取消覆盖,见状态区注释)。
+  // 失败 → 不复位标记,按钮可重试。
   window.__dshUnlikeDone = function (ok, text) {
-    var target = unlikeTargetIdx;
-    unlikeTargetIdx = -1;
+    var target = unlikeTargetId;
+    unlikeTargetId = '';
     unlikeBusy = false;
-    // 仅在"播放会话仍在"时落标记:若退出播放页后回执才到(curIdxShown 已复位 -1),
-    // 写入会把上一会话的序号残留到新会话,导致新队列同序号误显"已取消"
-    if (ok && target >= 0 && curIdxShown >= 0) unlikeDoneIdx = target;
+    // 按"发起时那条的 id"落标记:回执到达时用户可能已切歌,按当前条目写会误伤新条目;
+    // 退出播放页后回执才到(curIdxShown 已复位 -1)则不写,防跨会话脏标记
+    if (ok && target && curIdxShown >= 0) unlikeDoneIds[target] = 1;
     showPlayerToast(text || (ok ? '已取消点赞' : '取消失败'), !ok);
     syncUnlikeBtn();
   };
@@ -507,13 +512,13 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
   $('dsh-prev').onclick = function (e) { e.stopPropagation(); post({ player: 'prev' }); };
   $('dsh-next').onclick = function (e) { e.stopPropagation(); post({ player: 'next' }); };
   function triggerUnlike() {
-    if (curIdxShown === unlikeDoneIdx) return;   // 本条已取消
+    if (unlikeDoneIds[curId]) return;            // 本条已取消(按 id 判定:回看旧条仍记得)
     if (unlikeBusy) return;                      // 已有请求在途(按钮/快捷键双入口防重)
     if (!confirm('在抖音取消这条的点赞,并从本地移除?\n此操作在抖音侧不可逆;当前播放不受影响。')) return;
     unlikeBusy = true;
-    unlikeTargetIdx = curIdxShown;               // 记住发起条目:回执按它归位,防切歌误标
+    unlikeTargetId = curId;                      // 记住发起条目 id:回执按它归位,防切歌误标
     syncUnlikeBtn();                             // 置"取消中…"并禁用
-    post({ player: 'unlike', index: curIdxShown });   // 附带序号:宿主按发起时条目执行,防切歌取错
+    post({ player: 'unlike', index: curIdxShown, id: curId });   // 序号取条目、id 归位(宿主按序号执行)
   }
   $('dsh-unlike').onclick = function (e) { e.stopPropagation(); triggerUnlike(); };
   // 简介展开面板(issue #3):标题区「展开」按钮 + 面板内交互不冒泡(防触发播放/暂停)
@@ -822,6 +827,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     lastAuthor = cfg.author || '';
     lastTime = cfg.time || '';
     curIdxShown = cfg.index;
+    curId = cfg.id || ('#' + cfg.index);   // 条目 id(宿主下发);缺省退回序号键,仅同会话内有效
     playTotal = cfg.total || 0;
     updateNavState();   // 第一条禁上一条 / 最后一条禁下一条
     syncUnlikeBtn();    // 取消点赞按钮状态跟随当前条目(已取消的保持置灰)
@@ -954,8 +960,9 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:system-ui,"Mic
     root.classList.remove('ui-on');
     root.classList.remove('ui-hold');
     curIdxShown = -1;   // 复位首帧标志:下次重新进入播放时仍会唤起一次 UI(见 __dshPlayerShow)
-    unlikeDoneIdx = -1;   // 复位已取消标记:新会话的队列序号对应的是新条目,防首条误显"已取消"
-    unlikeBusy = false; unlikeTargetIdx = -1;   // 在途请求跨会话无效,一并复位
+    curId = '';
+    unlikeDoneIds = {};   // 已取消标记为会话级:新会话队列已重建(成功的条目也已从本地移除)
+    unlikeBusy = false; unlikeTargetId = '';   // 在途请求跨会话无效,一并复位
     try { video.pause(); } catch (e) {}
     video.removeAttribute('src');
     try { audio.pause(); } catch (e) {}

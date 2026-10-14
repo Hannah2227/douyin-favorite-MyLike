@@ -407,7 +407,8 @@ public sealed class PlaybackController
             else _resumePositions.TryGetValue(it.AwemeId, out resume);
         }
         var cfg = string.Concat(
-            "{urls:", urlsJson,
+            "{id:", Json(it.AwemeId),   // 条目 id:播放页"已取消点赞"标记按 id 记忆(单槽位序号会被下一次取消覆盖)
+            ",urls:", urlsJson,
             ",images:", imagesJson,
             ",liveImages:", liveImagesJson,
             ",music:", Json(it.MusicUrl),
