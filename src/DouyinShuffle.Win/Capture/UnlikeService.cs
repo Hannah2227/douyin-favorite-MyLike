@@ -66,6 +66,9 @@ public sealed class UnlikeService
                   window.chrome.webview.postMessage(obj);
                 } catch (e) {}
               }
+              // 6s 超时 race(对齐 detail-fetch.js):接口黑洞时及时回传,不让挂起的 fetch 堆积在页面里
+              var timeout = new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout6s')); }, 6000); });
+              Promise.race([
               (async function () {
                 try {
                   const body = new URLSearchParams();
@@ -98,7 +101,9 @@ public sealed class UnlikeService
                 } catch (e) {
                   post({ error: String(e) });
                 }
-              })();
+              })(),
+              timeout
+              ]).catch(function (e) { post({ error: 'race:' + String(e && e.message || e) }); });
             })();
             """;
 

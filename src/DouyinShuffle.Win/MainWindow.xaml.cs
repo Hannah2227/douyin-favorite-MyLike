@@ -681,15 +681,18 @@ public partial class MainWindow : Window
         // 注意:引擎页保持"零初始化脚本"的干净状态:
         // 任何文档创建时的 fetch 包装都会干扰 webmssdk 签名层 → 直连被黑洞。
 
-        InitPlayer();
-
         // 播放页导航到本地 player.html(与 UI 同目录提取)
+        // ★就绪门顺序修复:本块必须在 InitPlayer 之前 —— _player.PageReadyTask 在 InitPlayer 里经
+        //   WaitForPlayerPageAsync() 捕获 _playerPageTcs;TCS 若后建,捕获到的就是 null/旧值,
+        //   恒为 CompletedTask → PlaybackController 两处"等页面就绪(≤5s)"自始就形同虚设(门是死的)。
         _playerPageTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         PlayerWebView.CoreWebView2!.NavigationCompleted += (_, npc) =>
         {
             if (npc.IsSuccess) _playerPageTcs.TrySetResult(true);
         };
         PlayerWebView.CoreWebView2!.Navigate(Path.Combine(_uiDir, "player.html"));
+
+        InitPlayer();
 
         // UI 异步桥接(唯一通道:postMessage;不再用同步 host object,避免死锁)
         UiWebView.CoreWebView2!.WebMessageReceived += OnUiMessage;
@@ -1648,6 +1651,9 @@ public partial class MainWindow : Window
                         // 批量取消点赞(加固版):后台异步逐条处理,立即返回 started;
                         // 停止/进度/结束经 __dsh_unlikeStart/Progress/End 推给 UI
                         if (_unlikeCts != null) return "busy";
+                        // 互斥补漏:播放页单条取消在途(≤10s)时禁止启动批量,防同引擎页双通道并发
+                        // (单条入口此前已有反向检查 _unlikeCts,这里此前漏了对单条在途的检查)
+                        if (_playerUnlikeBusy) return "err:单条取消点赞正在处理,请稍候";
                         // 互斥:与采集/播放共用引擎页,同时跑会互相干扰并叠加风控
                         if (_orchestrator is { IsCollecting: true })
                             return "err:正在采集中,请先停止采集再取消点赞";
@@ -1975,6 +1981,7 @@ public partial class MainWindow : Window
         string? lastReject = null;
         var selfHealLeft = 1;         // 风控现场 reload 自愈次数上限(防 reload 循环)
         var stopReason = "";
+        var needVerifyWindow = false; // 该停批是否应弹验证窗(显式标志,不再用 stopReason 文案匹配驱动控制流)
         try
         {
             for (var i = 0; i < ids.Length; i++)
@@ -2010,6 +2017,7 @@ public partial class MainWindow : Window
                             continue;
                         }
                         stopReason = $"连续 {risk} 条无响应且接口探测失败(疑似触发验证),已自动停止";
+                        needVerifyWindow = true;
                         break;
                     }
                 }
@@ -2035,7 +2043,7 @@ public partial class MainWindow : Window
         finally
         {
             _unlikeCts = null;
-            if (stopReason.Contains("验证") && !IsVerifyWindowOpen)
+            if (needVerifyWindow && !IsVerifyWindowOpen)
             {
                 // 引导用户过滑块:验证通过后引擎页自动 reload;剩余条目本地未删,重新勾选即可续跑
                 // 必须带 secUid:验证窗完成信号 = favorite 接口恢复(风控分接口,self 恢复说明不了)

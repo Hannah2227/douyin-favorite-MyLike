@@ -252,6 +252,12 @@ public sealed class LikeCollector
                             existing.ImageUrls = item.ImageUrls;
                             changed = true;
                         }
+                        // 实况动态子链同样保鲜(v1.0.7 曾遗漏:重采后旧条目的动图链永远陈旧 → 实况从此播不动)
+                        if (item.LiveImageUrls.Count > 0 && !ListsEqualNullable(existing.LiveImageUrls, item.LiveImageUrls))
+                        {
+                            existing.LiveImageUrls = item.LiveImageUrls;
+                            changed = true;
+                        }
                         if (item.MusicUrl.Length > 0 && existing.MusicUrl != item.MusicUrl)
                         {
                             existing.MusicUrl = item.MusicUrl;
@@ -415,6 +421,14 @@ public sealed class LikeCollector
     {
         if (a.Count != b.Count) return false;
         var set = new HashSet<string>(a);
+        return b.All(set.Contains);
+    }
+
+    /// <summary>同上,元素可空版(实况动态子链表以 null 表示"该张为纯图")。</summary>
+    private static bool ListsEqualNullable(List<string?> a, List<string?> b)
+    {
+        if (a.Count != b.Count) return false;
+        var set = new HashSet<string?>(a);
         return b.All(set.Contains);
     }
 

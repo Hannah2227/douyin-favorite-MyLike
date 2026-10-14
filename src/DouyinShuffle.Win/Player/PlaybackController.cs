@@ -609,7 +609,10 @@ public sealed class PlaybackController
             startIndex = _index;
         }
         if (FreshUrlFetcher == null) return false;
-        if (!_refreshedIds.Add(item.AwemeId)) return false;
+        lock (_sync)
+        {
+            if (!_refreshedIds.Add(item.AwemeId)) return false;   // 与其余访问同锁(锁纪律:避免未来挪线程成真竞态)
+        }
 
         Notify("正在实时获取最新链接…");
         var fresh = await FreshUrlFetcher(item.AwemeId);
