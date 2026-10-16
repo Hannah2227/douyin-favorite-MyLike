@@ -29,6 +29,10 @@
   </header>
   <div class="body">
     <nav class="sidenav">
+      <button class="side-item active" id="source-likes" data-source="likes">♥ 看喜欢</button>
+      <button class="side-item" id="source-collections" data-source="collections">★ 看收藏</button>
+      <button class="side-item" id="source-recommendations" data-source="recommendations">↗ 看推荐</button>
+      <div style="height:1px;background:var(--border,#ddd);margin:12px 16px"></div>
       <div class="side-item active" id="nav-all">
         <span class="side-icon">&#9650;</span>
         <span class="side-label">全部</span>
@@ -77,7 +81,7 @@
         </div>
         <div class="dash-card">
           <div class="dash-left">
-            <div class="dash-label">MY LIKES</div>
+            <div class="dash-label" id="source-heading">我的喜欢</div>
             <div class="dash-title">已采集 <b id="stat-total">0</b> 条</div>
             <div class="dash-sub" id="dash-sub">可洗牌播放或点击卡片播放。</div>
           </div>
