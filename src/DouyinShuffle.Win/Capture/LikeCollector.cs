@@ -57,6 +57,7 @@ public sealed class LikeCollector
 
     /// <summary>采集开关(调试用;关闭后不处理任何响应)。</summary>
     public bool CaptureEnabled { get; set; } = true;
+    public ListSource Source { get; set; } = ListSource.Likes;
 
     /// <summary>新增一条(UI 线程)。</summary>
     public event Action<AwemeItem>? ItemAdded;
@@ -207,6 +208,7 @@ public sealed class LikeCollector
             }
 
             if (type != "direct_resp") return;
+            if (!_directRunning) return;
             var body = jo["body"]?.Value<string>();
             if (string.IsNullOrEmpty(body)) return;
             if (!body.TrimStart().StartsWith("{")) return;   // HTML(验证页)由 direct_fail 上报
@@ -363,6 +365,7 @@ public sealed class LikeCollector
         }
 
         var js = ScriptLoader.Get("paged-loop.js")
+            .Replace("{{LIST_SOURCE}}", Source.Key())
             .Replace("{{SEC_USER_ID}}", secUserId)
             .Replace("{{START_CURSOR}}", startCursor.ToString())
             .Replace("{{KNOWN_IDS}}", knownJson)

@@ -94,7 +94,7 @@ public static class DouyinProbe
     /// 升级弹窗前的预判,都必须以收藏接口本身的恢复为准。
     /// 返回 true = 接口可翻页;false = 黑洞/验证页/异常。
     /// </summary>
-    public static async Task<bool> CheckFavoriteApiAsync(CoreWebView2? core, string secUserId)
+    public static async Task<bool> CheckFavoriteApiAsync(CoreWebView2? core, string secUserId, ListSource source = ListSource.Likes)
     {
         if (core == null || string.IsNullOrEmpty(secUserId)) return false;
         var id = Guid.NewGuid().ToString("N");
@@ -114,6 +114,7 @@ public static class DouyinProbe
         {
             // 探测脚本见 Capture/Scripts/favorite-probe.js
             var js = ScriptLoader.Get("favorite-probe.js")
+                .Replace("{{LIST_SOURCE}}", source.Key())
                 .Replace("{{ID}}", id)
                 .Replace("{{SEC_USER_ID}}", secUserId);
             await core.ExecuteScriptAsync(js);

@@ -40,7 +40,7 @@ public static class AwemeParser
             }
         }
 
-        result.MaxCursor = root["max_cursor"]?.Value<long>() ?? 0;
+        result.MaxCursor = root["max_cursor"]?.Value<long>() ?? root["cursor"]?.Value<long>() ?? 0;
         result.HasMore = root["has_more"]?.Value<bool>() ?? false;
         result.StatusCode = root["status_code"]?.Value<int>() ?? -1;
         result.StatusMsg = root["status_msg"]?.Value<string>() ?? "";

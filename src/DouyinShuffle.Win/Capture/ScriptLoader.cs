@@ -25,6 +25,8 @@ internal static class ScriptLoader
         var content = ReadRaw(name);
         if (name != "classify.js")
             content = ReadRaw("classify.js") + "\n" + content;
+        if (name is "paged-loop.js" or "favorite-probe.js")
+            content = ReadRaw("list-source.js") + "\n" + content;
         lock (Sync) { Cache[name] = content; }
         return content;
     }
