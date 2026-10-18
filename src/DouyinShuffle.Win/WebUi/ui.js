@@ -28,7 +28,7 @@ window.__dsh_respond = function (id, result) {
 let items = [];            // 全部条目(已排序)
 let filtered = [];
 let selected = new Set();
-let yearFilter = '', monthFilter = '', searchText = '';
+let searchText = '';       // 年/月筛选不再另存变量:applyFilter 现读下拉框(DOM 唯一真相,防"显示与过滤不一致")
 let navFilter = 'all';     // all | video | gallery
 let loggedIn = false;
 let curTheme = 'light';    // 当前主题(宿主 settings.json 为准,localStorage 仅首帧回显)
@@ -202,12 +202,20 @@ function renderMonthOptions() {
 }
 
 // ---------- 筛选 ----------
+// ★年/月条件现读下拉框,不另存变量:月份选项会随年份重建(选年份后只列该年有内容的月份),
+//   重建时浏览器会把选中项复位到第一个 option —— 若另存一份变量,它就会与屏幕显示脱节,
+//   表现为"下拉框显示全部月份、列表却仍按旧月份过滤 → 空白"(2026-10 实测)。
 function applyFilter() {
+  const y = parseInt(document.getElementById('year-filter').value) || 0;
+  const m = parseInt(document.getElementById('month-filter').value) || 0;
   filtered = items.filter(i => {
     if (navFilter === 'video' && i.status !== 0) return false;
     if (navFilter === 'gallery' && i.status !== 2) return false;
-    if (yearFilter && new Date(i.createTime * 1000).getFullYear() !== parseInt(yearFilter)) return false;
-    if (monthFilter && new Date(i.createTime * 1000).getMonth() + 1 !== parseInt(monthFilter)) return false;
+    if (y || m) {
+      const d = new Date(i.createTime * 1000);   // 未选年月时跳过整段(顺带每条只构造一次 Date)
+      if (y && d.getFullYear() !== y) return false;
+      if (m && d.getMonth() + 1 !== m) return false;
+    }
     if (searchText) {
       const q = searchText.toLowerCase();
       const hay = `${i.desc || ''} ${i.author || ''}`.toLowerCase();
@@ -466,8 +474,9 @@ on('btn-delete', 'click', async () => {
 on('btn-export', 'click', async () => { const r = await call('export'); toast(r || '已导出'); });
 on('btn-import', 'click', async () => { const r = await call('import'); toast(r || '导入完成'); });
 on('btn-stop', 'click', async () => { await call('stop'); setPlaying(''); });
-on('year-filter', 'change', e => { yearFilter = e.target.value; renderMonthOptions(); applyFilter(); });
-on('month-filter', 'change', e => { monthFilter = e.target.value; applyFilter(); });
+// 年月筛选:处理器只负责"重建选项 / 重筛",条件由 applyFilter 现读下拉框(见其注释)
+on('year-filter', 'change', () => { renderMonthOptions(); applyFilter(); });
+on('month-filter', 'change', () => applyFilter());
 // 搜索:点击按钮(或回车)后才执行,不随输入实时过滤(几万条实时过滤会卡)。
 // ★同步时以"当前输入框内容"为准(issue #3):输入后再清空 + 回车/刷新 → searchText 归零恢复全量,
 //   不再残留上次关键词(旧行为只在有词时赋值,清空后变量仍留着旧词,列表永远停在搜索结果)。
