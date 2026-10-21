@@ -42,6 +42,7 @@ internal sealed class CollectOrchestrator
     private readonly RiskStateMachine _riskState = new();
 
     public bool IsCollecting => _collecting;
+    public bool IsBusy => _collecting || _pendingCollectResume || _riskRecoverHandling != 0;
     public string SecUid => _lastSecUid;
     /// <summary>风控挂起中(等用户下次点采集)。</summary>
     public bool IsRiskHeld => _riskState.IsRiskHeld;
@@ -125,7 +126,7 @@ internal sealed class CollectOrchestrator
         {
             var uid = _lastSecUid;
             AppLog.Write($"RISK-RECHECK fav auto={_autoRecoverCount}");
-            var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+            var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid, _host.CurrentSource);
 
             // 已恢复 = 真波动(JS 退避期间接口回来了)→ 静默续采
             if (favOk && _autoRecoverCount < 3)
@@ -141,7 +142,7 @@ internal sealed class CollectOrchestrator
             if (!favOk)
             {
                 await _host.ReloadDouyinPageAsync();
-                favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+                favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid, _host.CurrentSource);
                 if (favOk && _autoRecoverCount < 3)
                 {
                     _autoRecoverCount++;
@@ -229,12 +230,12 @@ internal sealed class CollectOrchestrator
             {
                 _host.DispatchUi("window.__dsh_collectStatus && window.__dsh_collectStatus(" + MainWindow.JsonText("正在检查接口状态…可能需要几十秒") + ")");
                 MarkUiCollecting();
-                var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+                var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid, _host.CurrentSource);
                 if (!favOk && !ct.IsCancellationRequested)
                 {
                     // 短重试一次(2s,滤掉瞬时抖动);仍不通则分流
                     await Task.Delay(2000, ct);
-                    favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+                    favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid, _host.CurrentSource);
                 }
                 if (!favOk && !ct.IsCancellationRequested)
                 {
@@ -438,7 +439,7 @@ internal sealed class CollectOrchestrator
             // 限流:先 reload 重建 SDK(旧页面拦截器持过期状态也会黑洞),再确认一次
             await _host.ReloadDouyinPageAsync();
             if (ct.IsCancellationRequested) return;
-            var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid);
+            var favOk = await DouyinProbe.CheckFavoriteApiAsync(_host.DouyinCoreInternal, uid, _host.CurrentSource);
             if (favOk)
             {
                 AppLog.Write("COLLECT recovered after reload");

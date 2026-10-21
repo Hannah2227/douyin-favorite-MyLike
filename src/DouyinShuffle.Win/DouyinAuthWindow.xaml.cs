@@ -24,6 +24,7 @@ public partial class DouyinAuthWindow : Window
 
     /// <summary>验证模式:收藏接口探测用的 sec_uid(风控分接口,验证通过必须以收藏接口恢复为准)。</summary>
     private readonly string _secUid;
+    private readonly ListSource _source;
     private CoreWebView2? _core;
     private bool _finished;
     private CancellationTokenSource? _pollCts;
@@ -34,13 +35,14 @@ public partial class DouyinAuthWindow : Window
     /// <summary>用户手动关闭窗口(未完成认证)。UI 线程触发。</summary>
     public event Action? Abandoned;
 
-    public DouyinAuthWindow(CoreWebView2Environment env, AuthMode mode, CoreWebView2? probeCore = null, string secUid = "")
+    public DouyinAuthWindow(CoreWebView2Environment env, AuthMode mode, CoreWebView2? probeCore = null, string secUid = "", ListSource source = ListSource.Likes)
     {
         InitializeComponent();
         _env = env;
         _mode = mode;
         _probeCore = probeCore;
         _secUid = secUid;
+        _source = source;
         Title = mode == AuthMode.Login ? "登录抖音" : "抖音安全验证";
         HintText.Text = mode == AuthMode.Login
             ? "请在下方页面完成登录(扫码或手机号)。登录成功且接口就绪后会自动关闭,期间如有滑块请从容完成,不会提前关窗。"
@@ -112,7 +114,7 @@ public partial class DouyinAuthWindow : Window
                         // 验证模式:完成信号 = 收藏接口恢复(而非 profile/self)。
                         // 风控分接口 —— 收藏接口被限时 self 可能一直 Ok,若用健康检查会秒判"通过"
                         // → 验证窗一闪而过,滑块根本来不及滑(实测踩坑)。
-                        var tf = await Dispatcher.InvokeAsync(() => DouyinProbe.CheckFavoriteApiAsync(target, _secUid));
+                        var tf = await Dispatcher.InvokeAsync(() => DouyinProbe.CheckFavoriteApiAsync(target, _secUid, _source));
                         var favOk = await tf;
                         if (favOk)
                         {
@@ -171,7 +173,7 @@ public partial class DouyinAuthWindow : Window
                     // 与主轮询同款信号:验证模式看收藏接口恢复,登录模式看 self
                     if (_mode == AuthMode.Verify && _secUid.Length > 0)
                     {
-                        var tf = await Dispatcher.InvokeAsync(() => DouyinProbe.CheckFavoriteApiAsync(target, _secUid));
+                        var tf = await Dispatcher.InvokeAsync(() => DouyinProbe.CheckFavoriteApiAsync(target, _secUid, _source));
                         if (await tf)
                         {
                             await Dispatcher.InvokeAsync(() => Finish(true));

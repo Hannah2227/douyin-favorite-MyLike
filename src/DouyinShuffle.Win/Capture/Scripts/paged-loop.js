@@ -20,34 +20,11 @@
   // 参数集 = 抖音 Web 端标准结构性参数(不伪造指纹:不传 webid/screen_*/browser_*
   // 等可能与环境不一致的值,不传 msToken —— 全部交给页面拦截器按真实环境现补)
   function buildUrl(cursor) {
-    var p = new URLSearchParams();
-    p.set('device_platform', 'webapp');
-    p.set('aid', '6383');
-    p.set('channel', 'channel_pc_web');
-    p.set('sec_user_id', SEC);
-    p.set('max_cursor', String(cursor));
-    p.set('min_cursor', '0');
-    p.set('count', '18');
-    p.set('publish_video_strategy_type', '2');
-    p.set('pc_client_type', '1');
-    p.set('version_code', '290100');
-    p.set('version_name', '29.1.0');
-    p.set('update_version_code', '170400');
-    p.set('cookie_enabled', 'true');
-    p.set('platform', 'PC');
-    var u = 'https://www.douyin.com/aweme/v1/web/aweme/favorite/?' + p.toString();
-    // msToken 从 cookie 现取(没有就空着,拦截器会补)
-    try {
-      var m = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/);
-      if (m && m[1]) u += '&msToken=' + encodeURIComponent(m[1]);
-    } catch (e) {}
-    return u;
+    return window.__dsh_listRequest('{{LIST_SOURCE}}', SEC, cursor, 18);
   }
-  // 裸 fetch:直接调 window.fetch 即当前最外层(webmssdk 包装层),
-  // 由抖音页面自己的拦截器自动补 a_bogus/X-Bogus/msToken。
-  function send(url) {
-    return fetch(url, { method: 'GET', credentials: 'include', headers: { 'accept': 'application/json, text/plain, */*' } })
-      .then(function (r) { return r.text().then(function (t) { return { s: r.status, b: t }; }); });
+  function send(request) {
+    return fetch(request.url, request.options)
+      .then(function (r) { return r.text().then(function (t) { return { s:r.status, b:t }; }); });
   }
   window.__dsh_direct_stop__ = false;
   var fetched = 0, empty = 0, emptyDelay = 1200, totalItems = 0, emptyPages = 0;
@@ -85,14 +62,14 @@
       empty = 0;
       emptyDelay = 1200;
       var data = c.data;
-      post({ type: 'direct_resp', url: url, status: res.s, body: res.b });
+      post({ type: 'direct_resp', url: url.url, status: res.s, body: res.b });
       fetched++;
       var pFirst = c.list && c.list[0] ? c.list[0].aweme_id : '';
       var pCount = c.list.length;
       totalItems += pCount;
       post({ type: 'direct_progress', fetched: fetched, cursor: CURSOR, first: pFirst, items: pCount, totalItems: totalItems });
       var hasMore = c.hasMore;
-      var next = data && data.max_cursor ? data.max_cursor : 0;
+      var next = data ? Number(data.max_cursor != null ? data.max_cursor : data.cursor || 0) : 0;
       var curFirst = pFirst;
       // 增量模式:整页全为已知 ID = 已到断点(喜欢列表倒序,旧内容无需重翻)。
       // 单页混有新旧(用户断点后又有新喜欢)→ 继续,后续页会全旧而停。

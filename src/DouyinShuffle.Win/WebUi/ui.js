@@ -33,6 +33,46 @@ let navFilter = 'all';     // all | video | gallery
 let loggedIn = false;
 let curTheme = 'light';    // 当前主题(宿主 settings.json 为准,localStorage 仅首帧回显)
 let collecting = false;
+let currentSource = 'likes';
+let switchingSource = false;
+let unlikeRunning = false;
+const sourceLabels = {likes:'我的喜欢', collections:'我的收藏', recommendations:'我推荐过的作品'};
+
+function applySource(source) {
+  currentSource = sourceLabels[source] ? source : 'likes';
+  document.querySelectorAll('[data-source]').forEach(el => {
+    el.classList.toggle('active', el.dataset.source === currentSource);
+    el.setAttribute('aria-pressed', String(el.dataset.source === currentSource));
+  });
+  setText('source-heading', sourceLabels[currentSource]);
+  document.getElementById('btn-unlike').hidden = currentSource !== 'likes';
+  document.getElementById('btn-unlike').style.display = currentSource === 'likes' ? '' : 'none';
+  document.getElementById('btn-collect').title = '采集' + sourceLabels[currentSource];
+}
+
+async function switchSource(source) {
+  if (source === currentSource || switchingSource) return;
+  if (collecting || unlikeRunning) { toast('请先停止当前任务再切换列表', true); return; }
+  switchingSource = true;
+  document.querySelectorAll('[data-source]').forEach(el => el.disabled = true);
+  try {
+    const result = await call('setSource', source);
+    if (result !== 'ok') { toast(result || '切换失败', true); return; }
+    applySource(source);
+    yearFilter = ''; monthFilter = ''; searchText = ''; navFilter = 'all';
+    ['all', 'gallery', 'video'].forEach(k => document.getElementById('nav-' + k).classList.toggle('active', k === 'all'));
+    document.getElementById('year-filter').value = '';
+    document.getElementById('month-filter').value = '';
+    const search = document.querySelector('input[type="search"], #search');
+    if (search) search.value = '';
+    document.getElementById('resume-bar').classList.add('hidden');
+    await refresh();
+    checkResume();
+  } finally {
+    switchingSource = false;
+    document.querySelectorAll('[data-source]').forEach(el => el.disabled = false);
+  }
+}
 let selectMode = false;    // 选择模式:点卡片=勾选,不播放
 let renderedCount = 0;     // 分批渲染游标
 const PAGE_SIZE = 60;
@@ -180,7 +220,7 @@ function renderStats() {
   const sub = document.getElementById('dash-sub');
   const btnCollect = document.getElementById('btn-collect');
   if (sub) {
-    sub.textContent = total === 0 ? '还没有数据,点右侧「❤ 采集」抓取你的喜欢列表。' : '可洗牌播放或点击卡片播放。';
+    sub.textContent = total === 0 ? `还没有数据，点右侧「采集」获取${sourceLabels[currentSource]}。` : '可洗牌播放或点击卡片播放。';
     sub.classList.toggle('remind', total === 0);
   }
   if (btnCollect) btnCollect.classList.toggle('pulse', total === 0);
@@ -225,7 +265,7 @@ function renderGrid() {
   setText('list-info', `共 ${filtered.length} 条`);
   if (filtered.length === 0) {
     grid.innerHTML = `<div class="empty">${items.length === 0
-      ? '还没有数据。<br>点右上角「登录」登录抖音,再点「已采集」栏的「采集」抓取你的喜欢列表。'
+      ? `还没有数据。<br>${loggedIn ? '' : '点击左下角账号入口登录抖音，再'}点击「采集」获取${sourceLabels[currentSource]}。`
       : '没有符合筛选条件的条目。'}</div>`;
     document.getElementById('load-more').classList.add('hidden');
     return;
@@ -337,6 +377,7 @@ function setUnlikeBtn(busy) {
   if (btn) { btn.disabled = busy; btn.textContent = busy ? '处理中…' : '取消点赞'; }
 }
 window.__dsh_unlikeStart = function (total) {
+  unlikeRunning = true;
   const bar = document.getElementById('unlike-bar');
   if (bar) bar.classList.remove('hidden');
   setUnlikeBtn(true);
@@ -351,6 +392,7 @@ window.__dsh_unlikeProgress = function (done, total, msg) {
   setUnlikeBar(msg || `正在取消 ${done}/${total}`);
 };
 window.__dsh_unlikeEnd = async function (text) {
+  unlikeRunning = false;
   setUnlikeBar(text);
   toast(text);
   setUnlikeBtn(false);
@@ -931,6 +973,10 @@ window.__dsh_setTheme = function (theme) {
 
 // ---------- 初始 ----------
 window.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-source]').forEach(el => {
+    el.addEventListener('click', () => switchSource(el.dataset.source));
+  });
+  call('source').then(source => { applySource(source); renderStats(); });
   bindGrid();
   updateSelectUi();
   initTheme();

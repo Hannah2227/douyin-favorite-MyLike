@@ -17,7 +17,7 @@ window.__dsh_classify = function (body, status) {
       if (status && (status < 200 || status >= 300)) return { kind: 'http-error', status: status, data: d };
       if (d.status_code != null && d.status_code !== 0 && d.status_code !== '0') return { kind: 'api-error', status: status || 0, data: d };
       var list = Array.isArray(d.aweme_list) ? d.aweme_list : (Array.isArray(d.awemeList) ? d.awemeList : null);
-      return { kind: 'json', status: status || 0, data: d, list: list, hasMore: !!d.has_more };
+      return { kind: 'json', status: status || 0, data: d, list: list, hasMore: d.has_more === true || d.has_more === 1 || d.has_more === '1' };
     } catch (e) { return { kind: 'bad-json', status: status || 0 }; }
   }
   if (/<html[\s>]/i.test(t.slice(0, 300))) return { kind: 'verify', status: status || 0 };
