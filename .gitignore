@@ -13,3 +13,13 @@ artifacts/
 # 日志
 *.log
 
+# Electron
+node_modules/
+apps/desktop/out/
+apps/desktop/dist/
+apps/desktop/test-results/
+apps/desktop/test-results-recovery/
+apps/desktop/test-results-*/
+apps/desktop/playwright-report/
+*.tsbuildinfo
+

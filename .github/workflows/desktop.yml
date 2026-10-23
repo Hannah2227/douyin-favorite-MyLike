@@ -1,0 +1,62 @@
+name: Electron desktop
+
+on:
+  pull_request:
+    paths: ["apps/desktop/**", ".github/workflows/desktop.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/desktop/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: apps/desktop
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.12.0
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec electron --version
+      - run: pnpm format:check
+      - run: pnpm test
+      - run: pnpm package:win
+      - name: Test packaged application
+        run: |
+          $env:MYLIKE_EXECUTABLE = Join-Path $PWD 'dist/win-unpacked/MyLike.exe'
+          pnpm test:e2e
+      - name: Test portable launcher
+        run: node tests/portable-smoke.mjs
+      - name: Create checksums
+        run: |
+          $files = Get-ChildItem dist/*.exe, dist/*.zip | Sort-Object Name
+          if ($files.Count -ne 2) { throw 'Expected one portable EXE and one ZIP.' }
+          $lines = $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }
+          ($lines -join "`n") + "`n" | Set-Content dist/SHA256SUMS.txt -Encoding ascii -NoNewline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyLike-Windows-preview
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MyLike-Windows-test-results
+          path: apps/desktop/test-results
+          if-no-files-found: ignore

@@ -1,0 +1,17 @@
+{
+  "version": "0.8.1",
+  "platform": "win32-x64",
+  "applicationSha256": "78403b907ff26b762bed26886b6414f25ecd857eece3b63039557b5cd24d22cb",
+  "artifacts": [
+    {
+      "file": "MyLike-0.8.1-win-x64-portable.exe",
+      "bytes": 101939007,
+      "sha256": "d3120a73a12b10e7f9f916310b99e66fe4f57a69af58121a1ca0833ad388aa74"
+    },
+    {
+      "file": "MyLike-0.8.1-win-x64.zip",
+      "bytes": 157399372,
+      "sha256": "e6d9568fa13e903bcc9d7c000c0c6cef1e181cc420345cbbaf9e2b11dff4478d"
+    }
+  ]
+}

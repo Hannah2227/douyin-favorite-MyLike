@@ -1,0 +1,290 @@
+.task-center {
+  container-type: inline-size;
+}
+.task-content {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+.connection-strip {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 17px 0 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 22px;
+}
+.connection-avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: var(--muted);
+  background: var(--surface2);
+  flex-shrink: 0;
+}
+.connection-avatar.ready {
+  color: #5daf98;
+  background: #5daf9814;
+}
+.connection-copy {
+  flex: 1;
+  min-width: 0;
+}
+.connection-copy strong {
+  font-size: 13px;
+  display: block;
+  overflow-wrap: anywhere;
+}
+.connection-copy p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 6px 0 0;
+}
+.connection-actions,
+.simple-task-actions,
+.task-tool-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.connection-actions button,
+.simple-task-actions button,
+.task-tool-actions button,
+.unlike-records button {
+  font-size: 12px;
+  padding: 8px 11px;
+  background: transparent;
+}
+.collection-tasks {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.simple-task {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 19px 20px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.simple-task-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.simple-task-icon {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.simple-task-heading h2 {
+  font-size: 14px;
+  font-weight: 550;
+  margin: 0;
+}
+.task-badge {
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: auto;
+  white-space: nowrap;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--surface2);
+}
+.task-badge.running {
+  color: #6bbba2;
+  background: #6bbba214;
+}
+.task-badge.attention {
+  color: #d8ab70;
+  background: #d8ab7014;
+}
+.task-badge.completed {
+  color: var(--muted);
+}
+:root[data-theme='light'] .task-badge.running {
+  color: #28765f;
+}
+:root[data-theme='light'] .task-badge.attention {
+  color: #936019;
+}
+.simple-task-body {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 13px;
+}
+.simple-task-copy {
+  flex: 1;
+  min-width: 0;
+}
+.simple-task-copy > p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.simple-task-copy > .task-problem,
+.task-problem {
+  color: #df8c81;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+:root[data-theme='light'] .task-problem {
+  color: #ae4d3f;
+}
+.simple-task-copy > .task-problem,
+.simple-task-copy > .task-note {
+  margin-top: 5px;
+}
+.task-note,
+.task-activity {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+.simple-task-actions {
+  flex-shrink: 0;
+  justify-content: flex-end;
+}
+.simple-task-actions .task-text-button {
+  border-color: transparent;
+  color: var(--muted);
+  padding-inline: 5px;
+}
+.task-working {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.task-working::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: task-scan 1.8s linear infinite;
+}
+@keyframes task-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.unlike-task {
+  margin-bottom: 22px;
+}
+.unlike-records {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+}
+.unlike-records summary,
+.task-tools > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.unlike-records summary::after,
+.task-tools > summary::after {
+  content: '＋';
+  margin-left: auto;
+  color: var(--subtle);
+}
+.unlike-records[open] > summary::after,
+.task-tools[open] > summary::after {
+  content: '−';
+}
+.unlike-records summary span {
+  font-size: 10px;
+}
+.unlike-records-content {
+  padding-top: 15px;
+}
+.unlike-records .write-results {
+  max-height: 300px;
+  overflow: auto;
+}
+.unlike-records .write-results li {
+  gap: 12px;
+}
+.unlike-records .write-results strong,
+.unlike-records .write-results small {
+  overflow-wrap: anywhere;
+}
+.unlike-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.unlike-load-error {
+  margin-top: 14px;
+}
+.unlike-load-error p {
+  margin: 0 0 8px;
+}
+.task-tools {
+  border-top: 1px solid var(--line);
+  padding-top: 17px;
+  margin-bottom: 10px;
+}
+.task-tools-content {
+  padding-top: 13px;
+}
+.task-tools-content > p {
+  margin: 0 0 12px;
+}
+.task-tool-actions {
+  justify-content: flex-start;
+}
+@container (max-width: 700px) {
+  .connection-strip {
+    flex-wrap: wrap;
+  }
+  .connection-actions {
+    flex-basis: 100%;
+    padding-left: 51px;
+  }
+  .simple-task {
+    padding: 17px;
+  }
+  .simple-task-body {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .simple-task-copy {
+    flex-basis: 100%;
+  }
+  .simple-task-actions {
+    justify-content: flex-start;
+  }
+  .connection-copy p span {
+    display: block;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-working::after {
+    animation: none;
+  }
+}

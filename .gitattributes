@@ -1,0 +1,6 @@
+apps/desktop/** text=auto eol=lf
+.github/workflows/desktop.yml text eol=lf
+*.png binary
+*.ico binary
+*.mp4 binary
+*.webm binary

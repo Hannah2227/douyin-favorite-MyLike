@@ -1,0 +1,19 @@
+appId: io.mylike.desktop
+productName: MyLike
+electronDist: node_modules/electron/dist
+directories:
+  output: dist
+files:
+  - out/**
+  - assets/icon.png
+asar: true
+npmRebuild: false
+win:
+  icon: assets/icon.ico
+  target:
+    - portable
+    - zip
+  signExecutable: false
+portable:
+  artifactName: MyLike-${version}-win-${arch}-portable.exe
+artifactName: MyLike-${version}-win-${arch}.${ext}
