@@ -2,7 +2,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { Command } from '../../src/shared/contracts'
+import type { Command, QueueState } from '../../src/shared/contracts'
 import { version } from '../../package.json'
 import { CHANNEL } from '../../src/shared/channels'
 import { terminateApp } from '../helpers/terminate-app'
@@ -267,7 +267,9 @@ async function installMedia(portrait = false) {
   await app.evaluate(
     async ({ session }, { bytes, portrait }) => {
       const data = new Uint8Array(bytes)
-      await session.fromPartition('persist:mylike-ui').protocol.handle('https', (request) => {
+      await session.fromPartition('persist:mylike-ui').protocol.handle('https', async (request) => {
+        const delay = (globalThis as any).__mediaResponseDelayMs ?? 0
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
         if (request.url.endsWith('/missing.svg')) return new Response('', { status: 404 })
         if (request.url.endsWith('.svg'))
           return new Response(
@@ -316,11 +318,86 @@ async function prepareQueue(count = 3, gallery = false, portrait = false, captio
   await expect(page.locator('.list-caption')).toContainText(`${count} 条内容`)
   return { accountId, ids }
 }
-async function readyVideo() {
-  await expect.poll(() => page.locator('video').count()).toBe(1)
+async function readyVideo(expectedIndex?: number) {
+  // A click can finish before queue IPC does. Match the intended track, rendered
+  // queue position and decoded metadata together; an old ready video is insufficient.
   await expect
-    .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).readyState))
-    .toBeGreaterThanOrEqual(2)
+    .poll(
+      async () => {
+        const queue = (await invoke('snapshot')).data.playback as QueueState | null
+        if (!queue || (expectedIndex !== undefined && queue.index !== expectedIndex)) return false
+        return page.evaluate(({ index, total, work }) => {
+          const videos = document.querySelectorAll('video'),
+            video = videos[0]
+          return (
+            videos.length === 1 &&
+            !!video &&
+            document.querySelector('.player-queue-position')?.textContent === `${index + 1} / ${total}` &&
+            (video.getAttribute('src') === `https://fixture.douyinvod.com/video-${work.id}.mp4` ||
+              video.getAttribute('src') === 'https://fixture.douyinvod.com/live.mp4') &&
+            video.readyState >= 2 &&
+            Number.isFinite(video.duration) &&
+            video.duration > 0 &&
+            video.videoWidth > 0 &&
+            video.videoHeight > 0
+          )
+        }, queue)
+      },
+      { message: `Expected decoded video for queue index ${expectedIndex ?? 'current'}` }
+    )
+    .toBe(true)
+}
+async function seekVideo(position: number | { fromEnd: number }, play = false) {
+  // Recheck metadata and seek in one renderer operation, avoiding a remount
+  // between the ready check and currentTime assignment (duration would be NaN).
+  await expect
+    .poll(() =>
+      page.locator('video').evaluateAll(
+        (nodes, { position, play }) => {
+          const video = nodes[0] as HTMLVideoElement | undefined
+          if (
+            nodes.length !== 1 ||
+            !video ||
+            video.readyState < 2 ||
+            !Number.isFinite(video.duration) ||
+            video.duration <= 0
+          )
+            return false
+          video.currentTime = typeof position === 'number' ? position : video.duration - position.fromEnd
+          if (play) void video.play()
+          return true
+        },
+        { position, play }
+      )
+    )
+    .toBe(true)
+}
+async function changeVideo(action: () => Promise<unknown>, expectedIndex: number) {
+  const previous = await page.locator('video').elementHandle()
+  expect(previous).not.toBeNull()
+  try {
+    await action()
+    await expect.poll(() => previous!.evaluate((node) => !node.isConnected)).toBe(true)
+    await readyVideo(expectedIndex)
+  } finally {
+    await previous?.dispose()
+  }
+}
+async function delayPlaybackTransitions() {
+  // Exercise both gaps deterministically: backend queue committed while the UI
+  // still shows the old clip, and the new clip mounted before metadata arrives.
+  await app.evaluate(({ ipcMain }, channel) => {
+    const handler = (ipcMain as any)._invokeHandlers.get(channel)
+    if (!handler) throw new Error('Missing test IPC handler')
+    ;(globalThis as any).__mediaResponseDelayMs = 250
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, async (event, command, input) => {
+      const result = await handler(event, command, input)
+      if (['queueMove', 'queueEnd', 'queueReplay'].includes(command))
+        await new Promise((resolve) => setTimeout(resolve, 750))
+      return result
+    })
+  }, CHANNEL)
 }
 
 async function prepareScrollableLibrary(splitTypes = false) {
@@ -963,9 +1040,7 @@ test('persists playback position and preferences across restart and suppresses r
   await page.getByRole('button', { name: '倍速', exact: true }).click()
   await page.getByRole('menuitemradio', { name: '1.5x', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.playbackPreferences.volume).toBeCloseTo(0.75)
-  await page.locator('video').evaluate((node) => {
-    ;(node as HTMLVideoElement).currentTime = 2.25
-  })
+  await seekVideo(2.25)
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).currentTime))
     .toBeCloseTo(2.25, 1)
@@ -995,9 +1070,7 @@ test('persists playback position and preferences across restart and suppresses r
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).paused))
     .toBe(true)
-  await page.locator('video').evaluate((node) => {
-    ;(node as HTMLVideoElement).currentTime = 2.75
-  })
+  await seekVideo(2.75)
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).seeking))
     .toBe(false)
@@ -1010,11 +1083,7 @@ test('persists playback position and preferences across restart and suppresses r
   await installMedia()
   await page.getByRole('button', { name: '继续回看', exact: true }).click()
   await readyVideo()
-  await page.locator('video').evaluate((node) => {
-    const video = node as HTMLVideoElement
-    video.currentTime = video.duration - 0.1
-    void video.play()
-  })
+  await seekVideo({ fromEnd: 0.1 }, true)
   await expect.poll(async () => (await invoke('snapshot')).data.playback.completed).toBe(true)
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
   await expect(page.getByRole('button', { name: '继续回看', exact: true })).toHaveCount(0)
@@ -1037,7 +1106,7 @@ test('keeps the latest track during rapid moves and opens comments externally wh
   await page.getByRole('button', { name: '下一条', exact: true }).click()
   await page.getByRole('button', { name: '下一条', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(2)
-  await readyVideo()
+  await readyVideo(2)
   await expect(page.locator('video')).toHaveAttribute(
     'src',
     `https://fixture.douyinvod.com/video-${ids[2]}.mp4`
@@ -1073,7 +1142,7 @@ test('keeps the latest track during rapid moves and opens comments externally wh
   await page.getByRole('button', { name: '打开原页', exact: true }).click()
   await expect.poll(() => app.evaluate(() => (globalThis as any).__externalUrls.length)).toBe(2)
   await page.getByRole('button', { name: '下一条', exact: true }).click()
-  await readyVideo()
+  await readyVideo(3)
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   expect(
     (
@@ -1150,25 +1219,24 @@ test('resumes a gallery slide and music position, then automatically advances wi
     .poll(() => page.locator('audio').evaluate((node) => (node as HTMLAudioElement).currentTime))
     .toBeGreaterThanOrEqual(Math.max(0, saved.position.musicSeconds - 0.2))
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index, { timeout: 20000 }).toBe(1)
-  await readyVideo()
+  await readyVideo(1)
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
 })
 
 test('loops the current video and keeps the queue open across next, jump, wheel and automatic advance', async () => {
   test.setTimeout(testTimeout(60000))
   await prepareQueue(6)
+  await delayPlaybackTransitions()
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
-  await readyVideo()
+  await readyVideo(0)
   await page.getByRole('checkbox', { name: '连播', exact: true }).uncheck()
   const before = (await invoke('snapshot')).data.playback
   await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
   const panel = page.getByRole('complementary', { name: '播放队列', exact: true })
   await page.locator('video').evaluate((node) => {
-    const v = node as HTMLVideoElement
-    ;(window as any).__loopVideo = v
-    v.currentTime = v.duration - 0.15
-    void v.play()
+    ;(window as any).__loopVideo = node
   })
+  await seekVideo({ fromEnd: 0.15 }, true)
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).currentTime))
     .toBeLessThan(1.5)
@@ -1182,26 +1250,15 @@ test('loops the current video and keeps the queue open across next, jump, wheel 
     true
   )
   await expect(panel).toBeVisible()
-  await page.getByRole('button', { name: '下一条', exact: true }).click()
-  await expect(page.locator('.player-queue-position')).toHaveText('2 / 6')
-  await readyVideo()
+  await changeVideo(() => page.getByRole('button', { name: '下一条', exact: true }).click(), 1)
   await expect(panel).toBeVisible()
-  await panel.getByRole('button', { name: '播放队列第 3 条', exact: true }).click()
-  await expect(page.locator('.player-queue-position')).toHaveText('3 / 6')
-  await readyVideo()
+  await changeVideo(() => panel.getByRole('button', { name: '播放队列第 3 条', exact: true }).click(), 2)
   await expect(panel).toBeVisible()
   await page.locator('.stage').hover({ position: { x: 100, y: 100 } })
-  await page.mouse.wheel(0, 240)
-  await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(3)
-  await readyVideo()
+  await changeVideo(() => page.mouse.wheel(0, 240), 3)
   await expect(panel).toBeVisible()
   await page.getByRole('checkbox', { name: '连播', exact: true }).check()
-  await page.locator('video').evaluate((node) => {
-    const v = node as HTMLVideoElement
-    v.currentTime = v.duration - 0.1
-    void v.play()
-  })
-  await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(4)
+  await changeVideo(() => seekVideo({ fromEnd: 0.1 }, true), 4)
   await expect(panel).toBeVisible()
   await page.getByRole('button', { name: '收起播放队列', exact: true }).click()
   await expect(panel).toHaveCount(0)
@@ -1210,10 +1267,11 @@ test('loops the current video and keeps the queue open across next, jump, wheel 
 test('keeps the same fullscreen container through buttons, queue jumps, wheel, automatic advance and replay', async () => {
   test.setTimeout(testTimeout(90000))
   await prepareQueue(6)
+  await delayPlaybackTransitions()
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
-  await readyVideo()
+  await readyVideo(0)
   const id = await app.evaluate(
     ({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!.id
@@ -1238,44 +1296,26 @@ test('keeps the same fullscreen container through buttons, queue jumps, wheel, a
         .toBe(true)
       await expect(page.getByRole('button', { name: '退出全屏', exact: true })).toBeVisible()
     }
-    await page.getByRole('button', { name: '下一条', exact: true }).click()
-    await expect(page.locator('.player-queue-position')).toHaveText('2 / 6')
-    await readyVideo()
+    await changeVideo(() => page.getByRole('button', { name: '下一条', exact: true }).click(), 1)
     await stillFullscreen()
-    await page.getByRole('button', { name: '上一条', exact: true }).click()
-    await expect(page.locator('.player-queue-position')).toHaveText('1 / 6')
-    await readyVideo()
+    await changeVideo(() => page.getByRole('button', { name: '上一条', exact: true }).click(), 0)
     await stillFullscreen()
     await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
-    await page.getByRole('button', { name: '播放队列第 3 条', exact: true }).click()
-    await expect(page.locator('.player-queue-position')).toHaveText('3 / 6')
-    await readyVideo()
+    await changeVideo(() => page.getByRole('button', { name: '播放队列第 3 条', exact: true }).click(), 2)
     await stillFullscreen()
     await page.locator('.stage').hover({ position: { x: 100, y: 100 } })
-    await page.mouse.wheel(0, 240)
-    await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(3)
-    await readyVideo()
+    await changeVideo(() => page.mouse.wheel(0, 240), 3)
     await stillFullscreen()
     await page.getByRole('checkbox', { name: '连播', exact: true }).check()
-    await page.locator('video').evaluate((node) => {
-      const v = node as HTMLVideoElement
-      v.currentTime = v.duration - 0.1
-      void v.play()
-    })
-    await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(4)
-    await readyVideo()
+    await changeVideo(() => seekVideo({ fromEnd: 0.1 }, true), 4)
     await stillFullscreen()
-    await page.getByRole('button', { name: '播放队列第 6 条', exact: true }).click()
-    await readyVideo()
-    await page.locator('video').evaluate((node) => {
-      const v = node as HTMLVideoElement
-      v.currentTime = v.duration - 0.1
-      void v.play()
-    })
+    await changeVideo(() => page.getByRole('button', { name: '播放队列第 6 条', exact: true }).click(), 5)
+    await seekVideo({ fromEnd: 0.1 }, true)
     await expect.poll(async () => (await invoke('snapshot')).data.playback.completed).toBe(true)
+    await expect(page.getByRole('button', { name: '重新播放当前作品', exact: true })).toBeVisible()
+    await readyVideo(5)
     await stillFullscreen()
-    await page.getByRole('button', { name: '重新播放当前作品', exact: true }).click()
-    await readyVideo()
+    await changeVideo(() => page.getByRole('button', { name: '重新播放当前作品', exact: true }).click(), 5)
     await stillFullscreen()
     await page.getByRole('button', { name: '返回内容库', exact: true }).click()
     await expect(page.getByRole('heading', { name: '喜欢的内容', exact: true })).toBeVisible()
@@ -1432,8 +1472,8 @@ test('shows the matching still photo for two seconds after a live clip, pauses t
     v.addEventListener('playing', () =>
       (window as any).__liveEvents.push({ type: 'playing', at: performance.now() })
     )
-    v.currentTime = v.duration - 0.1
   })
+  await seekVideo({ fromEnd: 0.1 })
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended))
     .toBe(true)
@@ -1463,9 +1503,7 @@ test('shows the matching still photo for two seconds after a live clip, pauses t
   expect(await page.evaluate(() => document.querySelector('audio') === (window as any).__liveMusic)).toBe(
     true
   )
-  await page.locator('video').evaluate((node) => {
-    ;(node as HTMLVideoElement).currentTime = (node as HTMLVideoElement).duration - 0.1
-  })
+  await seekVideo({ fromEnd: 0.1 })
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended))
     .toBe(true)
@@ -1479,9 +1517,7 @@ test('shows the matching still photo for two seconds after a live clip, pauses t
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended))
     .toBe(false)
-  await page.locator('video').evaluate((node) => {
-    ;(node as HTMLVideoElement).currentTime = (node as HTMLVideoElement).duration - 0.1
-  })
+  await seekVideo({ fromEnd: 0.1 })
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended))
     .toBe(true)
@@ -1517,8 +1553,8 @@ test('uses the first motion frame when the still photo fails, keeping the live r
     v.addEventListener('playing', () => {
       if (timing.ended && !timing.resumed) timing.resumed = performance.now()
     })
-    v.currentTime = v.duration - 0.1
   })
+  await seekVideo({ fromEnd: 0.1 })
   await expect.poll(() => page.evaluate(() => (window as any).__fallbackTiming.ended > 0)).toBe(true)
   await expect
     .poll(() =>
@@ -1899,7 +1935,7 @@ test('allows starting and changing playback during a background unlike without c
     ;(globalThis as any).__mylikeHoldUnlike = false
     ;(globalThis as any).__mylikeReleaseUnlike()
   })
-  await readyVideo()
+  await readyVideo(1)
   await expect.poll(async () => (await invoke('snapshot')).data.unlike.status).toBe('completed')
   const state = (await invoke('snapshot')).data
   expect(state.unlike).toMatchObject({ success: 2, unknown: 0 })
@@ -2459,20 +2495,16 @@ test('uses twelve focused player shortcuts and keeps inputs and unlike confirmat
   await expect(page.locator('.continuous-control input')).not.toBeChecked()
   await page.keyboard.press('ArrowDown')
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(1)
-  await expect(page.locator('.player-queue-position')).toHaveText('2 / 3')
-  await readyVideo()
+  await readyVideo(1)
   await page.keyboard.press('PageDown')
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(2)
-  await expect(page.locator('.player-queue-position')).toHaveText('3 / 3')
-  await readyVideo()
+  await readyVideo(2)
   await page.keyboard.press('PageUp')
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(1)
-  await expect(page.locator('.player-queue-position')).toHaveText('2 / 3')
-  await readyVideo()
+  await readyVideo(1)
   await page.keyboard.press('ArrowUp')
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(0)
-  await expect(page.locator('.player-queue-position')).toHaveText('1 / 3')
-  await readyVideo()
+  await readyVideo(0)
   await page.keyboard.press('c')
   await expect.poll(() => app.evaluate(() => (globalThis as any).__opened.length)).toBe(1)
   await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
