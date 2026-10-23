@@ -84,7 +84,12 @@ export class Authentication {
         this.schedule(session, 1200)
       }
     } catch (error) {
-      if (this.current === session) this.update(session, 'failed', publicError(error).message)
+      if (this.current === session) {
+        this.update(session, 'failed', publicError(error).message)
+        // Navigation can fail while the user completes a redirect or reload.
+        // Keep checking the same window within the original time budget.
+        this.schedule(session, 2000)
+      }
       throw error
     }
   }
@@ -154,7 +159,12 @@ export class Authentication {
       const needsDecision = ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT', 'WORK_UNAVAILABLE'].includes(
         detail.code
       )
-      delay = needsDecision || ['RATE_LIMITED', 'API_REJECTED'].includes(detail.code) ? 30_000 : 5000
+      delay =
+        needsDecision || ['RATE_LIMITED', 'API_REJECTED'].includes(detail.code)
+          ? 30_000
+          : detail.code === 'AUTH_REQUIRED'
+            ? 2000
+            : 5000
       this.update(
         session,
         needsDecision ? 'failed' : 'waiting',

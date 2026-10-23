@@ -312,6 +312,22 @@ describe('request scheduling and task control', () => {
     await expect.poll(() => limited.store.call('collection', { accountId: 'a' })?.status).toBe('paused')
     expect(limited.cursors).toEqual(['0'])
   })
+  it('pauses replayed content even when the platform keeps advancing cursors, preserving committed pages', async () => {
+    const { service, store, cursors } = serviceFixture(async (cursor) => ({
+      aweme_list: [{ aweme_id: '1' }],
+      max_cursor: String(Number(cursor) + 1),
+      has_more: 1
+    }))
+    await service.start('a', 'full')
+    await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('paused')
+    expect(cursors).toEqual(['0', '1', '2'])
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      pages: 2,
+      cursor: '2',
+      added: 1,
+      errorCode: 'CURSOR_STALLED'
+    })
+  })
   it('rebuilds a repeatedly unready page once without losing the committed cursor or looping indefinitely', async () => {
     const { service, store, releases, cursors } = serviceFixture(async () => ({
       aweme_list: [],

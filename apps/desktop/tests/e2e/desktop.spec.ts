@@ -105,16 +105,31 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
       await session.fromPartition(`persist:mylike-${accountId}`).protocol.handle('https', async (request) => {
         const url = new URL(request.url)
         calls.push(request.url)
-        if (url.pathname === '/user/self') {
+        if (url.pathname === '/fixture-delayed-resource') {
+          await new Promise<void>((resolve) => {
+            ;(globalThis as any).__releaseLoginResource = resolve
+          })
+          return new Response('image unavailable', { status: 404 })
+        }
+        const sdkWrapper =
+          'const originalFetch = window.fetch.bind(window); window.fetch = (input, options) => { const url = new URL(input); url.searchParams.set("_fixture_sdk", "page-main-world"); return originalFetch(url, options); };'
+        if (url.pathname === '/fixture-delayed-sdk.js') {
+          await new Promise<void>((resolve) => {
+            ;(globalThis as any).__releasePageSdk = resolve
+          })
+          return new Response(sdkWrapper, { headers: { 'content-type': 'application/javascript' } })
+        }
+        if (url.pathname === '/user/self' || url.pathname === '/fixture-login-redirect') {
           if (slow === 'page')
             await new Promise<void>((resolve) => {
               ;(globalThis as any).__mylikeReleasePage = resolve
             })
           return new Response(
-            `<!doctype html><html><head><script>
-        const originalFetch = window.fetch.bind(window);
-        window.fetch = (input, options) => { const url = new URL(input); url.searchParams.set('_fixture_sdk', 'page-main-world'); return originalFetch(url, options); };
-        </script></head><body>受控抖音测试页；不连接真实账号。</body></html>`,
+            `<!doctype html><html><head>${(globalThis as any).__mylikeSlowPageSdk ? '<script async src="/fixture-delayed-sdk.js"></script>' : `<script>${sdkWrapper}</script>`}</head><body>受控抖音测试页；不连接真实账号。
+        ${(globalThis as any).__mylikeLoginMarkup ?? ''}
+        ${(globalThis as any).__mylikeSlowLoginResource ? '<img src="/fixture-delayed-resource">' : ''}
+        ${(globalThis as any).__mylikeRedirectLogin && url.pathname === '/user/self' ? '<script>location.replace("/fixture-login-redirect")</script>' : ''}
+        </body></html>`,
             { headers: { 'content-type': 'text/html; charset=utf-8' } }
           )
         }
@@ -163,14 +178,16 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
                   has_more: 1
                 }
               : { status_code: 0, aweme_list: [], max_cursor: '0', has_more: 0 }
-          if ((globalThis as any).__mylikeLongCollection)
+          if ((globalThis as any).__mylikeLongCollection || (globalThis as any).__mylikeReplayCollection)
             body = {
               status_code: 0,
               aweme_list: [
                 {
-                  aweme_id: workId,
-                  desc: '测试视频：喜欢的日常',
-                  create_time: 1_700_000_000,
+                  aweme_id: (globalThis as any).__mylikeReplayCollection
+                    ? workId
+                    : String(BigInt(workId) + BigInt(url.searchParams.get('max_cursor')!)),
+                  desc: url.searchParams.get('max_cursor') === '0' ? '测试视频：喜欢的日常' : '后续采集作品',
+                  create_time: 1_700_000_000 - Number(BigInt(url.searchParams.get('max_cursor')!) % 100000n),
                   author: { nickname: '测试作者' }
                 }
               ],
@@ -219,7 +236,14 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               create_time: 1700000000 + index,
               author: { nickname: '收藏作者' }
             }))
-          if (url.pathname.includes('/aweme/listcollection/'))
+          if (globals.__favoriteReplayPage && url.pathname.includes('/aweme/listcollection/'))
+            body = {
+              status_code: 0,
+              aweme_list: items([0]),
+              cursor: String(BigInt(cursor) + 1n),
+              has_more: 1
+            }
+          else if (url.pathname.includes('/aweme/listcollection/'))
             body = {
               status_code: 0,
               aweme_list: items(cursor === '0' ? [0, 1] : [2]),
@@ -618,7 +642,10 @@ test('automatically collects, pauses, restores its task after restart and plays 
   })
   await page.getByRole('button', { name: '自动采集', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.pages).toBeGreaterThanOrEqual(1)
-  await page.getByRole('button', { name: /测试视频：喜欢的日常/ }).click()
+  await page
+    .getByRole('button', { name: /测试视频：喜欢的日常/ })
+    .first()
+    .click()
   await expect.poll(async () => page.locator('video').count()).toBe(1)
   await expect
     .poll(() => page.locator('video').evaluate((video) => (video as HTMLVideoElement).readyState))
@@ -630,7 +657,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
   const paused = (await invoke('snapshot')).data.collection
   await screenshot(info.outputPath('collection-paused.png'))
   expect(paused.pages).toBeGreaterThanOrEqual(1)
-  expect((await invoke('query', { accountId })).data.total).toBe(1)
+  expect((await invoke('query', { accountId })).data.total).toBe(paused.added)
   await app.close()
   await launch()
   expect((await invoke('snapshot')).data.collection).toMatchObject({
@@ -654,7 +681,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
     .toBe('completed')
   expect((await invoke('snapshot')).data.collection).toMatchObject({
     pages: paused.pages + 1,
-    added: 1,
+    added: paused.added,
     received: paused.received
   })
   await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText('平台已返回列表末尾')
@@ -3016,6 +3043,178 @@ test('keeps history results scoped while changing records and accounts', async (
   await expect(page.getByText('第二项结果', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '重新核验', exact: true })).toHaveCount(0)
 })
+
+test('cancels a still-loading login on close without waiting for navigation timeout or binding another account', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId, 'page')
+  const opening = invoke('login', { accountId })
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleasePage))
+      .toBe('function')
+    await closeRemoteWindow(accountId)
+    await expect.poll(async () => (await invoke('snapshot')).data.busy).toBe(false)
+    expect(await opening).toMatchObject({ ok: false, error: { code: 'CANCELLED' } })
+    const other = (await invoke('createAccount', { name: '加载取消后的另一个账号' })).data
+    expect((await invoke('snapshot')).data).toMatchObject({
+      activeAccountId: other.id,
+      authentication: null,
+      engine: { status: 'stopped' }
+    })
+  } finally {
+    await app.evaluate(() => {
+      ;(globalThis as any).__mylikeReleasePage?.()
+    })
+    await opening
+  }
+  expect(
+    (await invoke('snapshot')).data.accounts.find((account: any) => account.id === accountId).remoteId
+  ).toBeNull()
+})
+
+test('keeps collected work playable during a slow same-filter background refresh', async () => {
+  const { accountId } = await prepareQueue(2)
+  const card = page.getByRole('button', { name: /队列作品 1/ })
+  await expect(card).toBeVisible()
+  await app.evaluate(({ ipcMain }, channel) => {
+    const handler = (ipcMain as any)._invokeHandlers.get(channel)
+    ;(globalThis as any).__holdLibraryRefresh = true
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, async (event, command, input) => {
+      if (command === 'query' && input.source !== 'favorites' && (globalThis as any).__holdLibraryRefresh)
+        await new Promise<void>((resolve) => {
+          ;(globalThis as any).__releaseLibraryRefresh = resolve
+        })
+      return handler(event, command, input)
+    })
+  }, CHANNEL)
+  await invoke('collectPage', { accountId, continue: false })
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof (globalThis as any).__releaseLibraryRefresh))
+      .toBe('function')
+    await expect(card).toBeEnabled()
+    await card.click()
+    await expect(page.getByRole('region', { name: '播放器', exact: true })).toBeVisible()
+  } finally {
+    await app.evaluate(() => {
+      ;(globalThis as any).__holdLibraryRefresh = false
+      ;(globalThis as any).__releaseLibraryRefresh?.()
+    })
+  }
+})
+
+test('waits for page SDK initialization before sending hidden collection requests', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeSlowPageSdk = true
+  })
+  const collecting = invoke('collectPage', { accountId, continue: false })
+  try {
+    await expect.poll(() => app.evaluate(() => typeof (globalThis as any).__releasePageSdk)).toBe('function')
+    await page.waitForTimeout(1500)
+    expect(
+      await app.evaluate(
+        () =>
+          ((globalThis as any).__mylikeTestCalls as string[]).filter((url) => url.includes('/aweme/v1/'))
+            .length
+      )
+    ).toBe(0)
+  } finally {
+    await app.evaluate(() => {
+      ;(globalThis as any).__releasePageSdk?.()
+    })
+  }
+  expect((await collecting).data).toMatchObject({ received: 1, added: 1 })
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/v1/'))
+        .every((url) => url.includes('_fixture_sdk=page-main-world'))
+    )
+  ).toBe(true)
+})
+
+test('auto-closes first login with an ordinary SMS code dialog and captcha input', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = true
+    ;(globalThis as any).__mylikeLoginMarkup =
+      '<section role="dialog" class="captcha-container" style="position:fixed;left:50px;top:50px;width:400px;height:300px;background:white"><h2>验证码登录</h2><label for="captcha-code">验证码</label><input id="captcha-code" style="width:200px;height:40px"><button>获取验证码</button></section>'
+  })
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = false
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'ready' },
+    accounts: [{ remoteId: 'MS4wLjAB_fixture_identity_1' }]
+  })
+})
+
+test('auto-closes login after DOM readiness without waiting for a slow page image', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeSlowLoginResource = true
+  })
+  const opening = invoke('login', { accountId })
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof (globalThis as any).__releaseLoginResource))
+      .toBe('function')
+    await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('ready')
+    expect((await invoke('snapshot')).data.accounts[0].remoteId).toBe('MS4wLjAB_fixture_identity_1')
+  } finally {
+    await app.evaluate(() => {
+      ;(globalThis as any).__releaseLoginResource?.()
+    })
+    await opening
+  }
+})
+
+test('auto-closes login after the initial navigation is replaced by a login redirect', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeRedirectLogin = true
+  })
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'ready' },
+    accounts: [{ remoteId: 'MS4wLjAB_fixture_identity_1' }]
+  })
+})
+
+for (const source of ['likes', 'favorites']) {
+  test(`pauses ${source} on repeated content despite advancing cursors without discarding its checkpoint`, async () => {
+    const accountId = await addAccount()
+    await installPlatform(accountId)
+    await app.evaluate((_electron, source) => {
+      ;(globalThis as any).__mylikeReplayCollection = source === 'likes'
+      ;(globalThis as any).__favoriteReplayPage = source === 'favorites'
+    }, source)
+    await invoke(source === 'likes' ? 'collectionStart' : 'favoritesStart', { accountId, mode: 'full' })
+    const current = async () => {
+      const snapshot = (await invoke('snapshot')).data
+      return source === 'likes' ? snapshot.collection : snapshot.favorites
+    }
+    await expect.poll(current).toMatchObject({
+      status: 'paused',
+      pages: 2,
+      cursor: '2',
+      received: 2,
+      added: 1,
+      errorCode: 'CURSOR_STALLED'
+    })
+    await page.waitForTimeout(1500)
+    expect(await current()).toMatchObject({ status: 'paused', pages: 2, cursor: '2' })
+  })
+}
 
 test('auto-verifies first login, ignores hidden templates and captions, and keeps visible challenges open until cleared', async () => {
   const accountId = await addAccount()

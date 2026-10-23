@@ -4,14 +4,14 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseLikedPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
-import { retryableRead, rebuildReadPage } from './read-recovery'
+import { retryableRead, rebuildReadPage, PageProgress } from './read-recovery'
+import { collectionPolicy as policy } from './collection-policy'
 
 type Runner = <T>(
   accountId: string,
   operation: (check: () => void) => Promise<T>,
   background?: boolean
 ) => Promise<T>
-const policy = { interval: 2000, retry: 3000, pagesPerSegment: 8, segmentMs: 180_000, cooldown: 4000 }
 type Policy = typeof policy
 
 export class CollectionService {
@@ -99,6 +99,7 @@ export class CollectionService {
     })
   }
   private async collect(initial: CollectionTask, signal: AbortSignal): Promise<void> {
+    const progress = new PageProgress()
     let task = initial,
       retries = 0,
       segmentPages = 0,
@@ -153,6 +154,11 @@ export class CollectionService {
                 })
               )
               guard()
+              progress.check(
+                task.phase,
+                page.items.map((item) => item.id),
+                page.hasMore
+              )
               const saved = await this.db.call('saveCollectionPage', {
                 accountId: task.accountId,
                 taskId: task.id,

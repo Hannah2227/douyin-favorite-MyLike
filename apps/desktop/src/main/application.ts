@@ -238,6 +238,10 @@ export class Application {
       }
     }
     check()
+    const state = await this.engine.pageState(accountId)
+    check()
+    if (!state.ready) throw new AppError('BROWSER_NOT_READY', '抖音页面尚未就绪，请稍候核验。')
+    if (state.captcha) throw new AppError('VERIFICATION_REQUIRED', '请先完成抖音窗口中的安全验证。')
     return this.database.call('bindAccount', { accountId, ...identity })
   }
   private async quiesce(): Promise<void> {

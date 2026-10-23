@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { runInNewContext } from 'node:vm'
 import {
   parseIdentity,
+  parseFavoriteFolders,
+  parseFavoritesPage,
   parseLikedPage,
   parseMedia,
   parseResponse,
@@ -10,6 +12,19 @@ import {
 import { buildPageScript } from '../../src/main/douyin/page-request'
 
 describe('platform responses', () => {
+  it('rejects missing or zero cursors on nonterminal pages without rewinding a deep checkpoint', () => {
+    for (const cursor of [undefined, null, '0', '00']) {
+      expect(() =>
+        parseLikedPage({ aweme_list: [{ aweme_id: '123' }], has_more: 1, max_cursor: cursor })
+      ).toThrow()
+      expect(() => parseFavoritesPage({ aweme_list: [{ aweme_id: '123' }], has_more: 1, cursor })).toThrow()
+      expect(() =>
+        parseFavoriteFolders({ collects_list: [{ collects_id: '456' }], has_more: 1, cursor })
+      ).toThrow()
+    }
+    expect(parseLikedPage({ aweme_list: [], has_more: 0 }).cursor).toBe('0')
+    expect(parseFavoriteFolders({ collects_list: [], has_more: 0 }).cursor).toBe('0')
+  })
   it('preserves raw 64-bit work IDs and cursors before any JS number conversion', () => {
     const data = parseResponse(
       '{"status_code":0,"aweme_list":[{"aweme_id":7381234567890123456,"desc":"a"}],"max_cursor":7381234567890123457,"has_more":1}',

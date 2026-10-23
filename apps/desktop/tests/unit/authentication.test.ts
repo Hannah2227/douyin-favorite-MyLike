@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Authentication } from '../../src/main/authentication'
 import { AppError } from '../../src/main/errors'
-import { retryableRead, rebuildReadPage } from '../../src/main/read-recovery'
+import { retryableRead, rebuildReadPage, PageProgress } from '../../src/main/read-recovery'
 
 const sessions: Authentication[] = []
 function fixture() {
@@ -39,6 +39,18 @@ it('hides login only after the scoped identity probe succeeds', async () => {
   expect(auth.snapshot()).toBeNull()
   await vi.advanceTimersByTimeAsync(60_000)
   expect(probe).toHaveBeenCalledTimes(1)
+})
+it('continues bounded detection after an initial navigation failure and closes after recovery', async () => {
+  const { auth, engine, probe } = fixture()
+  engine.show.mockRejectedValueOnce(new AppError('BROWSER_NOT_READY', 'initial navigation failed'))
+  await expect(auth.open('a', 'login')).rejects.toThrow('initial navigation failed')
+  engine.pageState.mockResolvedValue({ ready: false, captcha: false })
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(probe).not.toHaveBeenCalled()
+  engine.pageState.mockResolvedValue({ ready: true, captcha: false })
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
+  expect(engine.show).toHaveBeenCalledTimes(1)
 })
 
 it('does not issue probes or close the window while a visible captcha remains', async () => {
@@ -144,4 +156,13 @@ it('never treats verification, rate limits, account mismatch or business rejecti
   expect(rebuildReadPage('TIMEOUT', 1, false)).toBe(true)
   expect(rebuildReadPage('TIMEOUT', 0, false)).toBe(false)
   expect(rebuildReadPage('TIMEOUT', 1, true)).toBe(false)
+})
+it('scopes replay detection to the collection phase or folder and permits an actual terminal page', () => {
+  const progress = new PageProgress()
+  progress.check('all', ['1', '2'], true)
+  progress.check('all', ['2', '1'], true)
+  progress.check('folder:8', ['1', '2'], true)
+  progress.check('folder:8', ['2', '1'], true)
+  progress.check('folder:8', ['1', '2'], false)
+  expect(() => progress.check('folder:9', ['1', '2'], true)).not.toThrow()
 })

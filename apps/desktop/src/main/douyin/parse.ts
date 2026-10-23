@@ -37,6 +37,12 @@ function urls(value: unknown): string[] {
 function first(value: unknown): string | null {
   return urls(value)[0] ?? null
 }
+function pageCursor(value: unknown, hasMore: boolean): string {
+  const cursor = numericId(value ?? (hasMore ? undefined : '0'))
+  if (hasMore && /^0+$/.test(cursor))
+    throw new AppError('INVALID_RESPONSE', '仍有更多内容但分页游标已归零，已保留断点。')
+  return cursor
+}
 function object(value: unknown): Obj {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : {}
 }
@@ -116,7 +122,8 @@ export function parseLikedPage(data: Obj): { items: Work[]; cursor: string; hasM
   const hasMore = data.has_more === 1 || data.has_more === true || data.has_more === '1'
   if (!data.aweme_list.length && hasMore)
     throw new AppError('INVALID_RESPONSE', '接口返回空页但仍有更多内容，已保留断点。')
-  return { items: data.aweme_list.map(parseWork), cursor: numericId(data.max_cursor ?? '0'), hasMore }
+  const cursor = pageCursor(data.max_cursor, hasMore)
+  return { items: data.aweme_list.map(parseWork), cursor, hasMore }
 }
 export function parseIdentity(data: Obj): { remoteId: string; nickname: string; avatarUrl: string | null } {
   const user = object(data.user)
@@ -147,7 +154,7 @@ export function parseFavoriteFolders(data: Obj): {
       title: text(entry.collects_name ?? entry.name).slice(0, 500) || '未命名收藏夹',
       remoteCount: Math.max(0, Number(entry.aweme_count ?? entry.total_number ?? entry.total ?? 0) || 0)
     })),
-    cursor: numericId(data.cursor ?? data.max_cursor ?? '0'),
+    cursor: pageCursor(data.cursor ?? data.max_cursor, hasMore),
     hasMore
   }
 }

@@ -233,7 +233,7 @@ export function LibraryView({
                     >
                       <button
                         className="work-card"
-                        disabled={busy || querying}
+                        disabled={busy || (querying && selection.enabled)}
                         onClick={() => (selection.enabled ? selection.toggle(work.id) : play(work))}
                         title={work.title}
                       >

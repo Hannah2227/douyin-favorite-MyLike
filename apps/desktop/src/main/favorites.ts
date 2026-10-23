@@ -4,14 +4,14 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseFavoriteFolders, parseFavoritesPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
-import { retryableRead, rebuildReadPage } from './read-recovery'
+import { retryableRead, rebuildReadPage, PageProgress } from './read-recovery'
+import { collectionPolicy as policy } from './collection-policy'
 
 type Runner = <T>(
   accountId: string,
   operation: (check: () => void) => Promise<T>,
   background?: boolean
 ) => Promise<T>
-const policy = { interval: 2000, retry: 3000, pagesPerSegment: 8, segmentMs: 180000, cooldown: 4000 }
 export class FavoritesService {
   private loop: Promise<void> | null = null
   private controller: AbortController | null = null
@@ -84,6 +84,7 @@ export class FavoritesService {
     })
   }
   private async collect(initial: FavoritesTask, signal: AbortSignal) {
+    const progress = new PageProgress()
     let task = initial,
       retries = 0,
       pages = 0,
@@ -138,6 +139,11 @@ export class FavoritesService {
               guard()
               const page =
                 task.stage === 'folders' ? parseFavoriteFolders(result) : parseFavoritesPage(result)
+              const ids =
+                'folders' in page
+                  ? page.folders.map((folder) => folder.id)
+                  : page.items.map((item) => item.id)
+              progress.check(`${task.stage}:${task.folderId ?? ''}`, ids, page.hasMore)
               const saved = await this.db.call('favoritesSave', {
                 accountId: task.accountId,
                 taskId: task.id,

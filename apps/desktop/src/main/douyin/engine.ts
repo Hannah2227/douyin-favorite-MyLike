@@ -23,6 +23,7 @@ const allowedPage = (value: string): boolean => {
   }
 }
 const guardedSessions = new WeakSet<Electron.Session>()
+type PageReply = { id?: unknown; error?: unknown; body?: unknown; status?: unknown }
 
 export class DouyinEngine {
   private window: BrowserWindow | null = null
@@ -31,6 +32,7 @@ export class DouyinEngine {
   private generation = 0
   private requestGeneration: number | null = null
   private starting: Promise<BrowserWindow> | null = null
+  private cancelStart: (() => void) | null = null
   private cancelRequest: ((reason?: AppError) => void) | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private monitor: ReturnType<typeof setTimeout> | null = null
@@ -50,6 +52,11 @@ export class DouyinEngine {
   }
   setAttentionHandler(handler: (event: AccessEvent) => void) {
     this.attention = handler
+  }
+  private async executeInPage<T = unknown>(win: BrowserWindow, code: string): Promise<T> {
+    // WebContents.executeJavaScript waits for all page resources. The main
+    // frame API runs in the same page/SDK context once the DOM is available.
+    return (await win.webContents.mainFrame.executeJavaScript(code)) as T
   }
   setInteraction(kind: 'login' | 'verification' | null) {
     this.interaction = kind
@@ -71,11 +78,12 @@ export class DouyinEngine {
   async pageState(accountId: string): Promise<PageState> {
     const win = this.window,
       generation = this.generation
-    if (!win || win.isDestroyed() || this.accountId !== accountId) return { ready: false, captcha: false }
+    if (!win || win.isDestroyed() || this.accountId !== accountId || !allowedPage(win.webContents.getURL()))
+      return { ready: false, captcha: false }
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const result = await Promise.race([
-        win.webContents.executeJavaScript(pageStateScript),
+        this.executeInPage<Partial<PageState> | null>(win, pageStateScript),
         new Promise<null>((resolve) => {
           timeout = setTimeout(() => resolve(null), 1500)
         })
@@ -111,7 +119,7 @@ export class DouyinEngine {
   hide(accountId: string, verified = true) {
     if (this.accountId !== accountId || !this.window || this.window.isDestroyed()) return
     if (verified) this.failedTarget = null
-    void this.window.webContents.executeJavaScript(quietMediaScript).catch(() => {})
+    void this.executeInPage(this.window, quietMediaScript).catch(() => {})
     this.window.hide()
     if (this.status !== 'failed') this.update('ready')
     this.armIdle()
@@ -171,7 +179,7 @@ export class DouyinEngine {
     this.window = win
     win.webContents.setAudioMuted(true)
     win.webContents.on('dom-ready', () => {
-      void win.webContents.executeJavaScript(quietMediaScript).catch(() => {})
+      void this.executeInPage(win, quietMediaScript).catch(() => {})
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     win.webContents.on('will-navigate', (event, url) => {
@@ -196,6 +204,10 @@ export class DouyinEngine {
     })
     win.on('close', (event) => {
       event.preventDefault()
+      if (this.window === win && this.starting) {
+        this.release()
+        return
+      }
       win.hide()
       this.suppressed = true
       this.interaction = null
@@ -207,9 +219,33 @@ export class DouyinEngine {
     this.update('starting')
     this.starting = (async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined
+      let onDomReady: () => void = () => {}
+      let onLoaded: () => void = () => {}
       try {
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          this.cancelStart = () => reject(new AppError('CANCELLED', '抖音窗口初始化已取消。'))
+        })
+        const documentReady = new Promise<void>((resolve) => {
+          onLoaded = () => {
+            if (allowedPage(win.webContents.getURL())) resolve()
+          }
+          // Interactive login can probe as soon as the DOM exists. Hidden
+          // collection still waits for page scripts/SDK initialization.
+          onDomReady = () => {
+            if (this.interaction) onLoaded()
+          }
+          win.webContents.on('dom-ready', onDomReady)
+          win.webContents.on('did-finish-load', onLoaded)
+        })
         await Promise.race([
-          win.loadURL('https://www.douyin.com/user/self?showTab=like'),
+          cancelled,
+          documentReady,
+          win.loadURL('https://www.douyin.com/user/self?showTab=like').catch((error) => {
+            // QR login can replace the initial navigation. Its replacement
+            // document, rather than the aborted load, decides readiness.
+            if (error.code === 'ERR_ABORTED' || error.errno === -3) return documentReady
+            throw error
+          }),
           new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(
               () => reject(new AppError('BROWSER_NOT_READY', '抖音页面加载超时，请打开窗口检查网络后重试。')),
@@ -223,12 +259,20 @@ export class DouyinEngine {
         this.armIdle()
         return win
       } catch (error) {
-        if (this.window === win) this.update('failed')
+        if (this.window === win && this.status !== 'failed')
+          this.update(win.isVisible() ? 'visible' : 'failed')
         if (error instanceof AppError) throw error
         throw new AppError('BROWSER_NOT_READY', '抖音页面未加载成功，请检查网络后重新打开。')
       } finally {
         if (timeout) clearTimeout(timeout)
-        if (this.window === win) this.starting = null
+        if (!win.isDestroyed()) {
+          win.webContents.removeListener('dom-ready', onDomReady)
+          win.webContents.removeListener('did-finish-load', onLoaded)
+        }
+        if (this.window === win) {
+          this.starting = null
+          this.cancelStart = null
+        }
       }
     })()
     return this.starting
@@ -254,9 +298,10 @@ export class DouyinEngine {
     const cancelled = new Promise<never>((_resolve, reject) => {
       this.cancelRequest = (reason = new AppError('CANCELLED', '请求已停止，未推进采集断点。')) => {
         if (win && !win.isDestroyed())
-          void win.webContents
-            .executeJavaScript(`globalThis.__mylikeRequests?.get(${serializeForScript(id)})?.abort()`)
-            .catch(() => {})
+          void this.executeInPage(
+            win,
+            `globalThis.__mylikeRequests?.get(${serializeForScript(id)})?.abort()`
+          ).catch(() => {})
         reject(reason)
       }
     })
@@ -276,6 +321,7 @@ export class DouyinEngine {
         )
       }
       const before = await this.pageState(accountId)
+      if (!before.ready) throw new AppError('BROWSER_NOT_READY', '抖音页面尚未就绪，请稍候再试。')
       if (before.captcha) {
         if (!options.recovery) this.requireAttention(accountId, 'verification', target)
         throw new AppError('VERIFICATION_REQUIRED', '检测到安全验证，当前进度未推进，请完成验证后继续。')
@@ -288,7 +334,10 @@ export class DouyinEngine {
         this.cancelRequest?.(new AppError('TIMEOUT', '接口响应超时，请检查登录、网络或人工验证。'))
       }, timeoutMs + 1500)
       const reply = await Promise.race([
-        win.webContents.executeJavaScript(buildPageScript({ id, operation, parameters, timeout: timeoutMs })),
+        this.executeInPage<PageReply>(
+          win,
+          buildPageScript({ id, operation, parameters, timeout: timeoutMs })
+        ),
         cancelled
       ])
       if (this.window !== win || this.accountId !== accountId)
@@ -362,6 +411,8 @@ export class DouyinEngine {
   release(notify = true): void {
     this.disarmIdle()
     this.cancel()
+    this.cancelStart?.()
+    this.cancelStart = null
     this.generation++
     const win = this.window
     const accountId = this.accountId
