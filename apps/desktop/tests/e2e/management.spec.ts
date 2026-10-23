@@ -1,3 +1,4 @@
+import { testTimeout } from '../helpers/test-timeout'
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,7 @@ async function launch() {
       ? { executablePath: process.env.MYLIKE_EXECUTABLE, args: [] }
       : { args: [process.cwd()] }),
     env: { ...process.env, MYLIKE_HEADLESS: '1', MYLIKE_USER_DATA: profile },
-    timeout: 30000
+    timeout: testTimeout(30000)
   })
   page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })

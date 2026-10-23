@@ -14,7 +14,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: apps/desktop
@@ -37,7 +37,7 @@ jobs:
       - name: Test packaged application
         run: |
           $env:MYLIKE_EXECUTABLE = Join-Path $PWD 'dist/win-unpacked/MyLike.exe'
-          pnpm test:e2e
+          pnpm test:e2e --max-failures=1
       - name: Test portable launcher
         run: node tests/portable-smoke.mjs
       - name: Create checksums
@@ -48,7 +48,7 @@ jobs:
           ($lines -join "`n") + "`n" | Set-Content dist/SHA256SUMS.txt -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v4
         with:
-          name: MyLike-Windows-preview
+          name: MyLike-Windows-x64
           path: |
             apps/desktop/dist/*.exe
             apps/desktop/dist/*.zip

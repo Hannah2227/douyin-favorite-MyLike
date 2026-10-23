@@ -5,7 +5,11 @@ directories:
   output: dist
 files:
   - out/**
+  - '!out/legal/**'
   - assets/icon.png
+extraResources:
+  - from: out/legal
+    to: legal
 asar: true
 npmRebuild: false
 win:

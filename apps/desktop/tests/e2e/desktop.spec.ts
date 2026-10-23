@@ -6,8 +6,11 @@ import type { Command } from '../../src/shared/contracts'
 import { version } from '../../package.json'
 import { CHANNEL } from '../../src/shared/channels'
 import { terminateApp } from '../helpers/terminate-app'
+import { testTimeout } from '../helpers/test-timeout'
 
 let app: ElectronApplication, page: Page, profile: string
+// flower.mp4: MDN CC0 media sample; https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4
+// portrait.webm: project-generated Canvas/MediaRecorder geometry sample. Fixtures are not distributed.
 const workId = '7381234567890123456'
 
 async function launch(heading = '喜欢的内容') {
@@ -16,7 +19,7 @@ async function launch(heading = '喜欢的内容') {
       ? { executablePath: process.env.MYLIKE_EXECUTABLE, args: [] }
       : { args: [process.cwd()] }),
     env: { ...process.env, MYLIKE_HEADLESS: '1', MYLIKE_USER_DATA: profile },
-    timeout: 30_000
+    timeout: testTimeout(30_000)
   })
   page = await app.firstWindow()
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -649,7 +652,7 @@ test('stops an in-flight request without binding identity or advancing the curso
 })
 
 test('opens the login window when identity is missing and persists a rate-limit pause without retrying', async () => {
-  test.setTimeout(120000)
+  test.setTimeout(testTimeout(120000))
   const accountId = await addAccount()
   await installPlatform(accountId)
   await app.evaluate(() => {
@@ -830,7 +833,7 @@ test('retries a page navigation during collection without treating it as a user 
 })
 
 test('keeps a 50k library virtualized and deletes exactly the selected snapshot while preserving other accounts', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   const accountId = await addAccount(),
     other = (await invoke('createAccount', { name: '隔离测试账号' })).data.id
   await invoke('switchAccount', { accountId })
@@ -940,7 +943,7 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
 })
 
 test('persists playback position and preferences across restart and suppresses resume after natural completion', async () => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   const { accountId } = await prepareQueue(1)
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByLabel('自动连播').uncheck()
@@ -1022,7 +1025,7 @@ test('persists playback position and preferences across restart and suppresses r
 })
 
 test('keeps the latest track during rapid moves and opens comments externally while preserving paused playback', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   const { accountId, ids } = await prepareQueue(5)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
@@ -1126,7 +1129,7 @@ test('keeps the latest track during rapid moves and opens comments externally wh
 })
 
 test('resumes a gallery slide and music position, then automatically advances without restarting music between slides', async () => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(2, true)
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -1152,7 +1155,7 @@ test('resumes a gallery slide and music position, then automatically advances wi
 })
 
 test('loops the current video and keeps the queue open across next, jump, wheel and automatic advance', async () => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(6)
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -1203,7 +1206,7 @@ test('loops the current video and keeps the queue open across next, jump, wheel 
 })
 
 test('keeps the same fullscreen container through buttons, queue jumps, wheel, automatic advance and replay', async () => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   await prepareQueue(6)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
@@ -1279,7 +1282,7 @@ test('keeps the same fullscreen container through buttons, queue jumps, wheel, a
 })
 
 test('puts search above playback actions, removes decorative copy and returns smoothly without rebuilding or moving the library', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(80)
   await page.getByLabel('搜索内容', { exact: true }).fill('队列作品')
   await chooseOption('年份筛选', '2023 年')
@@ -1351,7 +1354,7 @@ test('puts search above playback actions, removes decorative copy and returns sm
 })
 
 test('cycles galleries with live holds and three-second static images, looping music and pinning manual changes', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(2, true)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false, speed: 2 } })
@@ -1382,7 +1385,7 @@ test('cycles galleries with live holds and three-second static images, looping m
 })
 
 test('shows the matching still photo for two seconds after a live clip, pauses the rest and cancels it on manual navigation', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(2, true, true)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false, speed: 2 } })
@@ -1531,7 +1534,7 @@ test('uses the first motion frame when the still photo fails, keeping the live r
 })
 
 test('overlays expandable captions, selects speeds with a popup and highlights the seek rail without moving the layout', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   await prepareQueue(2, false, false, '这是用于验证超长文案展开和滚动的测试内容。'.repeat(130))
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -1748,7 +1751,7 @@ test('fills the app with media, collapses navigation without reloading video, an
 
 for (const kind of ['video', 'image', 'live'] as const) {
   test(`contains portrait ${kind} within the viewport while resizing, opening navigation and zooming`, async ({}, info) => {
-    test.setTimeout(60000)
+    test.setTimeout(testTimeout(60000))
     await prepareQueue(1, kind !== 'video', true)
     await page.getByRole('button', { name: '顺序播放', exact: true }).click()
     if (kind === 'image') {
@@ -1969,7 +1972,7 @@ test('shows a concise dashboard onboarding entry without starting a browser or t
 })
 
 test('matches native caption colors to light mode and playback, scopes collection to the library and shows real metadata usage', async ({}, info) => {
-  test.setTimeout(60000)
+  test.setTimeout(testTimeout(60000))
   const { accountId } = await prepareQueue(3)
   await app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find((win) =>
@@ -2107,7 +2110,7 @@ test('uses themed dropdowns with keyboard selection, disabled options and bounde
 })
 
 test('keeps the playlist clear of native window controls while resizing, maximizing, zooming and fullscreen', async ({}, info) => {
-  test.setTimeout(75000)
+  test.setTimeout(testTimeout(75000))
   await prepareQueue(6)
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -2225,7 +2228,7 @@ test('provides readable collection actions and resume banner, unified help links
 })
 
 test('synchronizes favorite folders through the page SDK, restores folder cursors after restart and plays only the chosen folder', async ({}, info) => {
-  test.setTimeout(120000)
+  test.setTimeout(testTimeout(120000))
   const { accountId } = await prepareQueue(3)
   await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
   await expect(page.locator('.page-header .primary')).toHaveCount(0)
@@ -2300,7 +2303,7 @@ test('pauses favorite sync on rate limits without changing likes or blindly retr
 })
 
 test('persists general and playback settings, restores a visible window, and provides data checks and redacted diagnostics', async ({}, info) => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   await addAccount()
   await app.evaluate(({ clipboard, shell }) => {
     ;(globalThis as any).__copied = []
@@ -2415,7 +2418,7 @@ test('persists general and playback settings, restores a visible window, and pro
 })
 
 test('uses twelve focused player shortcuts and keeps inputs and unlike confirmation protected', async ({}, info) => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   await prepareQueue(3)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', {
@@ -2530,7 +2533,7 @@ test('uses gallery shortcuts to pin and resume slides while disabling wheel navi
 })
 
 test('shows compact task cards with direct controls and clear errors at small sizes', async ({}, info) => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareQueue(3)
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeHoldLikesAt = '0'
@@ -2609,7 +2612,7 @@ test('shows compact task cards with direct controls and clear errors at small si
 })
 
 test('shows a concise dashboard with publication years and recent works', async ({}, info) => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareQueue(12)
   expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
   await expect
@@ -2631,7 +2634,7 @@ test('shows a concise dashboard with publication years and recent works', async 
 })
 
 test('automatically appends likes, favorites and folder pages without rereading previous pages', async ({}, info) => {
-  test.setTimeout(90000)
+  test.setTimeout(testTimeout(90000))
   await prepareScrollableLibrary()
   const offsets = (source: string, folderId: string | null = null) =>
     app.evaluate(
