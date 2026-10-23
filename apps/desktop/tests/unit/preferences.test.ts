@@ -150,4 +150,9 @@ it('keeps remembered windows reachable after monitor removal and rejects non-fin
     { width: 920, height: 640 }
   )
   expect(restoreWindowState({ x: NaN, y: 0, width: 1200, height: 800, maximized: false }, area)).toBeNull()
+  expect(
+    restoreWindowState({ x: 60, y: 50, width: 1100, height: 780, maximized: false }, [
+      { x: 0, y: 0, width: 1024, height: 728 }
+    ])
+  ).toEqual({ x: 0, y: 0, width: 1024, height: 728, maximized: false })
 })

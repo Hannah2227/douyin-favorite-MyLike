@@ -19,8 +19,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "build": "pnpm typecheck && electron-vite build",
-    "package:dir": "pnpm build && electron-builder --dir --win --x64",
-    "package:win": "pnpm build && electron-builder --win portable zip --x64"
+    "package:dir": "pnpm build && electron-builder --dir --win --x64 --publish never",
+    "package:win": "pnpm build && electron-builder --win portable zip --x64 --publish never"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.21",

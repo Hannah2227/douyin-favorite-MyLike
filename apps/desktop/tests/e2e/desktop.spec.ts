@@ -2373,9 +2373,15 @@ test('persists general and playback settings, restores a visible window, and pro
     .getByRole('button', { name: '通用', exact: true })
     .click()
   await screenshot(info.outputPath('settings-general.png'))
-  await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0]!.setBounds({ x: 60, y: 50, width: 1100, height: 780 })
-  )
+  const workArea = await app.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea)
+  const width = Math.min(1100, Math.max(920, workArea.width - 120))
+  const height = Math.min(780, Math.max(640, workArea.height - 100))
+  await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0]!.setBounds(bounds), {
+    x: workArea.x + Math.floor(Math.max(0, workArea.width - width) / 2),
+    y: workArea.y + Math.floor(Math.max(0, workArea.height - height) / 2),
+    width,
+    height
+  })
   const bounds = await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0]!.getNormalBounds()
   )
@@ -2389,6 +2395,7 @@ test('persists general and playback settings, restores a visible window, and pro
   const restored = await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0]!.getNormalBounds()
   )
+  console.info('Window restore geometry:', JSON.stringify({ workArea, saved: bounds, restored }))
   expect(restored.x).toBe(bounds.x)
   expect(restored.y).toBe(bounds.y)
   // Windows rounds non-client borders at fractional display scales.
