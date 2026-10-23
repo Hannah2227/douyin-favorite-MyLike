@@ -312,4 +312,21 @@ describe('request scheduling and task control', () => {
     await expect.poll(() => limited.store.call('collection', { accountId: 'a' })?.status).toBe('paused')
     expect(limited.cursors).toEqual(['0'])
   })
+  it('rebuilds a repeatedly unready page once without losing the committed cursor or looping indefinitely', async () => {
+    const { service, store, releases, cursors } = serviceFixture(async () => ({
+      aweme_list: [],
+      has_more: 1,
+      max_cursor: '9'
+    }))
+    await service.start('a', 'full')
+    await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('paused')
+    expect(cursors).toEqual(['0', '0', '0'])
+    expect(releases()).toBe(1)
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      pages: 0,
+      cursor: '0',
+      errorCode: 'INVALID_RESPONSE'
+    })
+    expect(store.call('query', query).total).toBe(0)
+  })
 })

@@ -18,7 +18,7 @@ export class UnlikeService {
   private wake: (() => void) | null = null
   constructor(
     private readonly db: Database,
-    private readonly engine: Pick<DouyinEngine, 'request' | 'show'>,
+    private readonly engine: Pick<DouyinEngine, 'request'>,
     private readonly run: Run,
     private readonly identity: (accountId: string, check: () => void) => Promise<Account>,
     private readonly changed: (committed?: boolean) => void,
@@ -148,8 +148,6 @@ export class UnlikeService {
                   ? error.message
                   : '保存或读取失败，任务已暂停。'
           })
-          if (['AUTH_REQUIRED', 'VERIFICATION_REQUIRED'].includes(code))
-            await this.engine.show(task.accountId).catch(() => {})
           this.changed()
           return
         }

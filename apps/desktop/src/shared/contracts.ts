@@ -262,6 +262,12 @@ export interface Snapshot {
   activeAccountId: string | null
   theme: 'dark' | 'light'
   engine: { status: EngineStatus; accountId: string | null }
+  authentication: {
+    accountId: string
+    kind: 'login' | 'verification'
+    status: 'waiting' | 'checking' | 'failed'
+    message: string
+  } | null
   busy: boolean
   collection: CollectionTask | null
   collectionActivity: 'requesting' | 'waiting' | 'recycling' | null

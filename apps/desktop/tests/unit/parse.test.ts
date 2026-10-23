@@ -26,6 +26,8 @@ describe('platform responses', () => {
     expect(parseLikedPage({ aweme_list: [], has_more: false, max_cursor: '0' }).hasMore).toBe(false)
   })
   it('distinguishes authentication, verification, malformed responses and rate limits', () => {
+    expect(() => parseResponse('{"status_code":9,"status_msg":"请完成安全验证"}', 200)).toThrow(/人工验证/)
+    expect(parseResponse('{"status_code":0,"desc":"安全验证教学"}', 200).status_code).toBe(0)
     expect(() => parseIdentity({ status_code: 0 })).toThrow(/登录/)
     expect(() => parseResponse('<html>verification</html>', 200)).toThrow(/人工验证/)
     expect(() => parseResponse('{broken', 200)).toThrow(/JSON/)

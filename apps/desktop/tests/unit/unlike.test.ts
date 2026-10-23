@@ -63,7 +63,7 @@ function service(store: Store, request: (...args: any[]) => Promise<any>) {
   const db = { call: async (method: any, input: any) => store.call(method, input) } as Database
   const value = new UnlikeService(
     db,
-    { request, show: async () => {} },
+    { request },
     async (_id, action) => action(() => {}),
     async () => store.call('accounts', undefined)[0]!,
     () => {},
@@ -231,8 +231,7 @@ it('does not send when the current verified identity differs from the fixed task
       request: async () => {
         writes++
         return {}
-      },
-      show: async () => {}
+      }
     },
     async (_id, action) => action(() => {}),
     async () => ({ ...store.call('accounts', undefined)[0]!, remoteId: 'different-owner' }),

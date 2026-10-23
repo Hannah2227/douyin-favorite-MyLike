@@ -68,6 +68,35 @@ async function addAccount() {
   await expect(page.getByLabel('当前账号')).toBeVisible()
   return (await invoke('snapshot')).data.activeAccountId as string
 }
+async function remoteChallenge(accountId: string, mode: 'visible' | 'hidden' | 'none') {
+  await app.evaluate(
+    async ({ BrowserWindow, session }, { accountId, mode }) => {
+      const win = BrowserWindow.getAllWindows().find(
+        (win) => win.webContents.session === session.fromPartition(`persist:mylike-${accountId}`)
+      )!
+      await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('#secsdk-Captcha-container')?.remove();
+      if (${JSON.stringify(mode)} !== 'none') {
+        const node = document.createElement('div'); node.id = 'secsdk-Captcha-container';
+        node.textContent = '请拖动滑块完成安全验证';
+        node.style.cssText = 'position:fixed;left:30px;top:30px;width:350px;height:200px;background:white;z-index:99999;' +
+          (${JSON.stringify(mode)} === 'hidden' ? 'display:none' : '');
+        document.body.append(node);
+      }
+      const caption = document.createElement('p'); caption.textContent = '用户文案：安全验证教学'; document.body.append(caption);
+      history.replaceState(null, '', '/user/self?showTab=like&verifyFp=normal-fingerprint');
+    })()`)
+    },
+    { accountId, mode }
+  )
+}
+async function closeRemoteWindow(accountId: string) {
+  await app.evaluate(({ BrowserWindow, session }, accountId) => {
+    BrowserWindow.getAllWindows()
+      .find((win) => win.webContents.session === session.fromPartition(`persist:mylike-${accountId}`))!
+      .close()
+  }, accountId)
+}
 async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
   await app.evaluate(
     async ({ session }, { accountId, slow, workId }) => {
@@ -98,15 +127,22 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           if (slow === 'identity') await new Promise((resolve) => setTimeout(resolve, 25_000))
           if ((globalThis as any).__mylikeSlowFirstIdentity) {
             ;(globalThis as any).__mylikeSlowFirstIdentity = false
-            await new Promise((resolve) => setTimeout(resolve, 1500))
+            await new Promise((resolve) => setTimeout(resolve, (globalThis as any).__identityDelayMs ?? 1500))
           }
           body = { status_code: 0, user: { sec_uid: 'MS4wLjAB_fixture_identity_1', nickname: '测试用户' } }
+          if ((globalThis as any).__mylikeOtherIdentity)
+            body = { status_code: 0, user: { sec_uid: 'MS4wLjAB_fixture_identity_2', nickname: '其他用户' } }
           if ((globalThis as any).__mylikeAuthLost) body = { status_code: 0, user: {} }
         } else if (url.pathname.includes('/aweme/favorite/')) {
           if (url.searchParams.get('max_cursor') === (globalThis as any).__mylikeHoldLikesAt)
             await new Promise<void>((resolve) => {
               ;(globalThis as any).__mylikeReleaseLikes = resolve
             })
+          const challenge = (globalThis as any).__mylikeChallengeResponse
+          if (challenge === 'html')
+            return new Response('<html>安全验证</html>', { headers: { 'content-type': 'text/html' } })
+          if (challenge === 'json') return new Response('{"status_code":9,"status_msg":"请完成安全验证"}')
+          if (challenge === 'empty') return new Response('')
           if ((globalThis as any).__mylikeRateLimited) return new Response('{}', { status: 429 })
           body =
             url.searchParams.get('max_cursor') !== '7381234567890123459'
@@ -172,6 +208,8 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
             folderId: parameters.get('collects_id'),
             sdk: url.searchParams.get('_fixture_sdk')
           })
+          if (globals.__favoriteChallengeFolder && url.pathname.includes('/collects/list/'))
+            return new Response('<html>安全验证</html>')
           if (globals.__favoriteRateLimited) return new Response('{}', { status: 429 })
           const ids = [workId, String(BigInt(workId) + 10n), String(BigInt(workId) + 11n)]
           const items = (indexes: number[]) =>
@@ -752,6 +790,8 @@ test('opens the login window when identity is missing and persists a rate-limit 
     ;(globalThis as any).__mylikeAuthLost = false
     ;(globalThis as any).__mylikeRateLimited = true
   })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('ready')
   expect((await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(true)
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.errorCode).toBe('RATE_LIMITED')
   await expect.poll(async () => (await invoke('snapshot')).data.collectionActivity).toBeNull()
@@ -2975,4 +3015,232 @@ test('keeps history results scoped while changing records and accounts', async (
   await expect(page.getByRole('region', { name: '取消点赞任务', exact: true })).toContainText('暂无记录')
   await expect(page.getByText('第二项结果', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '重新核验', exact: true })).toHaveCount(0)
+})
+
+test('auto-verifies first login, ignores hidden templates and captions, and keeps visible challenges open until cleared', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = true
+  })
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  await remoteChallenge(accountId, 'hidden')
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = false
+  })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.accounts[0].remoteId)
+    .toBe('MS4wLjAB_fixture_identity_1')
+  await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('ready')
+  await invoke('login', { accountId })
+  await remoteChallenge(accountId, 'visible')
+  await page.waitForTimeout(2800)
+  expect((await invoke('snapshot')).data.engine.status).toBe('visible')
+  await remoteChallenge(accountId, 'none')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data.engine.status).toBe('ready')
+})
+
+for (const shape of ['html', 'json']) {
+  test(`recognizes a ${shape} verification response and waits for the original likes API without committing probe pages or auto-resuming`, async () => {
+    const { accountId } = await prepareQueue(2)
+    await app.evaluate((_electron, shape) => {
+      ;(globalThis as any).__mylikeChallengeResponse = shape
+    }, shape)
+    const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+    await expect
+      .poll(async () => (await invoke('snapshot')).data.collection)
+      .toMatchObject({ status: 'paused', errorCode: 'VERIFICATION_REQUIRED', pages: 0, cursor: '0' })
+    await expect.poll(async () => (await invoke('snapshot')).data.authentication?.kind).toBe('verification')
+    const requests = () =>
+      app.evaluate(
+        () =>
+          ((globalThis as any).__mylikeTestCalls as string[]).filter((url) =>
+            url.includes('/aweme/favorite/')
+          ).length
+      )
+    const before = await requests()
+    await expect.poll(requests).toBeGreaterThan(before)
+    expect((await invoke('snapshot')).data.engine.status).toBe('visible')
+    expect((await invoke('snapshot')).data.collection.pages).toBe(0)
+    await app.evaluate(() => {
+      ;(globalThis as any).__mylikeChallengeResponse = null
+    })
+    await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+    expect((await invoke('snapshot')).data).toMatchObject({
+      engine: { status: 'ready' },
+      collection: { id: task.id, status: 'paused', pages: 0, cursor: '0' }
+    })
+    expect((await invoke('query', { accountId })).data.total).toBe(2)
+    expect((await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(
+      true
+    )
+    await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  })
+}
+
+test('detects an in-page slider during a pending SDK read and stops verification without reopening or auto-resuming', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldLikesAt = '0'
+  })
+  const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+  await expect
+    .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
+    .toBe('function')
+  await remoteChallenge(accountId, 'visible')
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ status: 'paused', errorCode: 'VERIFICATION_REQUIRED', pages: 0 })
+  await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
+  expect((await invoke('collectionControl', { accountId, taskId: task.id, action: 'stop' })).ok).toBe(true)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldLikesAt = null
+    ;(globalThis as any).__mylikeReleaseLikes()
+  })
+  await page.waitForTimeout(2800)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'ready' },
+    authentication: null,
+    collection: { status: 'stopped', pages: 0, cursor: '0' }
+  })
+})
+
+test('abandons verification on manual close without reopening or resuming when the challenge clears', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeChallengeResponse = 'json'
+  })
+  await invoke('collectionStart', { accountId, mode: 'full' })
+  await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
+  await closeRemoteWindow(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeChallengeResponse = null
+  })
+  await page.waitForTimeout(6000)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'ready' },
+    authentication: null,
+    collection: { status: 'paused', pages: 0 }
+  })
+})
+
+test('discards a late login probe after closing the window and keeps a different account isolated', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeSlowFirstIdentity = true
+    ;(globalThis as any).__identityDelayMs = 6000
+  })
+  await invoke('login', { accountId })
+  await expect
+    .poll(() =>
+      app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[]).some((url) => url.includes('/profile/self/'))
+      )
+    )
+    .toBe(true)
+  await closeRemoteWindow(accountId)
+  await expect.poll(async () => (await invoke('snapshot')).data.busy).toBe(false)
+  const other = (await invoke('createAccount', { name: '另一个账号' })).data
+  expect((await invoke('snapshot')).data).toMatchObject({ activeAccountId: other.id, authentication: null })
+  expect(
+    (await invoke('snapshot')).data.accounts.find((account: any) => account.id === accountId).remoteId
+  ).toBeNull()
+})
+
+test('keeps the original binding and login window when the logged-in identity differs', async () => {
+  const { accountId } = await prepareQueue(1)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeOtherIdentity = true
+  })
+  await invoke('login', { accountId })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication?.status).toBe('failed')
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'visible' },
+    accounts: [{ remoteId: 'MS4wLjAB_fixture_identity_1' }]
+  })
+  await closeRemoteWindow(accountId)
+})
+
+test('bounds empty-response recovery to three reads and one rebuild, preserving the cursor without a false popup', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(1)
+  const count = () =>
+    app.evaluate(
+      () =>
+        ((globalThis as any).__mylikeTestCalls as string[]).filter((url) => url.includes('/aweme/favorite/'))
+          .length
+    )
+  const before = await count()
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeChallengeResponse = 'empty'
+  })
+  await invoke('collectionStart', { accountId, mode: 'full' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 35000 })
+    .toBe('paused')
+  expect(await count()).toBe(before + 3)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    authentication: null,
+    engine: { status: 'ready' },
+    collection: { pages: 0, cursor: '0', errorCode: 'INVALID_RESPONSE' }
+  })
+})
+
+test('checks the failed folders API instead of accepting healthy identity or favorites and leaves probe results uncommitted', async () => {
+  const { accountId } = await prepareQueue(1)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteChallengeFolder = true
+  })
+  await invoke('favoritesStart', { accountId })
+  await expect.poll(async () => (await invoke('snapshot')).data.favorites?.status).toBe('paused')
+  const before = (await invoke('snapshot')).data.favorites
+  expect(before.errorCode).toBe('VERIFICATION_REQUIRED')
+  await expect
+    .poll(() =>
+      app.evaluate(
+        () =>
+          ((globalThis as any).__favoriteRequests as any[]).filter((row) =>
+            row.path.includes('/collects/list/')
+          ).length
+      )
+    )
+    .toBeGreaterThan(1)
+  expect((await invoke('snapshot')).data.engine.status).toBe('visible')
+  expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteChallengeFolder = false
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data.favorites).toMatchObject({
+    status: 'paused',
+    pages: before.pages,
+    cursor: before.cursor
+  })
+  expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
+  await invoke('favoritesControl', { accountId, taskId: before.id, action: 'resume' })
+  await expect.poll(async () => (await invoke('snapshot')).data.favorites.status).toBe('completed')
+})
+
+test('keeps an already-sent unlike alive through a visible slider and preserves its definite success without sending another write', async () => {
+  const { accountId, ids } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldUnlike = true
+  })
+  await invoke('unlikeStart', { accountId, workIds: ids, mode: 'batch' })
+  await expect.poll(() => app.evaluate(() => (globalThis as any).__mylikeUnlikeCount)).toBe(1)
+  await remoteChallenge(accountId, 'visible')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication?.kind).toBe('verification')
+  expect((await invoke('snapshot')).data.unlike).toMatchObject({ status: 'running', success: 0, unknown: 0 })
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldUnlike = false
+    ;(globalThis as any).__mylikeReleaseUnlike()
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('paused')
+  expect((await invoke('snapshot')).data.unlike).toMatchObject({ success: 1, unknown: 0 })
+  expect(await app.evaluate(() => (globalThis as any).__mylikeUnlikeCount)).toBe(1)
+  await remoteChallenge(accountId, 'none')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data.unlike).toMatchObject({ status: 'paused', success: 1, unknown: 0 })
 })

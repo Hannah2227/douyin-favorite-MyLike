@@ -4,6 +4,7 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseLikedPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
+import { retryableRead, rebuildReadPage } from './read-recovery'
 
 type Runner = <T>(
   accountId: string,
@@ -20,7 +21,7 @@ export class CollectionService {
   activity: Snapshot['collectionActivity'] = null
   constructor(
     private readonly db: Pick<Database, 'call'>,
-    private readonly engine: Pick<DouyinEngine, 'request' | 'cancel' | 'release' | 'snapshot' | 'show'>,
+    private readonly engine: Pick<DouyinEngine, 'request' | 'cancel' | 'release' | 'snapshot'>,
     private readonly run: Runner,
     private readonly identity: (accountId: string, check: () => void) => Promise<Account>,
     private readonly changed: (committed?: boolean) => void,
@@ -175,12 +176,24 @@ export class CollectionService {
       } catch (error) {
         if (signal.aborted) return
         const detail = publicError(error)
-        if (
-          ['NETWORK_ERROR', 'TIMEOUT', 'BROWSER_NOT_READY', 'PAGE_CHANGED'].includes(detail.code) &&
-          retries < 2
-        ) {
+        if (retryableRead(detail.code) && retries < 2) {
           this.activity = 'waiting'
           this.changed()
+          if (rebuildReadPage(detail.code, retries, this.engine.snapshot().status === 'visible')) {
+            try {
+              await this.run(
+                task.accountId,
+                async (check) => {
+                  check()
+                  valid()
+                  this.engine.release()
+                },
+                true
+              )
+            } catch {
+              if (signal.aborted) return
+            }
+          }
           await this.wait(this.timing.retry * 3 ** retries++, signal)
           continue
         }
@@ -192,14 +205,8 @@ export class CollectionService {
             reason: detail.message,
             errorCode: detail.code
           })
-          if (['AUTH_REQUIRED', 'VERIFICATION_REQUIRED'].includes(detail.code))
-            await this.run(task.accountId, async () => {
-              if (!signal.aborted) await this.engine.show(task.accountId)
-            })
         } catch {
-          console.error(
-            '[MyLike] Collection paused; progress could not be updated or verification window could not be opened.'
-          )
+          console.error('[MyLike] Collection paused; progress could not be updated.')
         }
         return
       }

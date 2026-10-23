@@ -4,7 +4,15 @@ import { randomUUID } from 'node:crypto'
 import type { Account, Command, Diagnostics, Query, Snapshot } from '../shared/contracts'
 import { Database } from './storage/client'
 import { DouyinEngine } from './douyin/engine'
-import { parseIdentity, parseLikedPage, parseMedia } from './douyin/parse'
+import {
+  parseIdentity,
+  parseLikedPage,
+  parseMedia,
+  parseFavoriteFolders,
+  parseFavoritesPage
+} from './douyin/parse'
+import { Authentication } from './authentication'
+import type { AccessTarget } from './douyin/page-state'
 import { AppError } from './errors'
 import { version } from '../../package.json'
 import { RequestLane } from './request-lane'
@@ -31,6 +39,7 @@ export class Application {
   private readonly favorites: FavoritesService
   private readonly collection: CollectionService
   private readonly unlike: UnlikeService
+  private readonly authentication: Authentication
   private admission: Promise<void> = Promise.resolve()
   constructor(
     readonly database: Database,
@@ -38,6 +47,17 @@ export class Application {
     private readonly changed: () => void,
     private readonly parent: () => BrowserWindow | null = () => null
   ) {
+    this.authentication = new Authentication(
+      engine,
+      this.run.bind(this),
+      async (accountId, target, check) => {
+        await this.verifyAccess(accountId, target, check)
+      },
+      changed
+    )
+    engine.setAttentionHandler((event) => {
+      if (!this.closing) this.authentication.handle(event)
+    })
     this.collection = new CollectionService(
       database,
       engine,
@@ -98,6 +118,7 @@ export class Application {
       activeAccountId,
       theme: theme === 'light' ? 'light' : 'dark',
       engine: this.engine.snapshot(),
+      authentication: this.authentication.snapshot(),
       busy: this.busy,
       collection: activeAccountId
         ? await this.database.call('collection', { accountId: activeAccountId })
@@ -177,6 +198,46 @@ export class Application {
   private async identity(accountId: string, check: () => void): Promise<Account> {
     const identity = parseIdentity(await this.engine.request(accountId, 'self'))
     check()
+    try {
+      return await this.database.call('bindAccount', { accountId, ...identity })
+    } catch (error) {
+      if (error instanceof AppError && ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT'].includes(error.code))
+        this.engine.requireAttention(accountId, 'login', { operation: 'self', parameters: {} })
+      throw error
+    }
+  }
+  private async verifyAccess(
+    accountId: string,
+    target: AccessTarget | null,
+    check: () => void
+  ): Promise<Account> {
+    const account = await this.active(accountId)
+    const identity = parseIdentity(await this.engine.request(accountId, 'self', {}, { recovery: true }))
+    check()
+    if (account.remoteId && account.remoteId !== identity.remoteId)
+      throw new AppError(
+        'IDENTITY_MISMATCH',
+        '窗口登录的身份与这个账号不一致，请切回原账号或添加新的本地账号。'
+      )
+    if (target && target.operation !== 'self') {
+      const data = await this.engine.request(
+        accountId,
+        target.operation,
+        target.operation === 'likes'
+          ? { ...target.parameters, sec_user_id: identity.remoteId }
+          : target.parameters,
+        { recovery: true }
+      )
+      check()
+      if (target.operation === 'likes') parseLikedPage(data)
+      else if (target.operation === 'folders') parseFavoriteFolders(data)
+      else if (['favorites', 'folderItems'].includes(target.operation)) parseFavoritesPage(data)
+      else if (target.operation === 'detail') {
+        if (String(data.aweme_detail?.aweme_id) !== target.parameters.aweme_id)
+          throw new AppError('WORK_UNAVAILABLE', '原作品详情尚未恢复，请稍后重试。')
+      }
+    }
+    check()
     return this.database.call('bindAccount', { accountId, ...identity })
   }
   private async quiesce(): Promise<void> {
@@ -190,6 +251,20 @@ export class Application {
   }
   async execute(command: Command, input: any): Promise<unknown> {
     if (this.closing) throw new AppError('CLOSING', '应用正在退出。')
+    if (
+      ['login', 'probe', 'collectionStart', 'favoritesStart', 'unlikeStart', 'collectPage'].includes(
+        command
+      ) ||
+      (['collectionControl', 'favoritesControl', 'unlikeControl'].includes(command) &&
+        input.action === 'resume')
+    )
+      this.engine.allowAttention()
+    if (
+      ['collectionControl', 'favoritesControl', 'unlikeControl'].includes(command) &&
+      input.action === 'stop' &&
+      this.authentication.snapshot()?.accountId === input.accountId
+    )
+      this.engine.dismissAttention(input.accountId)
     if (
       this.accountAction &&
       !['snapshot', 'query', 'diagnostics', 'dataInfo', 'theme', 'windowPresentation'].includes(command)
@@ -271,7 +346,12 @@ export class Application {
         })
       case 'login':
         return this.run(input.accountId, async () => {
-          await this.engine.show(input.accountId)
+          const target = this.engine.recoveryTarget(input.accountId)
+          await this.authentication.open(
+            input.accountId,
+            target && target.operation !== 'self' ? 'verification' : 'login',
+            target
+          )
           return null
         })
       case 'renameAccount':
@@ -291,8 +371,14 @@ export class Application {
       }
       case 'probe':
         return this.run(input.accountId, async (check) => {
-          const account = await this.identity(input.accountId, check)
+          const account = await this.verifyAccess(
+            input.accountId,
+            this.authentication.target(input.accountId) ?? this.engine.recoveryTarget(input.accountId),
+            check
+          )
           check()
+          this.engine.hide(input.accountId)
+          this.authentication.stop()
           return account
         })
       case 'releaseEngine': {
@@ -304,6 +390,8 @@ export class Application {
         return null
       }
       case 'stopRequest': {
+        const accountId = this.engine.snapshot().accountId
+        if (accountId) this.engine.dismissAttention(accountId)
         await this.unlike.stop()
         const paused = Promise.all([this.collection.pause(), this.favorites.pause()])
         this.epoch++
@@ -594,6 +682,7 @@ export class Application {
   }
   async close(): Promise<void> {
     this.closing = true
+    this.authentication.stop()
     await this.accountAction?.catch(() => {})
     await this.unlike.stop()
     const paused = Promise.all([this.collection.pause(), this.favorites.pause()])

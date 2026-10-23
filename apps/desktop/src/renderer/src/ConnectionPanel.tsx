@@ -100,6 +100,7 @@ export function ConnectionPanel({
   const favorites = snapshot?.favorites?.accountId === accountId ? snapshot.favorites : null
   const unlike = snapshot?.unlike?.accountId === accountId ? snapshot.unlike : null
   const engine = snapshot?.engine.accountId === accountId ? snapshot.engine.status : 'stopped'
+  const authentication = snapshot?.authentication?.accountId === accountId ? snapshot.authentication : null
   const control = (kind: 'likes' | 'favorites', action: 'pause' | 'resume' | 'stop') => {
     const task = kind === 'likes' ? collection : favorites
     if (!task || !accountId) return
@@ -144,6 +145,11 @@ export function ConnectionPanel({
             </button>
           </div>
         </section>
+        {authentication && (
+          <p className="task-note" role="status">
+            {authentication.message}
+          </p>
+        )}
 
         <div className="collection-tasks" aria-label="采集任务">
           <TaskCard

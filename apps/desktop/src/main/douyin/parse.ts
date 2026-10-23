@@ -69,6 +69,12 @@ export function parseResponse(body: string, status: number): Obj {
     throw new AppError('INVALID_RESPONSE', '接口没有返回有效 JSON，当前进度未推进。')
   }
   if (!Object.keys(data).length) throw new AppError('INVALID_RESPONSE', '接口返回空响应，请检查抖音窗口。')
+  if (
+    data.status_code != null &&
+    String(data.status_code) !== '0' &&
+    /滑块|安全验证|验证码|captcha|verification required/i.test(String(data.status_msg ?? data.message ?? ''))
+  )
+    throw new AppError('VERIFICATION_REQUIRED', '平台要求人工验证，请在抖音窗口完成后继续。')
   if (data.status_code != null && String(data.status_code) !== '0') {
     throw new AppError('API_REJECTED', '平台拒绝了这次请求，请检查登录、人工验证或稍后重试。')
   }
