@@ -649,13 +649,23 @@ test('stops an in-flight request without binding identity or advancing the curso
 })
 
 test('opens the login window when identity is missing and persists a rate-limit pause without retrying', async () => {
+  test.setTimeout(120000)
   const accountId = await addAccount()
   await installPlatform(accountId)
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeAuthLost = true
   })
   const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
-  await expect.poll(async () => (await invoke('snapshot')).data.collection?.errorCode).toBe('AUTH_REQUIRED')
+  // A cold engine may take 35s to initialize plus one bounded identity request.
+  await expect
+    .poll(
+      async () => {
+        const state = (await invoke('snapshot')).data
+        return { error: state.collection?.errorCode, engine: state.engine.status }
+      },
+      { timeout: 50000 }
+    )
+    .toMatchObject({ error: 'AUTH_REQUIRED' })
   await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
   await expect.poll(async () => (await invoke('snapshot')).data.collectionActivity).toBeNull()
   await app.evaluate(() => {
