@@ -97,6 +97,39 @@ describe('platform responses', () => {
 })
 
 describe('main-world page request', () => {
+  it('uses only the current page msToken for likes and still delegates to page fetch without leaking it in the reply', async () => {
+    const requested: string[] = []
+    const document = { cookie: 'other=1; msToken=fixture%2Bfirst' }
+    const context = {
+      URLSearchParams,
+      AbortController,
+      Map,
+      setTimeout,
+      clearTimeout,
+      document,
+      fetch: async (url: string) => {
+        requested.push(url)
+        return { status: 200, headers: new Headers(), text: async () => '{}' }
+      }
+    }
+    const script = buildPageScript({
+      id: 'token',
+      operation: 'likes',
+      parameters: { max_cursor: '10' },
+      timeout: 1000
+    })
+    const first = await runInNewContext(script, context)
+    document.cookie = 'msToken=fixture-second'
+    await runInNewContext(script, context)
+    document.cookie = ''
+    await runInNewContext(script, context)
+    expect(requested.map((url) => new URL(url).searchParams.get('msToken'))).toEqual([
+      'fixture+first',
+      'fixture-second',
+      null
+    ])
+    expect(JSON.stringify(first)).not.toContain('fixture')
+  })
   it('uses the page-installed fetch and serializes hostile values as data', async () => {
     let requested = ''
     const context = {

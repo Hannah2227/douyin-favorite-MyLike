@@ -26,6 +26,37 @@ export const rebuildReadPage = (code: string, retries: number, visible: boolean)
 export const readRetryDelay = (code: string, retry: number, base: number) =>
   base * (['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(code) ? 5 : 1) * 3 ** retry
 
+/** Probe only platform-supplied cursors; the durable checkpoint stays at the
+ * anchor until actual content or a confirmed end can be committed with it. */
+export class EmptyPageTraversal {
+  private cursors: string[]
+  private candidate = ''
+  private changes = 0
+  constructor(anchor: string) {
+    this.cursors = [anchor]
+  }
+  get cursor() {
+    return this.cursors.at(-1)!
+  }
+  get requests() {
+    return [...this.cursors]
+  }
+  check(next: string): 'confirm' | 'advance' {
+    if (this.cursors.includes(next)) throw new AppError('EMPTY_PAGE', '空页返回重复或循环游标，断点未推进。')
+    if (next !== this.candidate) {
+      this.candidate = next
+      if (++this.changes >= 3) throw new AppError('EMPTY_PAGE', '空页返回游标反复变化，断点未推进。')
+      return 'confirm'
+    }
+    if (this.cursors.length >= 6)
+      throw new AppError('EMPTY_PAGE_LIMIT', '连续空页探查达到上限，尚未确认末尾，原断点保留。')
+    this.cursors.push(next)
+    this.candidate = ''
+    this.changes = 0
+    return 'advance'
+  }
+}
+
 /** A single successful-looking end marker can be a temporary platform reply.
  * Confirm the same cursor and item set twice before committing it as an end. */
 export class EndConfirmation {

@@ -35,6 +35,22 @@ async function requestInPage(request: PageRequest) {
     ...(['unlike', 'favorites'].includes(request.operation) ? {} : request.parameters)
   })
   try {
+    // Match the original page-SDK request: use only the current page's token,
+    // never a fabricated or persisted signing value.
+    if (request.operation === 'likes') {
+      try {
+        const token = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/)?.[1]
+        if (token) {
+          try {
+            params.set('msToken', decodeURIComponent(token))
+          } catch {
+            params.set('msToken', token)
+          }
+        }
+      } catch {
+        /* The page SDK can supply its own token when the cookie is unavailable. */
+      }
+    }
     const response = await fetch('https://www.douyin.com' + paths[request.operation] + '?' + params, {
       credentials: 'include',
       cache: 'no-store',

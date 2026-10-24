@@ -114,13 +114,15 @@ export function ConnectionPanel({
   const runningActivity = (activity: Snapshot['collectionActivity']) =>
     activity === 'recycling'
       ? '分段休息，稍后自动继续'
-      : activity === 'confirming'
-        ? '收到结束标记，正在等待复查同一断点'
-        : activity === 'cooling'
-          ? '平台返回空内容，等待冷却后复查同一断点'
-          : activity === 'requesting'
-            ? '正在读取当前页'
-            : '等待下一页'
+      : activity === 'probing'
+        ? '正在复查空页并探查后续分页，原断点保留'
+        : activity === 'confirming'
+          ? '收到结束标记，正在等待复查同一断点'
+          : activity === 'cooling'
+            ? '平台返回空内容，等待冷却后复查同一断点'
+            : activity === 'requesting'
+              ? '正在读取当前页'
+              : '等待下一页'
   return (
     <div className="panel-scroll task-center">
       <div className="task-content">

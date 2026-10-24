@@ -507,20 +507,37 @@ export class Store {
       case 'saveCollectionPage':
         return this.transaction(() => {
           const task = this.task(input.accountId, input.taskId)
-          if (task.status !== 'running' || task.cursor !== input.requestCursor)
+          const anchor = input.checkpointCursor ?? input.requestCursor
+          const cursors: string[] = input.traversedCursors ?? [input.requestCursor]
+          if (task.status !== 'running' || task.cursor !== anchor)
             throw new AppError('CANCELLED', '任务已暂停或断点已变化，本页未保存。')
+          if (
+            !cursors.length ||
+            cursors.length > 6 ||
+            cursors[0] !== anchor ||
+            cursors.at(-1) !== input.requestCursor ||
+            new Set(cursors).size !== cursors.length ||
+            cursors.some(
+              (cursor) =>
+                typeof cursor !== 'string' ||
+                !/^\d{1,30}$/.test(cursor) ||
+                this.db
+                  .prepare('SELECT 1 FROM collection_cursors WHERE taskId=? AND phase=? AND cursor=?')
+                  .get(task.id, task.phase, cursor)
+            )
+          )
+            throw new AppError('CURSOR_STALLED', '分页探查路径无效或出现循环，原断点未推进。')
           if (
             input.hasMore &&
             (!input.items.length ||
-              input.cursor === task.cursor ||
+              cursors.includes(input.cursor) ||
               this.db
                 .prepare('SELECT 1 FROM collection_cursors WHERE taskId=? AND phase=? AND cursor=?')
                 .get(task.id, task.phase, input.cursor))
           )
             throw new AppError('CURSOR_STALLED', '出现重复游标或异常空页，已暂停且未推进断点。')
-          this.db
-            .prepare('INSERT INTO collection_cursors VALUES(?,?,?)')
-            .run(task.id, task.phase, task.cursor)
+          for (const cursor of cursors)
+            this.db.prepare('INSERT INTO collection_cursors VALUES(?,?,?)').run(task.id, task.phase, cursor)
           const result = this.savePage({
             ...input,
             preserveCheckpoint:
@@ -543,7 +560,7 @@ export class Store {
                 .prepare(
                   'INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value'
                 )
-                .run(`collectionTail:${task.accountId}`, task.cursor)
+                .run(`collectionTail:${task.accountId}`, input.requestCursor)
           } else if (
             phase === 'head' &&
             input.items.length &&

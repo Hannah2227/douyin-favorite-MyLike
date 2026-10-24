@@ -3622,6 +3622,80 @@ test('rechecks an empty liked-page cursor instead of skipping it and confirms th
   ).toEqual(['0', '10', '10', '30', '30'])
 })
 
+test('recovers works behind stable empty liked pages and restarts from the original anchor when paused during a probe', async () => {
+  test.setTimeout(testTimeout(90000))
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  const prepare = async (hold: boolean) =>
+    app.evaluate(
+      async ({ session }, { accountId, workId, hold }) => {
+        await session.fromPartition(`persist:mylike-${accountId}`).cookies.set({
+          url: 'https://www.douyin.com',
+          name: 'msToken',
+          value: 'fixture-page-token',
+          secure: true
+        })
+        ;(globalThis as any).__mylikeHoldLikesAt = hold ? '30' : null
+        ;(globalThis as any).__mylikeLikedPages = {
+          '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' },
+          '10': { aweme_list: [], has_more: 1, max_cursor: '20' },
+          '20': { aweme_list: [], has_more: 1, max_cursor: '30' },
+          '30': { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 0, max_cursor: '0' }
+        }
+      },
+      { accountId, workId, hold }
+    )
+  await prepare(true)
+  const task = (await invoke('collectionStart', { accountId, mode: 'update' })).data
+  await expect
+    .poll(
+      () =>
+        app.evaluate(() =>
+          ((globalThis as any).__mylikeTestCalls as string[]).some(
+            (url) => new URL(url).searchParams.get('max_cursor') === '30'
+          )
+        ),
+      { timeout: 25000 }
+    )
+    .toBe(true)
+  expect((await invoke('snapshot')).data.collection).toMatchObject({ cursor: '10', pages: 1, added: 1 })
+  await invoke('collectionControl', { accountId, taskId: task.id, action: 'pause' })
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeReleaseLikes?.()
+  })
+  await app.close()
+  await launch()
+  await installPlatform(accountId)
+  await prepare(false)
+  await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection, { timeout: 25000 })
+    .toMatchObject({
+      status: 'completed',
+      cursor: '0',
+      pages: 2,
+      added: 2,
+      tailCursor: '30'
+    })
+  expect((await invoke('query', { accountId })).data.total).toBe(2)
+  const requests = await app.evaluate(() =>
+    ((globalThis as any).__mylikeTestCalls as string[])
+      .filter((url) => url.includes('/aweme/favorite/'))
+      .map((url) => ({
+        cursor: new URL(url).searchParams.get('max_cursor'),
+        token: new URL(url).searchParams.get('msToken'),
+        sdk: new URL(url).searchParams.get('_fixture_sdk')
+      }))
+  )
+  expect(requests.map((request) => request.cursor)).toEqual(['10', '10', '20', '20', '30', '30'])
+  expect(
+    requests.every((request) => request.token === 'fixture-page-token' && request.sdk === 'page-main-world')
+  ).toBe(true)
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events.filter((event: any) => event.code === 'END_CONFIRMED')).toHaveLength(1)
+  expect(JSON.stringify(events)).not.toContain('fixture-page-token')
+})
+
 for (const mode of ['advancing', 'stagnant']) {
   test(`keeps an ${mode} empty tail as a neutral pause with the original checkpoint and resumes after restart`, async ({}, info) => {
     test.setTimeout(testTimeout(120000))
@@ -3632,7 +3706,7 @@ for (const mode of ['advancing', 'stagnant']) {
         const pages: Record<string, unknown> = {
           '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' }
         }
-        for (let i = 10; i < 15; i++)
+        for (let i = 10; i <= 15; i++)
           pages[String(i)] = {
             aweme_list: [],
             has_more: 1,
@@ -3659,7 +3733,11 @@ for (const mode of ['advancing', 'stagnant']) {
         .filter((url) => url.includes('/aweme/favorite/'))
         .map((url) => new URL(url).searchParams.get('max_cursor'))
     )
-    expect(cursors).toEqual(['0', '10', '10', '10'])
+    expect(cursors).toEqual(
+      mode === 'advancing'
+        ? ['0', ...['10', '11', '12', '13', '14', '15'].flatMap((cursor) => [cursor, cursor])]
+        : ['0', '10', '10', '10']
+    )
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
     const task = page.getByRole('region', { name: '自动采集任务' })
     await expect(task).toContainText('待复查')

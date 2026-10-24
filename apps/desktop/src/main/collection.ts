@@ -9,7 +9,8 @@ import {
   rebuildReadPage,
   readRetryDelay,
   PageProgress,
-  EndConfirmation
+  EndConfirmation,
+  EmptyPageTraversal
 } from './read-recovery'
 import { collectionPolicy as policy } from './collection-policy'
 import type { RuntimeEventInput } from '../shared/runtime-events'
@@ -111,6 +112,7 @@ export class CollectionService {
   private async collect(initial: CollectionTask, signal: AbortSignal): Promise<void> {
     const progress = new PageProgress()
     const ending = new EndConfirmation()
+    let traversal = new EmptyPageTraversal(initial.cursor)
     let task = initial,
       retries = 0,
       segmentPages = 0,
@@ -159,7 +161,7 @@ export class CollectionService {
               const page = parseLikedPage(
                 await this.engine.request(task.accountId, 'likes', {
                   sec_user_id: account.remoteId!,
-                  max_cursor: task.cursor,
+                  max_cursor: traversal.cursor,
                   min_cursor: '0',
                   count: '18',
                   publish_video_strategy_type: '2',
@@ -169,12 +171,21 @@ export class CollectionService {
               )
               guard()
               const confirmed = ending.check(
-                `${task.phase}:${task.cursor}`,
+                `${task.phase}:${traversal.cursor}`,
                 page.items.map((item) => item.id),
                 page.hasMore
               )
               if (page.hasMore && !page.items.length) {
-                throw new AppError('EMPTY_PAGE', noAvailableItems)
+                const action = traversal.check(page.cursor)
+                this.activity = 'probing'
+                if (action === 'confirm' && traversal.requests.length === 1)
+                  this.report(task.accountId, {
+                    kind: 'task',
+                    code: 'EMPTY_PAGE_PROBE',
+                    message: '空列表仍有有效下一页，正在复查游标并有限探查后续分页；原断点保留。'
+                  })
+                this.changed()
+                return null
               }
               if (!confirmed) {
                 this.activity = 'confirming'
@@ -194,19 +205,22 @@ export class CollectionService {
                 accountId: task.accountId,
                 taskId: task.id,
                 remoteId: account.remoteId!,
-                requestCursor: task.cursor,
+                checkpointCursor: task.cursor,
+                requestCursor: traversal.cursor,
+                traversedCursors: traversal.requests,
                 ...page
               })
               this.changed(true)
               return saved
             } finally {
-              if (this.activity !== 'confirming') this.activity = 'waiting'
+              if (this.activity !== 'confirming' && this.activity !== 'probing') this.activity = 'waiting'
             }
           },
           true
         )
         if (saved) {
           task = saved
+          traversal = new EmptyPageTraversal(task.cursor)
           retries = 0
         }
         this.current = task
@@ -218,6 +232,7 @@ export class CollectionService {
         if (signal.aborted) return
         const detail = publicError(error)
         ending.reset()
+        traversal = new EmptyPageTraversal(task.cursor)
         if (retryableRead(detail.code) && retries < 2) {
           this.activity = ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code) ? 'cooling' : 'waiting'
           this.changed()
@@ -253,7 +268,7 @@ export class CollectionService {
             reason: ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code)
               ? noAvailableItems
               : detail.message,
-            errorCode: ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code)
+            errorCode: ['EMPTY_PAGE', 'EMPTY_RESPONSE', 'EMPTY_PAGE_LIMIT'].includes(detail.code)
               ? 'NO_AVAILABLE_ITEMS'
               : detail.code
           })

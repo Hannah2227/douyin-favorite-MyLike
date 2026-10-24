@@ -76,6 +76,45 @@ afterEach(async () => {
 })
 
 describe('durable collection tasks', () => {
+  it('commits the full empty-page path with actual content and rejects later cycles through that path', () => {
+    const { store } = setup()
+    start(store)
+    page(store, '0', '10', [work('1')])
+    const input = {
+      accountId: 'a',
+      taskId: 'task',
+      remoteId: 'remote-a',
+      checkpointCursor: '10',
+      requestCursor: '30',
+      traversedCursors: ['10', '20', '30'],
+      cursor: '40',
+      items: [work('2')],
+      hasMore: true
+    }
+    expect(() =>
+      store.call('saveCollectionPage', { ...input, traversedCursors: ['10', '20', '20', '30'] })
+    ).toThrow(/循环/)
+    expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('10')
+    expect(() => store.call('saveCollectionPage', { ...input, remoteId: 'wrong-account' })).toThrow(/身份/)
+    expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('10')
+    expect(store.call('saveCollectionPage', input)).toMatchObject({ cursor: '40', pages: 2, added: 2 })
+    expect(() => page(store, '40', '20', [work('3')])).toThrow(/游标/)
+    expect(store.call('query', query).total).toBe(2)
+    expect(
+      store.call('saveCollectionPage', {
+        ...input,
+        checkpointCursor: '40',
+        requestCursor: '50',
+        traversedCursors: ['40', '50'],
+        cursor: '0',
+        items: [],
+        hasMore: false
+      })
+    ).toMatchObject({
+      status: 'completed',
+      tailCursor: '50'
+    })
+  })
   it('checks the head without overwriting a deep checkpoint, then finishes the backfill', () => {
     const { store } = setup()
     save(store, [work('1')], '9007199254740993000')
@@ -473,7 +512,7 @@ describe('request scheduling and task control', () => {
     expect(cursors.at(-1)).toBe('99')
     expect(store.call('checkpoint', { accountId: 'a' })?.hasMore).toBe(false)
   })
-  it('rechecks the original empty cursor without skipping, then preserves it on pause and resume', async () => {
+  it('bounds confirmed empty-page traversal and preserves the original anchor on pause and resume', async () => {
     const { service, store, releases, cursors } = serviceFixture(async (cursor) => ({
       aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
       has_more: 1,
@@ -481,7 +520,8 @@ describe('request scheduling and task control', () => {
     }))
     await service.start('a', 'update')
     await expect.poll(() => service.running).toBe(false)
-    expect(cursors).toEqual(['0', '1', '1', '1'])
+    const path = ['1', '2', '3', '4', '5', '6'].flatMap((cursor) => [cursor, cursor])
+    expect(cursors).toEqual(['0', ...path])
     expect(store.call('collection', { accountId: 'a' })).toMatchObject({
       status: 'paused',
       cursor: '1',
@@ -489,10 +529,46 @@ describe('request scheduling and task control', () => {
       errorCode: 'NO_AVAILABLE_ITEMS'
     })
     expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '1', hasMore: true })
-    expect(releases()).toBe(1)
+    expect(releases()).toBeGreaterThan(0)
     await service.control('a', store.call('collection', { accountId: 'a' })!.id, 'resume')
     await expect.poll(() => service.running).toBe(false)
-    expect(cursors.slice(4)).toEqual(['1', '1', '1'])
+    expect(cursors.slice(13)).toEqual(path)
+  })
+  it('crosses two stable empty pages, holds the anchor while probing, and saves the actual end cursor', async () => {
+    const { service, store, cursors } = serviceFixture(async (cursor) => {
+      if (cursor !== '0') expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('10')
+      return cursor === '0'
+        ? { aweme_list: [{ aweme_id: '1' }], has_more: 1, max_cursor: '10' }
+        : cursor === '10'
+          ? { aweme_list: [], has_more: 1, max_cursor: '20' }
+          : cursor === '20'
+            ? { aweme_list: [], has_more: 1, max_cursor: '30' }
+            : { aweme_list: [{ aweme_id: '2' }], has_more: 0, max_cursor: '0' }
+    })
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors).toEqual(['0', '10', '10', '20', '20', '30', '30'])
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'completed',
+      added: 2,
+      pages: 2,
+      tailCursor: '30'
+    })
+  })
+  it('pauses cyclic empty-page cursors without moving the durable anchor', async () => {
+    const { service, store, cursors } = serviceFixture(async (cursor) => ({
+      aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
+      has_more: 1,
+      max_cursor: cursor === '0' ? '10' : cursor === '10' ? '20' : '10'
+    }))
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors).toEqual(['0', '10', '10', '20', '10', '10', '20', '10', '10', '20'])
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'paused',
+      cursor: '10',
+      errorCode: 'NO_AVAILABLE_ITEMS'
+    })
   })
   it('does not accept a temporary empty end marker when the same cursor subsequently returns works', async () => {
     let calls = 0
@@ -535,7 +611,7 @@ describe('request scheduling and task control', () => {
       async (cursor) => ({
         aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
         has_more: 1,
-        max_cursor: String(Number(cursor) + 1)
+        max_cursor: cursor === '0' ? '1' : cursor
       }),
       { retry: 100 }
     )

@@ -65,6 +65,8 @@ export interface Inputs {
     taskId: string
     remoteId: string
     requestCursor: string
+    checkpointCursor?: string
+    traversedCursors?: string[]
     items: Work[]
     cursor: string
     hasMore: boolean

@@ -273,7 +273,7 @@ export interface Snapshot {
   } | null
   busy: boolean
   collection: CollectionTask | null
-  collectionActivity: 'requesting' | 'waiting' | 'recycling' | 'confirming' | 'cooling' | null
+  collectionActivity: 'requesting' | 'waiting' | 'recycling' | 'confirming' | 'cooling' | 'probing' | null
   unlike: UnlikeTask | null
   libraryRevision: number
   playback: QueueState | null
