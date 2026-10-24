@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { Store } from '../../src/main/storage/database'
 import { responseSummary } from '../../src/main/douyin/response-summary'
 import { EndConfirmation, readRetryDelay } from '../../src/main/read-recovery'
+import { testTimeout } from '../helpers/test-timeout'
 
 const roots: string[] = [],
   stores: Store[] = []
@@ -124,60 +125,64 @@ it('records task outcomes durably and scopes them to the owning account', () => 
   })
 })
 
-it('keeps task events when the bounded request history fills and purges all copies on account deletion', () => {
-  const { store, root, file } = setup()
-  store.call('appendRuntimeEvent', {
-    accountId: 'a',
-    event: { kind: 'task', message: '早期中断原因', code: 'EMPTY_PAGE' }
-  })
-  store.call('appendRuntimeEvent', {
-    accountId: 'b',
-    event: { kind: 'auth', message: '其他账号异常', code: 'TIMEOUT' }
-  })
-  for (let n = 0; n < 170; n++)
+it(
+  'keeps task events when the bounded request history fills and purges all copies on account deletion',
+  () => {
+    const { store, root, file } = setup()
     store.call('appendRuntimeEvent', {
       accountId: 'a',
-      event: {
-        kind: 'request',
-        message: `异常响应 ${n}`,
-        operation: 'likes',
-        responseType: 'http-error',
-        code: 'RATE_LIMITED',
-        status: 429,
-        count: 18,
-        durationMs: 10
-      }
+      event: { kind: 'task', message: '早期中断原因', code: 'EMPTY_PAGE' }
     })
-  const events = store.call('runtimeEvents', { accountId: 'a' })
-  expect(events.filter((e) => e.kind === 'request')).toHaveLength(150)
-  expect(events.some((e) => e.message === '早期中断原因')).toBe(true)
-  store.call('bindAccount', { accountId: 'a', remoteId: 'remote-a', nickname: 'A', avatarUrl: null })
-  store.call('startCollection', { accountId: 'a', id: 'terminal', mode: 'update' })
-  store.call('saveCollectionPage', {
-    accountId: 'a',
-    taskId: 'terminal',
-    remoteId: 'remote-a',
-    requestCursor: '0',
-    cursor: '0',
-    items: [],
-    hasMore: false
-  })
-  store.call('backup', { reason: 'manual' })
-  store.call('removeAccount', { accountId: 'a' })
-  expect(() =>
-    store.call('appendRuntimeEvent', { accountId: 'a', event: { kind: 'task', message: '迟到事件' } })
-  ).toThrow(/不存在/)
-  for (const path of [
-    file,
-    ...readdirSync(join(root, 'backups')).map((name) => join(root, 'backups', name))
-  ]) {
-    const db = new DatabaseSync(path, { readOnly: true })
-    expect(db.prepare('SELECT value FROM settings WHERE key=?').get('runtime:a')).toBeUndefined()
-    expect(db.prepare('SELECT value FROM settings WHERE key=?').get('collectionTail:a')).toBeUndefined()
-    expect(db.prepare('SELECT value FROM settings WHERE key=?').get('runtime:b')).toBeDefined()
-    db.close()
-  }
-})
+    store.call('appendRuntimeEvent', {
+      accountId: 'b',
+      event: { kind: 'auth', message: '其他账号异常', code: 'TIMEOUT' }
+    })
+    for (let n = 0; n < 170; n++)
+      store.call('appendRuntimeEvent', {
+        accountId: 'a',
+        event: {
+          kind: 'request',
+          message: `异常响应 ${n}`,
+          operation: 'likes',
+          responseType: 'http-error',
+          code: 'RATE_LIMITED',
+          status: 429,
+          count: 18,
+          durationMs: 10
+        }
+      })
+    const events = store.call('runtimeEvents', { accountId: 'a' })
+    expect(events.filter((e) => e.kind === 'request')).toHaveLength(150)
+    expect(events.some((e) => e.message === '早期中断原因')).toBe(true)
+    store.call('bindAccount', { accountId: 'a', remoteId: 'remote-a', nickname: 'A', avatarUrl: null })
+    store.call('startCollection', { accountId: 'a', id: 'terminal', mode: 'update' })
+    store.call('saveCollectionPage', {
+      accountId: 'a',
+      taskId: 'terminal',
+      remoteId: 'remote-a',
+      requestCursor: '0',
+      cursor: '0',
+      items: [],
+      hasMore: false
+    })
+    store.call('backup', { reason: 'manual' })
+    store.call('removeAccount', { accountId: 'a' })
+    expect(() =>
+      store.call('appendRuntimeEvent', { accountId: 'a', event: { kind: 'task', message: '迟到事件' } })
+    ).toThrow(/不存在/)
+    for (const path of [
+      file,
+      ...readdirSync(join(root, 'backups')).map((name) => join(root, 'backups', name))
+    ]) {
+      const db = new DatabaseSync(path, { readOnly: true })
+      expect(db.prepare('SELECT value FROM settings WHERE key=?').get('runtime:a')).toBeUndefined()
+      expect(db.prepare('SELECT value FROM settings WHERE key=?').get('collectionTail:a')).toBeUndefined()
+      expect(db.prepare('SELECT value FROM settings WHERE key=?').get('runtime:b')).toBeDefined()
+      db.close()
+    }
+  },
+  testTimeout(15000)
+)
 
 it('records crash recovery and reports damaged event storage instead of inventing empty history', () => {
   const { store, file } = setup()

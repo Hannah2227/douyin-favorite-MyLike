@@ -30,7 +30,12 @@ export class Application {
   private epoch = 0
   private libraryRevision = 0
   private mediaEpoch = 0
-  private activeMedia = false
+  private activeMedia: {
+    accountId: string
+    workId: string
+    queueId: string | null
+    cancelled: boolean
+  } | null = null
   private closing = false
   private accountAction: Promise<unknown> | null = null
   private readonly files: FileTransfers
@@ -590,8 +595,22 @@ export class Application {
           await this.active(input.accountId)
           const result = await this.database.call(command, input)
           if (command !== 'queueProgress') {
-            this.mediaEpoch++
-            if (this.activeMedia) this.engine.cancel()
+            if (['queueCreate', 'queueDismiss'].includes(command)) this.mediaEpoch++
+            const active = this.activeMedia
+            // A prefetched next item becomes the current item when advancing.
+            // Keep that read alive; unrelated targets still cancel immediately.
+            if (
+              active &&
+              !(
+                active.accountId === result.accountId &&
+                active.queueId === result.queueId &&
+                active.workId === result.work.id &&
+                !result.completed
+              )
+            ) {
+              active.cancelled = true
+              this.engine.cancel()
+            }
             this.changed()
           }
           return result
@@ -640,24 +659,38 @@ export class Application {
         })
       case 'media': {
         const epoch = this.mediaEpoch
+        const request = {
+          accountId: input.accountId,
+          workId: input.workId,
+          queueId: input.playback?.queueId ?? null,
+          cancelled: false
+        }
         return this.run(input.accountId, async (check) => {
           const guard = () => {
             check()
-            if (epoch !== this.mediaEpoch) throw new AppError('CANCELLED', '已切换播放目标，旧取链已取消。')
+            if (epoch !== this.mediaEpoch || request.cancelled)
+              throw new AppError('CANCELLED', '已切换播放目标，旧取链已取消。')
           }
           guard()
-          if (input.playback) {
+          const validateQueue = async () => {
+            if (!input.playback) return
             const queue = await this.database.call('queueState', { accountId: input.accountId })
             if (
               !queue ||
               queue.queueId !== input.playback.queueId ||
-              queue.revision !== input.playback.revision ||
-              ![queue.work.id, queue.next?.id].includes(input.workId)
+              !(
+                (queue.revision === input.playback.revision &&
+                  [queue.work.id, queue.next?.id].includes(input.workId)) ||
+                (queue.revision > input.playback.revision &&
+                  queue.work.id === input.workId &&
+                  !queue.completed)
+              )
             )
               throw new AppError('QUEUE_CHANGED', '播放目标已变化，旧取链已丢弃。')
           }
+          await validateQueue()
           guard()
-          this.activeMedia = true
+          this.activeMedia = request
           try {
             await this.identity(input.accountId, guard)
             guard()
@@ -671,9 +704,11 @@ export class Application {
             guard()
             if (media.work.id !== input.workId)
               throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
+            await validateQueue()
+            guard()
             return media
           } finally {
-            this.activeMedia = false
+            this.activeMedia = null
           }
         })
       }

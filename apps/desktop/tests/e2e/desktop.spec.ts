@@ -279,6 +279,12 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
             }
         } else if (url.pathname.includes('/aweme/detail/')) {
           const detailId = url.searchParams.get('aweme_id') ?? workId
+          if ((globalThis as any).__mylikeHoldDetailOnce === detailId) {
+            ;(globalThis as any).__mylikeHoldDetailOnce = null
+            await new Promise<void>((resolve) => {
+              ;(globalThis as any).__releaseHeldDetail = resolve
+            })
+          }
           if ((globalThis as any).__mylikeDelayDetail === detailId)
             await new Promise((resolve) =>
               setTimeout(resolve, (globalThis as any).__mylikeDetailDelayMs ?? 2000)
@@ -1163,6 +1169,59 @@ test('persists playback position and preferences across restart and suppresses r
   await launch()
   expect((await invoke('snapshot')).data.playback.completed).toBe(true)
   await expect(page.getByRole('button', { name: '继续回看', exact: true })).toHaveCount(0)
+})
+
+test('promotes the pending next-item prefetch without cancelling or repeating its detail request', async () => {
+  const { ids } = await prepareQueue(3)
+  await app.evaluate((_electron, id) => {
+    ;(globalThis as any).__mylikeHoldDetailOnce = id
+  }, ids[1]!)
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const count = () =>
+    app.evaluate(
+      (_electron, id) =>
+        ((globalThis as any).__mylikeTestCalls as string[]).filter(
+          (url) => url.includes('/aweme/detail/') && new URL(url).searchParams.get('aweme_id') === id
+        ).length,
+      ids[1]!
+    )
+  await expect.poll(count).toBe(1)
+  await page.getByRole('button', { name: '下一条', exact: true }).click()
+  await expect(page.locator('.player-queue-position')).toHaveText('2 / 3')
+  await app.evaluate(() => {
+    ;(globalThis as any).__releaseHeldDetail?.()
+  })
+  await readyVideo(1)
+  expect(await count()).toBe(1)
+  await expect(page.getByRole('region', { name: '播放器' })).not.toContainText('暂时无法播放')
+})
+
+test('promotes a queued next-item read when advancing while a different media read owns the lane', async () => {
+  const { accountId, ids } = await prepareQueue(3)
+  const queue = (await invoke('queueCreate', { accountId, source: { type: 'ids', ids }, mode: 'sequence' }))
+    .data
+  await app.evaluate((_electron, id) => {
+    ;(globalThis as any).__mylikeHoldDetailOnce = id
+  }, queue.work.id)
+  const first = invoke('media', {
+    accountId,
+    workId: queue.work.id,
+    playback: { queueId: queue.queueId, revision: queue.revision }
+  })
+  await expect.poll(() => app.evaluate(() => typeof (globalThis as any).__releaseHeldDetail)).toBe('function')
+  const pending = invoke('media', {
+    accountId,
+    workId: queue.next.id,
+    playback: { queueId: queue.queueId, revision: queue.revision }
+  })
+  await invoke('queueMove', { accountId, queueId: queue.queueId, target: 'next' })
+  await app.evaluate(() => {
+    ;(globalThis as any).__releaseHeldDetail?.()
+  })
+  expect((await first).error.code).toBe('CANCELLED')
+  expect((await pending).data.work.id).toBe(queue.next.id)
+  expect((await invoke('snapshot')).data.playback.work.id).toBe(queue.next.id)
 })
 
 test('keeps the latest track during rapid moves and opens comments externally while preserving paused playback', async ({}, info) => {

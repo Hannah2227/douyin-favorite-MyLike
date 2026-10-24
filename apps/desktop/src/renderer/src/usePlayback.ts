@@ -4,7 +4,7 @@ import { call, CommandError } from './api'
 
 const key = (queue: QueueState) => `${queue.accountId}:${queue.queueId}:${queue.revision}`
 type View = { queue: QueueState; media: Media | null; error: string }
-type Cache = { scope: string; expires: number; media?: Media; promise?: Promise<Media> }
+type Cache = { queueId: string; expires: number; media?: Media; promise?: Promise<Media> }
 export function usePlayback(
   accountId: string | null,
   onError: (message: string) => void,
@@ -86,13 +86,12 @@ export function usePlayback(
   }, [accountId])
   const getMedia = (queue: QueueState, workId: string): Promise<Media> => {
     const cacheKey = `${queue.accountId}:${workId}`,
-      scope = key(queue),
       old = cache.current.get(cacheKey)
     if (old && old.expires > Date.now()) {
       if (old.media) return Promise.resolve(old.media)
-      if (old.scope === scope && old.promise) return old.promise
+      if (old.queueId === queue.queueId && old.promise) return old.promise
     }
-    const entry: Cache = { scope, expires: Date.now() + 120000 }
+    const entry: Cache = { queueId: queue.queueId, expires: Date.now() + 120000 }
     cache.current.set(cacheKey, entry)
     while (cache.current.size > 2) cache.current.delete(cache.current.keys().next().value!)
     entry.promise = call(
@@ -127,12 +126,15 @@ export function usePlayback(
           break
         } catch (error) {
           if (seq !== intent.current) return
+          const obsolete =
+            error instanceof CommandError && ['CANCELLED', 'QUEUE_CHANGED'].includes(error.code)
           if (
             retry ||
             !(error instanceof CommandError) ||
-            !['NETWORK_ERROR', 'TIMEOUT', 'PAGE_CHANGED'].includes(error.code)
+            (!obsolete && !['NETWORK_ERROR', 'TIMEOUT', 'PAGE_CHANGED'].includes(error.code))
           )
             throw error
+          if (obsolete) continue
           await new Promise((resolve) => setTimeout(resolve, 2000))
         }
       }
