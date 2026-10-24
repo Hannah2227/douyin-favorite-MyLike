@@ -33,6 +33,12 @@ type Props = {
 }
 export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding, perform }: Props) {
   const [manage, setManage] = useState<'rename' | 'remove' | null>(null)
+  const taskRunning =
+    snapshot?.collection?.status === 'running' ||
+    !!snapshot?.collectionActivity ||
+    snapshot?.favorites?.status === 'running' ||
+    !!snapshot?.favoritesActivity ||
+    snapshot?.unlike?.status === 'running'
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -59,7 +65,9 @@ export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding,
           >
             <item.icon size={18} />
             {item.text}
-            {item.id === 'tasks' && snapshot?.busy && <span className="activity-dot" />}
+            {item.id === 'tasks' && taskRunning && (
+              <span className="activity-dot" title="任务进行中" aria-hidden="true" />
+            )}
           </button>
         ))}
       </nav>

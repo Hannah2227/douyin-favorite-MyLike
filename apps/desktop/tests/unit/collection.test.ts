@@ -328,11 +328,80 @@ describe('request scheduling and task control', () => {
       errorCode: 'CURSOR_STALLED'
     })
   })
-  it('rebuilds a repeatedly unready page once without losing the committed cursor or looping indefinitely', async () => {
+  it('tries at most five advancing empty pages, retaining the first empty checkpoint rather than declaring completion', async () => {
+    const { service, store, releases, cursors } = serviceFixture(async (cursor) => ({
+      aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
+      has_more: 1,
+      max_cursor: String(Number(cursor) + 1)
+    }))
+    await service.start('a', 'full')
+    await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('paused')
+    expect(cursors).toEqual(['0', '1', '2', '3', '4', '5'])
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      pages: 1,
+      cursor: '1',
+      received: 1,
+      added: 1,
+      errorCode: 'NO_AVAILABLE_ITEMS'
+    })
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '1', hasMore: true })
+    expect(store.call('query', query).total).toBe(1)
+    expect(releases()).toBe(2)
+    await service.control('a', store.call('collection', { accountId: 'a' })!.id, 'resume')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors.slice(6)).toEqual(['1', '2', '3', '4', '5'])
+  })
+  it('passes an empty gap and atomically saves the next available page, or accepts an explicit terminal marker', async () => {
+    for (const terminalEmpty of [true, false]) {
+      const { service, store, cursors } = serviceFixture(async (cursor) => ({
+        aweme_list:
+          cursor === '0' || (cursor === '3' && !terminalEmpty)
+            ? [{ aweme_id: cursor === '0' ? '1' : '2' }]
+            : [],
+        has_more: cursor !== '3',
+        max_cursor: cursor === '3' ? '0' : String(Number(cursor) + 1)
+      }))
+      await service.start('a', 'full')
+      await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('completed')
+      expect(cursors).toEqual(['0', '1', '2', '3'])
+      expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+        pages: 2,
+        added: terminalEmpty ? 1 : 2,
+        errorCode: null
+      })
+      expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: false })
+    }
+  })
+  it('does not commit skipped empty cursors on pause and resumes from the original checkpoint', async () => {
+    let release!: () => void
+    const { service, store, cursors } = serviceFixture(async (cursor) => {
+      if (cursor === '2')
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+      return {
+        aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
+        has_more: 1,
+        max_cursor: String(Number(cursor) + 1)
+      }
+    })
+    const task = await service.start('a', 'full')
+    await expect.poll(() => !!release).toBe(true)
+    await service.control('a', task.id, 'pause')
+    release()
+    expect(cursors).toEqual(['0', '1', '2'])
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '1', hasMore: true })
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'paused',
+      pages: 1,
+      cursor: '1'
+    })
+  })
+  it('rechecks a stagnant empty cursor three times with one rebuild, then pauses as no available content', async () => {
     const { service, store, releases, cursors } = serviceFixture(async () => ({
       aweme_list: [],
       has_more: 1,
-      max_cursor: '9'
+      max_cursor: '0'
     }))
     await service.start('a', 'full')
     await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('paused')
@@ -341,7 +410,7 @@ describe('request scheduling and task control', () => {
     expect(store.call('collection', { accountId: 'a' })).toMatchObject({
       pages: 0,
       cursor: '0',
-      errorCode: 'INVALID_RESPONSE'
+      errorCode: 'NO_AVAILABLE_ITEMS'
     })
     expect(store.call('query', query).total).toBe(0)
   })

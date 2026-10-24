@@ -26,7 +26,7 @@ export function AccountDialog({ busy, name, setName, setAdding, setNotice, perfo
             await call(window.mylike.invoke('createAccount', { name }))
             setAdding(false)
             setName('')
-            setNotice('账号已创建。打开抖音窗口完成登录，再核验身份。')
+            setNotice('账号已创建。登录后可自动采集，采集途中也可以观看视频。')
           })
         }}
       >

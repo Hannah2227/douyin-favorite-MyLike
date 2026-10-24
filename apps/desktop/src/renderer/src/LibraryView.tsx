@@ -1,8 +1,10 @@
 import type { Dispatch, SetStateAction } from 'react'
 import {
   ArrowRight,
+  ArrowDownToLine,
   Heart,
   ImageIcon,
+  LoaderCircle,
   LogIn,
   Play,
   Plus,
@@ -21,6 +23,7 @@ type Props = {
   account: Account | undefined
   busy: boolean
   mutationBusy: boolean
+  collection: { start: () => void; running: boolean; busy: boolean }
   play: (work: Work) => void
   login: () => void
   setAdding: Dispatch<SetStateAction<boolean>>
@@ -39,6 +42,7 @@ export function LibraryView({
   account,
   busy,
   mutationBusy,
+  collection,
   play,
   login,
   setAdding,
@@ -68,6 +72,7 @@ export function LibraryView({
     pendingChanges
   } = library
   const filtered = !!(search || type !== 'all' || year || month)
+  const connected = !!account?.lastVerifiedAt
   return (
     <>
       {resume && (
@@ -189,24 +194,70 @@ export function LibraryView({
           </div>
         ) : !page.items.length ? (
           <div className="empty-state">
-            <Heart className="empty-icon" size={32} strokeWidth={1.5} />
-            <h2>{filtered ? '没有匹配内容' : account ? '暂无内容' : '添加账号'}</h2>
+            {collection.running && !filtered ? (
+              <LoaderCircle className="empty-icon spin" size={32} strokeWidth={1.5} />
+            ) : (
+              <Heart className="empty-icon" size={32} strokeWidth={1.5} />
+            )}
+            <h2>
+              {filtered
+                ? '没有匹配内容'
+                : collection.running
+                  ? '正在收录内容'
+                  : connected
+                    ? readOnly
+                      ? '开始收录收藏'
+                      : '开始收录喜欢'
+                    : account
+                      ? '暂无内容'
+                      : '添加账号'}
+            </h2>
             <p>
               {account
-                ? search || type !== 'all' || year || month
+                ? filtered
                   ? '试试其他关键词或筛选条件。'
-                  : '登录抖音后开始采集。'
+                  : collection.running
+                    ? '作品将陆续出现在这里，采集途中也可以观看已收录的视频。'
+                    : connected
+                      ? `${readOnly ? '点击“同步收藏”，收录收藏作品和收藏夹。' : '点击上方“自动采集”，收录喜欢的作品。'}\n采集途中也可以观看已收录的视频。`
+                      : '登录抖音后开始采集。'
                 : '添加抖音账号后开始采集。'}
             </p>
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => (filtered ? library.resetFilters() : account ? login() : setAdding(true))}
-            >
-              {filtered ? <X size={17} /> : account ? <LogIn size={17} /> : <Plus size={17} />}
-              {filtered ? '清空筛选' : account ? '打开抖音登录' : '添加抖音账号'}
-              <ArrowRight size={16} />
-            </button>
+            {(!collection.running || filtered) && (
+              <button
+                className="primary"
+                disabled={filtered ? busy : busy || collection.busy}
+                onClick={() =>
+                  filtered
+                    ? library.resetFilters()
+                    : connected
+                      ? collection.start()
+                      : account
+                        ? login()
+                        : setAdding(true)
+                }
+              >
+                {filtered ? (
+                  <X size={17} />
+                ) : connected ? (
+                  <ArrowDownToLine size={17} />
+                ) : account ? (
+                  <LogIn size={17} />
+                ) : (
+                  <Plus size={17} />
+                )}
+                {filtered
+                  ? '清空筛选'
+                  : connected
+                    ? readOnly
+                      ? '开始同步'
+                      : '开始采集'
+                    : account
+                      ? '打开抖音登录'
+                      : '添加抖音账号'}
+                <ArrowRight size={16} />
+              </button>
+            )}
           </div>
         ) : (
           <>

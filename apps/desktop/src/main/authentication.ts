@@ -12,6 +12,10 @@ type Session = {
 }
 type Runner = <T>(accountId: string, action: (check: () => void) => Promise<T>) => Promise<T>
 
+// Local DOM checks are cheap; identity requests remain serialized and wait
+// for the preceding reply. Rejected/limited APIs retain their long backoff.
+const cadence = { initial: 300, page: 500, login: 1000, retry: 3000, rejected: 30_000 }
+
 /** A bounded, account-scoped interaction. Probes use the same request lane as
  * business operations; completion never resumes a task or repeats a write. */
 export class Authentication {
@@ -61,7 +65,7 @@ export class Authentication {
       this.engine.setInteraction(this.current.kind)
       if (!automatic) {
         this.current.expires = Date.now() + 10 * 60_000
-        this.schedule(this.current, 1200)
+        this.schedule(this.current, cadence.initial)
         await this.engine.show(accountId)
       }
       return
@@ -81,14 +85,14 @@ export class Authentication {
       await this.engine.show(accountId)
       if (this.current === session) {
         this.engine.setInteraction(session.kind)
-        this.schedule(session, 1200)
+        this.schedule(session, cadence.initial)
       }
     } catch (error) {
       if (this.current === session) {
         this.update(session, 'failed', publicError(error).message)
         // Navigation can fail while the user completes a redirect or reload.
         // Keep checking the same window within the original time budget.
-        this.schedule(session, 2000)
+        this.schedule(session, cadence.page)
       }
       throw error
     }
@@ -116,7 +120,7 @@ export class Authentication {
   private async check(session: Session) {
     if (this.current !== session) return
     if (this.checking) {
-      this.schedule(session, 1200)
+      this.schedule(session, cadence.page)
       return
     }
     if (Date.now() >= session.expires) {
@@ -129,12 +133,12 @@ export class Authentication {
       if (this.current !== session || revision !== session.revision)
         throw new AppError('CANCELLED', '登录或验证检测已取消。')
     }
-    let delay = 5000
+    let delay = cadence.retry
     try {
       const state = await this.engine.pageState(session.accountId)
       valid()
       if (!state.ready || state.captcha) {
-        delay = 2000
+        delay = cadence.page
         return
       }
       this.update(session, 'checking', '正在核验账号及接口状态，请稍候。')
@@ -161,10 +165,14 @@ export class Authentication {
       )
       delay =
         needsDecision || ['RATE_LIMITED', 'API_REJECTED'].includes(detail.code)
-          ? 30_000
+          ? cadence.rejected
           : detail.code === 'AUTH_REQUIRED'
-            ? 2000
-            : 5000
+            ? cadence.login
+            : ['BROWSER_NOT_READY', 'PAGE_CHANGED', 'VERIFICATION_REQUIRED', 'CANCELLED'].includes(
+                  detail.code
+                )
+              ? cadence.page
+              : cadence.retry
       this.update(
         session,
         needsDecision ? 'failed' : 'waiting',

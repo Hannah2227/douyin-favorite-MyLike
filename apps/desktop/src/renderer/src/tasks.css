@@ -174,15 +174,7 @@
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: task-scan 1.8s linear infinite;
-}
-@keyframes task-scan {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(100%);
-  }
+  animation: task-breathe 2.4s ease-in-out infinite;
 }
 .unlike-task {
   margin-bottom: 22px;

@@ -48,6 +48,19 @@ describe('platform responses', () => {
     expect(() => parseResponse('{broken', 200)).toThrow(/JSON/)
     expect(() => parseResponse('{}', 429)).toThrow(/限流/)
   })
+  it('permits empty liked-page traversal only when explicitly requested, keeping favorites and single reads strict', () => {
+    const empty = { aweme_list: [], has_more: 1, max_cursor: '9007199254740993988' }
+    expect(parseLikedPage(empty, { allowEmpty: true })).toEqual({
+      items: [],
+      hasMore: true,
+      cursor: empty.max_cursor
+    })
+    expect(() => parseLikedPage(empty)).toThrow(/空页/)
+    expect(() => parseFavoritesPage(empty)).toThrow(/空页/)
+    for (const cursor of [undefined, '0', 0])
+      expect(() => parseLikedPage({ ...empty, max_cursor: cursor }, { allowEmpty: true })).toThrow(/空页/)
+    expect(() => parseLikedPage({ ...empty, max_cursor: 'bad' }, { allowEmpty: true })).toThrow(/无效/)
+  })
   it('accepts only HTTPS media hosts with hostname boundaries, without URL credentials', () => {
     expect(safeMediaUrl('https://v.example.douyinvod.com/test.webm')).toBeTruthy()
     expect(safeMediaUrl('https://sf11-cdn-tos.douyinstatic.com/obj/ies-music/test.mp3')).toBeTruthy()

@@ -104,6 +104,12 @@ export class CollectionService {
       retries = 0,
       segmentPages = 0,
       segmentStart = Date.now()
+    // Empty pages may cover removed/private works. Follow only a bounded set
+    // of new cursors in memory; persist nothing until data or a declared end.
+    let requestCursor = task.cursor
+    const emptyCursors = new Set([requestCursor])
+    const noAvailableItems =
+      '平台暂未返回更多可采集内容，已保留断点，可稍后继续。抖音显示的数量可能包含已删除或不可访问的作品。'
     const valid = () => {
       if (signal.aborted) throw new AppError('CANCELLED', '采集已停止。')
     }
@@ -130,7 +136,7 @@ export class CollectionService {
         }
         this.activity = 'waiting'
         this.changed()
-        task = await this.run(
+        const saved = await this.run(
           task.accountId,
           async (check) => {
             const guard = () => {
@@ -146,14 +152,23 @@ export class CollectionService {
               const page = parseLikedPage(
                 await this.engine.request(task.accountId, 'likes', {
                   sec_user_id: account.remoteId!,
-                  max_cursor: task.cursor,
+                  max_cursor: requestCursor,
                   min_cursor: '0',
                   count: '18',
                   publish_video_strategy_type: '2',
                   pc_client_type: '1'
-                })
+                }),
+                { allowEmpty: true }
               )
               guard()
+              if (page.hasMore && !page.items.length) {
+                if (emptyCursors.has(page.cursor))
+                  throw new AppError('EMPTY_PAGE', '空页游标未前进或出现循环。')
+                if (emptyCursors.size >= 5) throw new AppError('NO_AVAILABLE_ITEMS', noAvailableItems)
+                emptyCursors.add(page.cursor)
+                requestCursor = page.cursor
+                return null
+              }
               progress.check(
                 task.phase,
                 page.items.map((item) => item.id),
@@ -174,6 +189,12 @@ export class CollectionService {
           },
           true
         )
+        if (saved) {
+          task = saved
+          requestCursor = task.cursor
+          emptyCursors.clear()
+          emptyCursors.add(requestCursor)
+        }
         this.current = task
         segmentPages++
         retries = 0
@@ -208,8 +229,8 @@ export class CollectionService {
             accountId: task.accountId,
             taskId: task.id,
             status: 'paused',
-            reason: detail.message,
-            errorCode: detail.code
+            reason: detail.code === 'EMPTY_PAGE' ? noAvailableItems : detail.message,
+            errorCode: detail.code === 'EMPTY_PAGE' ? 'NO_AVAILABLE_ITEMS' : detail.code
           })
         } catch {
           console.error('[MyLike] Collection paused; progress could not be updated.')

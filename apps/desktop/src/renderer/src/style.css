@@ -850,18 +850,15 @@ h1 {
   padding: 12px 19px;
 }
 .activity-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
   border-radius: 50%;
-  background: #6b9b86;
   display: inline-block;
-}
-.activity-dot {
   background: var(--accent);
-}
-.activity-dot {
   margin-left: auto;
-  animation: pulse 1s infinite;
+  animation: task-breathe 2.4s ease-in-out infinite;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .notice {
   margin: 0 30px 17px;
@@ -1116,9 +1113,14 @@ h1 {
     transform: rotate(360deg);
   }
 }
-@keyframes pulse {
+@keyframes task-breathe {
   50% {
-    opacity: 0.3;
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot {
+    animation: none;
   }
 }
 @media (max-width: 1050px) {

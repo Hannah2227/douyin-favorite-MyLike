@@ -33,7 +33,9 @@ it('hides login only after the scoped identity probe succeeds', async () => {
   const { auth, engine, probe } = fixture()
   await auth.open('a', 'login')
   expect(engine.hide).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(1200)
+  await vi.advanceTimersByTimeAsync(299)
+  expect(probe).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
   expect(probe).toHaveBeenCalledWith('a', null, expect.any(Function))
   expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
   expect(auth.snapshot()).toBeNull()
@@ -45,10 +47,10 @@ it('continues bounded detection after an initial navigation failure and closes a
   engine.show.mockRejectedValueOnce(new AppError('BROWSER_NOT_READY', 'initial navigation failed'))
   await expect(auth.open('a', 'login')).rejects.toThrow('initial navigation failed')
   engine.pageState.mockResolvedValue({ ready: false, captcha: false })
-  await vi.advanceTimersByTimeAsync(2000)
+  await vi.advanceTimersByTimeAsync(500)
   expect(probe).not.toHaveBeenCalled()
   engine.pageState.mockResolvedValue({ ready: true, captcha: false })
-  await vi.advanceTimersByTimeAsync(2000)
+  await vi.advanceTimersByTimeAsync(500)
   expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
   expect(engine.show).toHaveBeenCalledTimes(1)
 })
@@ -61,7 +63,7 @@ it('does not issue probes or close the window while a visible captcha remains', 
   expect(probe).not.toHaveBeenCalled()
   expect(engine.hide).not.toHaveBeenCalled()
   engine.pageState.mockResolvedValue({ ready: true, captcha: false })
-  await vi.advanceTimersByTimeAsync(2000)
+  await vi.advanceTimersByTimeAsync(500)
   expect(probe.mock.calls[0]?.[1]).toEqual({ operation: 'likes', parameters: { max_cursor: '123' } })
   expect(engine.hide).toHaveBeenCalledTimes(1)
 })
@@ -73,13 +75,13 @@ it('keeps verification open when the original list is still limited, with bounde
     operation: 'folderItems',
     parameters: { collects_id: '99', cursor: '8' }
   })
-  await vi.advanceTimersByTimeAsync(31_000)
+  await vi.advanceTimersByTimeAsync(30_000)
   expect(probe).toHaveBeenCalledTimes(1)
   expect(engine.hide).not.toHaveBeenCalled()
   probe.mockImplementation(async (_id, _target, check) => {
     check()
   })
-  await vi.advanceTimersByTimeAsync(1000)
+  await vi.advanceTimersByTimeAsync(300)
   expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
 })
 
@@ -140,6 +142,36 @@ it('leaves mismatched accounts visible and bounds automatic checking to ten minu
   expect(count).toBeLessThanOrEqual(21)
   await vi.advanceTimersByTimeAsync(60_000)
   expect(probe).toHaveBeenCalledTimes(count)
+})
+
+it('detects a newly logged-in identity within one second after the previous reply', async () => {
+  const { auth, engine, probe } = fixture()
+  probe.mockRejectedValueOnce(new AppError('AUTH_REQUIRED', 'not logged in'))
+  await auth.open('a', 'login')
+  await vi.advanceTimersByTimeAsync(300)
+  expect(probe).toHaveBeenCalledTimes(1)
+  expect(engine.hide).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(999)
+  expect(probe).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
+})
+
+it('does not overlap slow probes or close before their identity result arrives', async () => {
+  const { auth, engine, probe } = fixture()
+  let finish!: () => void
+  probe.mockImplementationOnce(async () => {
+    await new Promise<void>((resolve) => {
+      finish = resolve
+    })
+  })
+  await auth.open('a', 'login')
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(probe).toHaveBeenCalledTimes(1)
+  expect(engine.hide).not.toHaveBeenCalled()
+  finish()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
 })
 
 it('never treats verification, rate limits, account mismatch or business rejection as retryable reads', () => {

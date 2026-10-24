@@ -39,6 +39,7 @@ function TaskCard({
   summary,
   reason,
   attention,
+  badge,
   activity,
   children
 }: {
@@ -49,6 +50,7 @@ function TaskCard({
   summary: string
   reason?: string | null
   attention?: boolean
+  badge?: string
   activity?: string
   children: ReactNode
 }) {
@@ -60,7 +62,7 @@ function TaskCard({
         </span>
         <h2>{title}</h2>
         <span className={`task-badge ${attention ? 'attention' : (status ?? '')}`}>
-          {attention && status !== 'running' ? '需处理' : status ? states[status] : '未开始'}
+          {badge ?? (attention && status !== 'running' ? '需处理' : status ? states[status] : '未开始')}
         </span>
       </div>
       <div className="simple-task-body">
@@ -168,7 +170,8 @@ export function ConnectionPanel({
                 : undefined
             }
             reason={collection?.errorCode || collection?.status === 'completed' ? collection.reason : null}
-            attention={!!collection?.errorCode}
+            attention={!!collection?.errorCode && collection.errorCode !== 'NO_AVAILABLE_ITEMS'}
+            badge={collection?.errorCode === 'NO_AVAILABLE_ITEMS' ? '暂无更多' : undefined}
           >
             {collection?.status === 'running' ? (
               <>

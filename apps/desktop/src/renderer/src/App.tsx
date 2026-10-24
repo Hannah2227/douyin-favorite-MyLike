@@ -159,7 +159,7 @@ export function App() {
     accountId &&
     void perform('打开抖音窗口', async () => {
       await call(window.mylike.invoke('login', { accountId }))
-      setNotice('在弹出的抖音窗口完成登录，然后点击“核验登录”。')
+      setNotice('在抖音窗口完成登录，应用会自动核验身份并收起窗口。')
     })
   const probe = () =>
     accountId &&
@@ -344,6 +344,14 @@ export function App() {
             account={account}
             busy={!!operation}
             mutationBusy={!!operation || unliking}
+            collection={{
+              start: tab === 'favorites' ? startFavorites : () => startCollection(),
+              running:
+                tab === 'favorites'
+                  ? snapshot?.favorites?.status === 'running' || !!snapshot?.favoritesActivity
+                  : snapshot?.collection?.status === 'running' || !!snapshot?.collectionActivity,
+              busy: busy || !!snapshot?.authentication
+            }}
             play={(work) => startQueue('sequence', work)}
             playRange={startQueue}
             resume={snapshot?.playback && !snapshot.playback.completed ? snapshot.playback : null}

@@ -114,14 +114,21 @@ export function parseWork(value: unknown): Work {
     isLive: images.some((image: Obj) => !!(image.video || image.live_image))
   }
 }
-export function parseLikedPage(data: Obj): { items: Work[]; cursor: string; hasMore: boolean } {
+export function parseLikedPage(
+  data: Obj,
+  options: { allowEmpty?: boolean } = {}
+): { items: Work[]; cursor: string; hasMore: boolean } {
   if (!Array.isArray(data.aweme_list))
     throw new AppError('INVALID_RESPONSE', '喜欢列表缺少必要字段，进度未推进。')
   if (![0, 1, false, true, '0', '1'].includes(data.has_more))
     throw new AppError('INVALID_RESPONSE', '接口未提供可信的分页结束标记。')
   const hasMore = data.has_more === 1 || data.has_more === true || data.has_more === '1'
-  if (!data.aweme_list.length && hasMore)
-    throw new AppError('INVALID_RESPONSE', '接口返回空页但仍有更多内容，已保留断点。')
+  if (!data.aweme_list.length && hasMore) {
+    if (!options.allowEmpty)
+      throw new AppError('INVALID_RESPONSE', '接口返回空页但仍有更多内容，已保留断点。')
+    if (data.max_cursor == null || /^0+$/.test(String(data.max_cursor)))
+      throw new AppError('EMPTY_PAGE', '空页没有提供可继续的游标。')
+  }
   const cursor = pageCursor(data.max_cursor, hasMore)
   return { items: data.aweme_list.map(parseWork), cursor, hasMore }
 }

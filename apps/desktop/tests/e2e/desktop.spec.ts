@@ -208,6 +208,8 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               max_cursor: '0',
               has_more: 0
             }
+          if ((globalThis as any).__mylikeLikedPages)
+            body = (globalThis as any).__mylikeLikedPages[url.searchParams.get('max_cursor')!]
         } else if (
           url.pathname.includes('/aweme/listcollection/') ||
           url.pathname.includes('/collects/list/') ||
@@ -3135,6 +3137,174 @@ test('waits for page SDK initialization before sending hidden collection request
     )
   ).toBe(true)
 })
+
+test('guides a verified empty account to collection and keeps a breathing task indicator through page waits', async ({}, info) => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await expect(page.getByRole('button', { name: '打开抖音登录', exact: true })).toBeVisible()
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = true
+  })
+  await invoke('login', { accountId })
+  await expect
+    .poll(() =>
+      app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[]).some((url) => url.includes('/profile/self/'))
+      )
+    )
+    .toBe(true)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = false
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication, { timeout: 5000 }).toBeNull()
+  await expect(page.getByRole('heading', { name: '开始收录喜欢', exact: true })).toBeVisible()
+  await expect(page.locator('.empty-state')).toContainText('点击上方“自动采集”')
+  await expect(page.locator('.empty-state')).toContainText('采集途中也可以观看已收录的视频')
+  await expect(page.getByRole('button', { name: '打开抖音登录', exact: true })).toHaveCount(0)
+  await screenshot(info.outputPath('logged-in-empty-dark.png'))
+  await page.getByRole('button', { name: '切换主题' }).click()
+  await screenshot(info.outputPath('logged-in-empty-light.png'))
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '开始收录收藏', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '开始同步', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeLongCollection = true
+    ;(globalThis as any).__mylikeHoldLikesAt = '0'
+  })
+  await page.getByRole('button', { name: '开始采集', exact: true }).click()
+  await expect
+    .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
+    .toBe('function')
+  await expect(page.getByRole('heading', { name: '正在收录内容', exact: true })).toBeVisible()
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  const dot = page.locator('.activity-dot')
+  await expect(dot).toBeVisible()
+  await expect(dot).toHaveCSS('animation-name', 'task-breathe')
+  await expect(dot).toHaveCSS('animation-duration', '2.4s')
+  const originalDot = await dot.elementHandle()
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldLikesAt = '1'
+    ;(globalThis as any).__mylikeReleaseLikes()
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.pages).toBe(1)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.busy, { intervals: [50], timeout: 2000 })
+    .toBe(false)
+  expect(await originalDot!.evaluate((node) => node.isConnected)).toBe(true)
+  await expect(page.getByRole('button', { name: /测试视频：喜欢的日常/ })).toBeEnabled()
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await expect(page.locator('.task-working')).toBeVisible()
+  expect(
+    await page.locator('.task-working').evaluate((node) => getComputedStyle(node, '::after').animationName)
+  ).toBe('task-breathe')
+  await screenshot(info.outputPath('task-breathing-light.png'))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(dot).toHaveCSS('animation-name', 'none')
+  await page.getByRole('button', { name: '暂停采集', exact: true }).click()
+  await expect(dot).toHaveCount(0)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeReleaseLikes?.()
+  })
+})
+
+test('crosses empty liked-page gaps without losing later available works and accepts only an explicit end', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate((_electron, workId) => {
+    ;(globalThis as any).__mylikeLikedPages = {
+      '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' },
+      '10': { aweme_list: [], has_more: 1, max_cursor: '20' },
+      '20': { aweme_list: [], has_more: 1, max_cursor: '30' },
+      '30': { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 1, max_cursor: '40' },
+      '40': { aweme_list: [], has_more: 0, max_cursor: '0' }
+    }
+  }, workId)
+  await invoke('collectionStart', { accountId, mode: 'full' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ status: 'completed', pages: 3, added: 2, received: 2, errorCode: null })
+  expect((await invoke('query', { accountId })).data.total).toBe(2)
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/favorite/'))
+        .map((url) => new URL(url).searchParams.get('max_cursor'))
+    )
+  ).toEqual(['0', '10', '20', '30', '40'])
+})
+
+for (const mode of ['advancing', 'stagnant']) {
+  test(`keeps an ${mode} empty tail as a neutral pause with the original checkpoint and resumes after restart`, async ({}, info) => {
+    const accountId = await addAccount()
+    await installPlatform(accountId)
+    await app.evaluate(
+      (_electron, { mode, workId }) => {
+        const pages: Record<string, unknown> = {
+          '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' }
+        }
+        for (let i = 10; i < 15; i++)
+          pages[String(i)] = {
+            aweme_list: [],
+            has_more: 1,
+            max_cursor: mode === 'advancing' ? String(i + 1) : '0'
+          }
+        ;(globalThis as any).__mylikeLikedPages = pages
+      },
+      { mode, workId }
+    )
+    await invoke('collectionStart', { accountId, mode: 'full' })
+    await expect
+      .poll(async () => (await invoke('snapshot')).data.collection, { timeout: 35000 })
+      .toMatchObject({
+        status: 'paused',
+        pages: 1,
+        received: 1,
+        added: 1,
+        cursor: '10',
+        errorCode: 'NO_AVAILABLE_ITEMS'
+      })
+    expect((await invoke('query', { accountId })).data.total).toBe(1)
+    const cursors = await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/favorite/'))
+        .map((url) => new URL(url).searchParams.get('max_cursor'))
+    )
+    expect(cursors).toEqual(
+      mode === 'advancing' ? ['0', '10', '11', '12', '13', '14'] : ['0', '10', '10', '10']
+    )
+    await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+    const task = page.getByRole('region', { name: '自动采集任务' })
+    await expect(task).toContainText('暂无更多')
+    await expect(task).toContainText('抖音显示的数量可能包含已删除或不可访问的作品')
+    await expect(task.getByRole('alert')).toHaveCount(0)
+    await screenshot(info.outputPath(`empty-tail-${mode}.png`))
+    await app.close()
+    await launch()
+    await installPlatform(accountId)
+    await app.evaluate((_electron, workId) => {
+      ;(globalThis as any).__mylikeLikedPages = {
+        '10': { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 0, max_cursor: '0' }
+      }
+    }, workId)
+    await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+    await page
+      .getByRole('region', { name: '自动采集任务' })
+      .getByRole('button', { name: '继续采集', exact: true })
+      .click()
+    await expect
+      .poll(async () => (await invoke('snapshot')).data.collection)
+      .toMatchObject({ status: 'completed', pages: 2, added: 2, errorCode: null })
+    expect((await invoke('query', { accountId })).data.total).toBe(2)
+    expect(
+      await app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[])
+          .filter((url) => url.includes('/aweme/favorite/'))
+          .map((url) => new URL(url).searchParams.get('max_cursor'))
+      )
+    ).toEqual(['10'])
+  })
+}
 
 test('auto-closes first login with an ordinary SMS code dialog and captcha input', async () => {
   const accountId = await addAccount()
