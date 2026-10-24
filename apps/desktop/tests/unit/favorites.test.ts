@@ -134,7 +134,7 @@ it('commits new folder membership only when its pagination reaches a credible en
   })
   task = save(store, task, { items: [work('2')], cursor: '9007199254740993998', hasMore: true })
   expect(store.call('query', { ...query, source: 'favorites', folderId: task.folderId }).total).toBe(2)
-  expect(() => save(store, task, { items: [], cursor: '9', hasMore: true })).toThrow(/异常空页/)
+  expect(() => save(store, task, { items: [], cursor: '9', hasMore: true })).toThrow(/空/)
   expect(store.call('favoritesTask', { accountId: 'a' })?.cursor).toBe('9007199254740993998')
   task = save(store, task, { items: [] })
   expect(task.status).toBe('completed')
@@ -349,6 +349,6 @@ it('parses collection and folder pagination without rounding long IDs or accepti
     items: [],
     hasMore: false
   })
-  expect(() => parseFavoriteFolders({ collects_list: [], cursor: '0', has_more: 1 })).toThrow(/异常空页/)
+  expect(() => parseFavoriteFolders({ collects_list: [], cursor: '0', has_more: 1 })).toThrow(/空/)
   expect(() => parseFavoriteFolders({ collects_list: [], cursor: '0' })).toThrow(/可信/)
 })

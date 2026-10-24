@@ -69,7 +69,7 @@ export function AccountPanel({
         <button disabled={busy} onClick={login}>
           打开抖音登录
         </button>
-        <button disabled={busy} onClick={probe}>
+        <button className="primary verify-login" disabled={busy} onClick={probe}>
           核验登录
         </button>
         <button

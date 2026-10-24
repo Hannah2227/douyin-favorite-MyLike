@@ -261,7 +261,7 @@ describe('transactional file transfer', () => {
     writeFileSync(bad, Buffer.from([0xff, 0xfe, 0xff]))
     expect(() => readTransfer(bad)).toThrow(/UTF-8/)
     truncateSync(bad, MAX_TRANSFER_BYTES + 1)
-    expect(() => readTransfer(bad)).toThrow(/64 MiB/)
+    expect(() => readTransfer(bad)).toThrow(/67.11 MB/)
     expect(total(store, 'a')).toBe(2)
   })
 })

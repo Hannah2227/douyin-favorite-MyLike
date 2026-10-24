@@ -58,6 +58,36 @@
   padding: 8px 11px;
   background: transparent;
 }
+.connection-actions .verify-login,
+.verify-login {
+  min-height: 44px;
+  min-width: 144px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+.runtime-filters {
+  margin-top: 18px;
+  width: fit-content;
+}
+.history {
+  max-height: 520px;
+  overflow: auto;
+}
+.history li > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.history small {
+  display: block;
+  color: var(--subtle);
+}
+.history time {
+  flex-shrink: 0;
+}
 .collection-tasks {
   display: grid;
   gap: 12px;

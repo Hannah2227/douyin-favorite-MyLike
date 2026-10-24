@@ -1,6 +1,4 @@
 export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
-  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+  if (bytes > 0 && bytes < 10_000) return '<0.01 MB'
+  return `${(Math.max(0, bytes) / 1_000_000).toFixed(2)} MB`
 }

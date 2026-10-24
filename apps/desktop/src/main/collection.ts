@@ -4,8 +4,15 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseLikedPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
-import { retryableRead, rebuildReadPage, PageProgress } from './read-recovery'
+import {
+  retryableRead,
+  rebuildReadPage,
+  readRetryDelay,
+  PageProgress,
+  EndConfirmation
+} from './read-recovery'
 import { collectionPolicy as policy } from './collection-policy'
+import type { RuntimeEventInput } from '../shared/runtime-events'
 
 type Runner = <T>(
   accountId: string,
@@ -25,7 +32,8 @@ export class CollectionService {
     private readonly run: Runner,
     private readonly identity: (accountId: string, check: () => void) => Promise<Account>,
     private readonly changed: (committed?: boolean) => void,
-    private readonly timing: Policy = policy
+    private readonly timing: Policy = policy,
+    private readonly report: (accountId: string, event: RuntimeEventInput) => void = () => {}
   ) {}
   get running(): boolean {
     return !!this.loop
@@ -102,16 +110,13 @@ export class CollectionService {
   }
   private async collect(initial: CollectionTask, signal: AbortSignal): Promise<void> {
     const progress = new PageProgress()
+    const ending = new EndConfirmation()
     let task = initial,
       retries = 0,
       segmentPages = 0,
       segmentStart = Date.now()
-    // Empty pages may cover removed/private works. Follow only a bounded set
-    // of new cursors in memory; persist nothing until data or a declared end.
-    let requestCursor = task.cursor
-    const emptyCursors = new Set([requestCursor])
     const noAvailableItems =
-      '平台暂未返回更多可采集内容，已保留断点，可稍后继续。抖音显示的数量可能包含已删除或不可访问的作品。'
+      '平台暂未返回可采集内容，可能是临时限制或内容不可访问，尚未确认末尾。断点已保留，请稍后继续。'
     const valid = () => {
       if (signal.aborted) throw new AppError('CANCELLED', '采集已停止。')
     }
@@ -154,7 +159,7 @@ export class CollectionService {
               const page = parseLikedPage(
                 await this.engine.request(task.accountId, 'likes', {
                   sec_user_id: account.remoteId!,
-                  max_cursor: requestCursor,
+                  max_cursor: task.cursor,
                   min_cursor: '0',
                   count: '18',
                   publish_video_strategy_type: '2',
@@ -163,12 +168,21 @@ export class CollectionService {
                 { allowEmpty: true }
               )
               guard()
+              const confirmed = ending.check(
+                `${task.phase}:${task.cursor}`,
+                page.items.map((item) => item.id),
+                page.hasMore
+              )
               if (page.hasMore && !page.items.length) {
-                if (emptyCursors.has(page.cursor))
-                  throw new AppError('EMPTY_PAGE', '空页游标未前进或出现循环。')
-                if (emptyCursors.size >= 5) throw new AppError('NO_AVAILABLE_ITEMS', noAvailableItems)
-                emptyCursors.add(page.cursor)
-                requestCursor = page.cursor
+                throw new AppError('EMPTY_PAGE', noAvailableItems)
+              }
+              if (!confirmed) {
+                this.activity = 'confirming'
+                this.report(task.accountId, {
+                  kind: 'task',
+                  message: '喜欢采集收到结束标记，稍后在同一断点再次确认。'
+                })
+                this.changed()
                 return null
               }
               progress.check(
@@ -186,27 +200,26 @@ export class CollectionService {
               this.changed(true)
               return saved
             } finally {
-              this.activity = 'waiting'
+              if (this.activity !== 'confirming') this.activity = 'waiting'
             }
           },
           true
         )
         if (saved) {
           task = saved
-          requestCursor = task.cursor
-          emptyCursors.clear()
-          emptyCursors.add(requestCursor)
+          retries = 0
         }
         this.current = task
         segmentPages++
-        retries = 0
         this.changed()
-        if (task.status === 'running') await this.wait(this.timing.interval, signal)
+        if (task.status === 'running')
+          await this.wait(saved ? this.timing.interval : this.timing.retry, signal)
       } catch (error) {
         if (signal.aborted) return
         const detail = publicError(error)
+        ending.reset()
         if (retryableRead(detail.code) && retries < 2) {
-          this.activity = 'waiting'
+          this.activity = ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code) ? 'cooling' : 'waiting'
           this.changed()
           if (rebuildReadPage(detail.code, retries, this.engine.snapshot().status === 'visible')) {
             try {
@@ -223,7 +236,13 @@ export class CollectionService {
               if (signal.aborted) return
             }
           }
-          await this.wait(this.timing.retry * 3 ** retries++, signal)
+          const delay = readRetryDelay(detail.code, retries++, this.timing.retry)
+          this.report(task.accountId, {
+            kind: 'task',
+            message: `喜欢采集暂缓 ${(delay / 1000).toFixed(0)} 秒后重试同一断点（${retries}/2）：${detail.message}`,
+            code: detail.code
+          })
+          await this.wait(delay, signal)
           continue
         }
         try {
@@ -231,8 +250,12 @@ export class CollectionService {
             accountId: task.accountId,
             taskId: task.id,
             status: 'paused',
-            reason: detail.code === 'EMPTY_PAGE' ? noAvailableItems : detail.message,
-            errorCode: detail.code === 'EMPTY_PAGE' ? 'NO_AVAILABLE_ITEMS' : detail.code
+            reason: ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code)
+              ? noAvailableItems
+              : detail.message,
+            errorCode: ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code)
+              ? 'NO_AVAILABLE_ITEMS'
+              : detail.code
           })
         } catch {
           console.error('[MyLike] Collection paused; progress could not be updated.')

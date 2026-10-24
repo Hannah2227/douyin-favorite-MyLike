@@ -55,10 +55,10 @@ describe('platform responses', () => {
       hasMore: true,
       cursor: empty.max_cursor
     })
-    expect(() => parseLikedPage(empty)).toThrow(/空页/)
-    expect(() => parseFavoritesPage(empty)).toThrow(/空页/)
+    expect(() => parseLikedPage(empty)).toThrow(/空/)
+    expect(() => parseFavoritesPage(empty)).toThrow(/空/)
     for (const cursor of [undefined, '0', 0])
-      expect(() => parseLikedPage({ ...empty, max_cursor: cursor }, { allowEmpty: true })).toThrow(/空页/)
+      expect(() => parseLikedPage({ ...empty, max_cursor: cursor }, { allowEmpty: true })).toThrow(/空/)
     expect(() => parseLikedPage({ ...empty, max_cursor: 'bad' }, { allowEmpty: true })).toThrow(/无效/)
   })
   it('accepts only HTTPS media hosts with hostname boundaries, without URL credentials', () => {

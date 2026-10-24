@@ -456,7 +456,7 @@ export function SettingsPanel({
                 <dd>{diagnostics.packaged ? '生产包' : '开发构建'}</dd>
                 <dt>进程工作集之和</dt>
                 <dd>
-                  {diagnostics.processes.reduce((sum, p) => sum + p.memoryMB, 0)} MiB（共享页可能重复计入）
+                  {diagnostics.processes.reduce((sum, p) => sum + p.memoryMB, 0)} MB（共享页可能重复计入）
                 </dd>
               </dl>
             )}

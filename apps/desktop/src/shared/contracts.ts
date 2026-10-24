@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { RuntimeEvent } from './runtime-events'
 import { appPreferencesPatchSchema, playbackPreferencesSchema, type AppPreferences } from './preferences'
 export { playbackPreferencesSchema, shortcutKeys } from './preferences'
 
@@ -48,7 +49,8 @@ export const commands = {
   probe: z.object({ accountId: idSchema }),
   releaseEngine: z.object({}),
   collectPage: z.object({ accountId: idSchema, continue: z.boolean() }),
-  collectionStart: z.object({ accountId: idSchema, mode: z.enum(['update', 'full', 'incremental']) }),
+  collectionStart: z.object({ accountId: idSchema, mode: z.enum(['update', 'incremental', 'recheck']) }),
+  runtimeEvents: z.object({ accountId: idSchema }),
   favoritesStart: z.object({ accountId: idSchema }),
   favoritesControl: z.object({
     accountId: idSchema,
@@ -218,11 +220,12 @@ export type EngineStatus = 'stopped' | 'starting' | 'ready' | 'visible' | 'faile
 export interface CollectionTask {
   id: string
   accountId: string
-  mode: 'update' | 'full' | 'incremental'
+  mode: 'update' | 'full' | 'incremental' | 'recheck'
   phase: 'head' | 'backfill'
   status: 'running' | 'paused' | 'stopped' | 'completed'
   cursor: string
   backfillCursor: string | null
+  tailCursor?: string | null
   pages: number
   received: number
   added: number
@@ -257,7 +260,7 @@ export interface UnlikeItem {
 }
 export interface Snapshot {
   favorites: FavoritesTask | null
-  favoritesActivity: 'requesting' | 'waiting' | 'recycling' | null
+  favoritesActivity: 'requesting' | 'waiting' | 'recycling' | 'confirming' | 'cooling' | null
   accounts: Account[]
   activeAccountId: string | null
   theme: 'dark' | 'light'
@@ -270,7 +273,7 @@ export interface Snapshot {
   } | null
   busy: boolean
   collection: CollectionTask | null
-  collectionActivity: 'requesting' | 'waiting' | 'recycling' | null
+  collectionActivity: 'requesting' | 'waiting' | 'recycling' | 'confirming' | 'cooling' | null
   unlike: UnlikeTask | null
   libraryRevision: number
   playback: QueueState | null
@@ -339,6 +342,7 @@ export interface Outputs {
   probe: Account
   releaseEngine: null
   collectPage: PageResult
+  runtimeEvents: RuntimeEvent[]
   collectionStart: CollectionTask
   collectionControl: CollectionTask
   stopRequest: null

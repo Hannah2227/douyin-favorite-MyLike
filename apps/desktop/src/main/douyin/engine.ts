@@ -6,6 +6,8 @@ import { buildPageScript, serializeForScript, type Operation } from './page-requ
 import { parseResponse, parseIdentity } from './parse'
 import { quietMediaScript } from './page-media'
 import { pageStateScript, type AccessEvent, type AccessTarget, type PageState } from './page-state'
+import type { RuntimeEventInput } from '../../shared/runtime-events'
+import { responseSummary } from './response-summary'
 
 const allowedPage = (value: string): boolean => {
   try {
@@ -43,12 +45,21 @@ export class DouyinEngine {
   private operation: Operation | null = null
   private target: AccessTarget = { operation: 'self', parameters: {} }
   private failedTarget: AccessTarget | null = null
+  private recoveryRequest = false
+  private observer: ((accountId: string, event: RuntimeEventInput) => void) | null = null
   constructor(
     private readonly changed: () => void,
     private readonly parent: () => BrowserWindow | null
   ) {}
   snapshot() {
     return { status: this.status, accountId: this.accountId }
+  }
+  setObserver(observer: ((accountId: string, event: RuntimeEventInput) => void) | null) {
+    this.observer = observer
+  }
+  cancelRecovery(accountId: string) {
+    if (this.accountId === accountId && this.recoveryRequest)
+      this.cancelRequest?.(new AppError('CANCELLED', '登录态已变化，重新核验当前身份。'))
   }
   setAttentionHandler(handler: (event: AccessEvent) => void) {
     this.attention = handler
@@ -177,6 +188,30 @@ export class DouyinEngine {
       }
     })
     this.window = win
+    const credentials = new Map<string, string>()
+    const onCookieChanged = (
+      _event: Electron.Event,
+      cookie: Electron.Cookie,
+      _cause: string,
+      removed: boolean
+    ) => {
+      if (
+        this.window !== win ||
+        this.interaction !== 'login' ||
+        removed ||
+        !['sessionid', 'sessionid_ss', 'sid_guard', 'uid_tt', 'uid_tt_ss'].includes(cookie.name) ||
+        !/(^|\.)douyin\.com$/.test(cookie.domain?.replace(/^\./, '') ?? '')
+      )
+        return
+      if (credentials.get(cookie.name) === cookie.value) return
+      credentials.set(cookie.name, cookie.value)
+      this.attention?.({ type: 'changed', accountId })
+    }
+    partition.cookies.on('changed', onCookieChanged)
+    win.once('closed', () => {
+      partition.cookies.removeListener('changed', onCookieChanged)
+      credentials.clear()
+    })
     win.webContents.setAudioMuted(true)
     win.webContents.on('dom-ready', () => {
       void this.executeInPage(win, quietMediaScript).catch(() => {})
@@ -197,6 +232,11 @@ export class DouyinEngine {
     })
     win.webContents.on('render-process-gone', () => {
       if (this.window !== win) return
+      this.observer?.(accountId, {
+        kind: 'engine',
+        message: '抖音页面意外停止，已保存的业务进度保留。',
+        code: 'BROWSER_CRASHED'
+      })
       this.cancelRequest?.(
         new AppError('BROWSER_CRASHED', '抖音页面意外停止，已保留已提交进度；请重试或手动继续任务。')
       )
@@ -290,7 +330,11 @@ export class DouyinEngine {
     parameters: Record<string, string> = {},
     options: { recovery?: boolean } = {}
   ): Promise<Record<string, any>> {
+    const started = Date.now()
+    let summary: Pick<RuntimeEventInput, 'responseType' | 'count'> = { responseType: 'no-response' }
+    let status: number | undefined, code: string | undefined
     const ready = this.ensure(accountId)
+    this.recoveryRequest = options.recovery === true
     const id = randomUUID(),
       timeoutMs = 12_000
     let win: BrowserWindow | null = null
@@ -352,6 +396,8 @@ export class DouyinEngine {
         )
       if (typeof reply.body !== 'string' || typeof reply.status !== 'number')
         throw new AppError('INVALID_RESPONSE', '接口响应格式不正确。')
+      status = reply.status
+      summary = responseSummary(reply.body, reply.status)
       const data = parseResponse(reply.body, reply.status)
       if (operation === 'self') parseIdentity(data)
       // Preserve a confirmed write promptly. A challenge detected afterward
@@ -368,6 +414,7 @@ export class DouyinEngine {
       if (!options.recovery && this.failedTarget?.operation === operation) this.failedTarget = null
       return data
     } catch (error) {
+      code = error instanceof AppError ? error.code : 'INTERNAL_ERROR'
       if (
         !(error instanceof AppError) &&
         generation !== null &&
@@ -396,12 +443,23 @@ export class DouyinEngine {
         )
           this.requireAttention(accountId, failure.code === 'AUTH_REQUIRED' ? 'login' : 'verification')
       }
+      if (failure instanceof AppError) code = failure.code
       throw failure
     } finally {
       if (timer) clearTimeout(timer)
       this.cancelRequest = null
       this.requestGeneration = null
       this.operation = null
+      this.recoveryRequest = false
+      this.observer?.(accountId, {
+        kind: 'request',
+        message: code ? '接口请求未正常结束' : '接口已返回',
+        operation,
+        ...summary,
+        ...(status === undefined ? {} : { status }),
+        ...(code ? { code } : {}),
+        durationMs: Date.now() - started
+      })
       this.armIdle()
     }
   }

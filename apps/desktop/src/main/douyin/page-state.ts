@@ -2,6 +2,7 @@ import type { Operation } from './page-request'
 
 export type AccessTarget = { operation: Exclude<Operation, 'unlike'>; parameters: Record<string, string> }
 export type AccessEvent =
+  | { type: 'changed'; accountId: string }
   | { type: 'required'; accountId: string; kind: 'login' | 'verification'; target: AccessTarget }
   | { type: 'closed'; accountId: string }
 export type PageState = { ready: boolean; captcha: boolean }

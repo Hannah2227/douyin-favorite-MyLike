@@ -22,6 +22,7 @@ import { AccountService } from './accounts'
 import { DataMaintenance } from './data-maintenance'
 import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
+import type { RuntimeEventInput } from '../shared/runtime-events'
 
 export class Application {
   private playerVisible = false
@@ -47,13 +48,15 @@ export class Application {
     private readonly changed: () => void,
     private readonly parent: () => BrowserWindow | null = () => null
   ) {
+    engine.setObserver((accountId, event) => this.record(accountId, event))
     this.authentication = new Authentication(
       engine,
       this.run.bind(this),
       async (accountId, target, check) => {
         await this.verifyAccess(accountId, target, check)
       },
-      changed
+      changed,
+      this.record.bind(this)
     )
     engine.setAttentionHandler((event) => {
       if (!this.closing) this.authentication.handle(event)
@@ -66,7 +69,9 @@ export class Application {
       (committed) => {
         if (committed) this.libraryRevision++
         changed()
-      }
+      },
+      undefined,
+      this.record.bind(this)
     )
     this.favorites = new FavoritesService(
       database,
@@ -76,7 +81,9 @@ export class Application {
       (committed) => {
         if (committed) this.libraryRevision++
         changed()
-      }
+      },
+      undefined,
+      this.record.bind(this)
     )
     this.unlike = new UnlikeService(
       database,
@@ -107,6 +114,13 @@ export class Application {
       changed
     )
     this.maintenance = new DataMaintenance(engine)
+  }
+  private record(accountId: string, event: RuntimeEventInput) {
+    if (this.closing) return
+    void this.database
+      .call('appendRuntimeEvent', { accountId, event })
+      .then(() => this.changed())
+      .catch(() => console.error('[MyLike] Runtime record could not be saved.'))
   }
   async snapshot(): Promise<Snapshot> {
     const accounts = await this.database.call('accounts', undefined)
@@ -212,6 +226,7 @@ export class Application {
     check: () => void
   ): Promise<Account> {
     const account = await this.active(accountId)
+    check()
     const identity = parseIdentity(await this.engine.request(accountId, 'self', {}, { recovery: true }))
     check()
     if (account.remoteId && account.remoteId !== identity.remoteId)
@@ -271,7 +286,15 @@ export class Application {
       this.engine.dismissAttention(input.accountId)
     if (
       this.accountAction &&
-      !['snapshot', 'query', 'diagnostics', 'dataInfo', 'theme', 'windowPresentation'].includes(command)
+      ![
+        'snapshot',
+        'query',
+        'runtimeEvents',
+        'diagnostics',
+        'dataInfo',
+        'theme',
+        'windowPresentation'
+      ].includes(command)
     )
       throw new AppError('BUSY', '账号操作正在收口，请稍候。')
     if (
@@ -322,6 +345,9 @@ export class Application {
         return null
       case 'snapshot':
         return this.snapshot()
+      case 'runtimeEvents':
+        await this.active(input.accountId)
+        return this.database.call('runtimeEvents', { accountId: input.accountId })
       case 'createAccount':
         return this.exclusive(async () => {
           if (this.lane.pending || this.collection.running || this.favorites.running || this.unlike.running)
@@ -383,6 +409,7 @@ export class Application {
           check()
           this.engine.hide(input.accountId)
           this.authentication.stop()
+          this.record(input.accountId, { kind: 'auth', message: '手动身份核验成功，窗口已收起。' })
           return account
         })
       case 'releaseEngine': {
@@ -434,6 +461,10 @@ export class Application {
             ...page
           })
           this.libraryRevision++
+          this.record(input.accountId, {
+            kind: 'task',
+            message: `单页检查完成：接收 ${result.received} 条，新增 ${result.added} 条。`
+          })
           this.changed()
           return result
         })
@@ -679,13 +710,14 @@ export class Application {
           packaged: app.isPackaged,
           processes: app.getAppMetrics().map((metric) => ({
             type: metric.type,
-            memoryMB: Math.round(metric.memory.workingSetSize / 1024)
+            memoryMB: Math.round(metric.memory.workingSetSize / 1000)
           }))
         } satisfies Diagnostics
     }
   }
   async close(): Promise<void> {
     this.closing = true
+    this.engine.setObserver(null)
     this.authentication.stop()
     await this.accountAction?.catch(() => {})
     await this.unlike.stop()

@@ -2,6 +2,7 @@ import type { Snapshot } from '../shared/contracts'
 import type { AccessEvent, AccessTarget } from './douyin/page-state'
 import type { DouyinEngine } from './douyin/engine'
 import { AppError, publicError } from './errors'
+import type { RuntimeEventInput } from '../shared/runtime-events'
 
 type Session = {
   accountId: string
@@ -9,6 +10,9 @@ type Session = {
   target: AccessTarget | null
   revision: number
   expires: number
+  retryAfter: number
+  lastWake: number
+  started: number
 }
 type Runner = <T>(accountId: string, action: (check: () => void) => Promise<T>) => Promise<T>
 
@@ -24,14 +28,16 @@ export class Authentication {
   private state: Snapshot['authentication'] = null
   private checking = false
   constructor(
-    private readonly engine: Pick<DouyinEngine, 'show' | 'hide' | 'setInteraction' | 'pageState'>,
+    private readonly engine: Pick<DouyinEngine, 'show' | 'hide' | 'setInteraction' | 'pageState'> &
+      Partial<Pick<DouyinEngine, 'cancelRecovery'>>,
     private readonly run: Runner,
     private readonly probe: (
       accountId: string,
       target: AccessTarget | null,
       check: () => void
     ) => Promise<void>,
-    private readonly changed: () => void
+    private readonly changed: () => void,
+    private readonly report: (accountId: string, event: RuntimeEventInput) => void = () => {}
   ) {}
   snapshot() {
     return this.state
@@ -40,8 +46,33 @@ export class Authentication {
     return this.current?.accountId === accountId ? this.current.target : null
   }
   handle(event: AccessEvent) {
-    if (event.type === 'closed') {
-      if (this.current?.accountId === event.accountId) this.stop()
+    if (event.type === 'changed') {
+      const session = this.current
+      if (
+        !session ||
+        session.accountId !== event.accountId ||
+        session.kind !== 'login' ||
+        Date.now() < session.retryAfter ||
+        Date.now() - session.lastWake < 500
+      )
+        return
+      session.lastWake = Date.now()
+      session.revision++
+      this.engine.cancelRecovery?.(event.accountId)
+      this.report(event.accountId, {
+        kind: 'auth',
+        message: '检测到登录态变化，作废旧核验并立即复查；尚未确认身份。'
+      })
+      this.schedule(session, 100)
+    } else if (event.type === 'closed') {
+      if (this.current?.accountId === event.accountId) {
+        this.report(event.accountId, {
+          kind: 'auth',
+          message: '登录 / 验证检测已取消，任务不会自动恢复。',
+          code: 'CANCELLED'
+        })
+        this.stop()
+      }
     } else void this.open(event.accountId, event.kind, event.target, true).catch(() => {})
   }
   async open(
@@ -65,14 +96,28 @@ export class Authentication {
       this.engine.setInteraction(this.current.kind)
       if (!automatic) {
         this.current.expires = Date.now() + 10 * 60_000
+        this.current.retryAfter = 0
         this.schedule(this.current, cadence.initial)
         await this.engine.show(accountId)
       }
       return
     }
     this.stop()
-    const session: Session = { accountId, kind, target, revision: 0, expires: Date.now() + 10 * 60_000 }
+    const session: Session = {
+      accountId,
+      kind,
+      target,
+      revision: 0,
+      expires: Date.now() + 10 * 60_000,
+      retryAfter: 0,
+      lastWake: 0,
+      started: Date.now()
+    }
     this.current = session
+    this.report(accountId, {
+      kind: 'auth',
+      message: kind === 'login' ? '开始登录检测。' : '开始人工验证检测，任务保持暂停。'
+    })
     this.engine.setInteraction(kind)
     this.update(
       session,
@@ -85,11 +130,18 @@ export class Authentication {
       await this.engine.show(accountId)
       if (this.current === session) {
         this.engine.setInteraction(session.kind)
+        this.report(accountId, {
+          kind: 'auth',
+          message: '登录 / 验证页面已就绪。',
+          durationMs: Date.now() - session.started
+        })
         this.schedule(session, cadence.initial)
       }
     } catch (error) {
       if (this.current === session) {
-        this.update(session, 'failed', publicError(error).message)
+        const detail = publicError(error)
+        this.update(session, 'failed', detail.message)
+        this.report(accountId, { kind: 'auth', message: detail.message, code: detail.code })
         // Navigation can fail while the user completes a redirect or reload.
         // Keep checking the same window within the original time budget.
         this.schedule(session, cadence.page)
@@ -125,6 +177,11 @@ export class Authentication {
     }
     if (Date.now() >= session.expires) {
       this.update(session, 'failed', '自动检测已暂停，请完成操作后关闭窗口，再点“核验登录”或重新打开窗口。')
+      this.report(session.accountId, {
+        kind: 'auth',
+        message: '自动检测达到 10 分钟上限，已暂停。',
+        code: 'TIMEOUT'
+      })
       return
     }
     this.checking = true
@@ -155,11 +212,20 @@ export class Authentication {
         if (!after.ready || after.captcha)
           throw new AppError('VERIFICATION_REQUIRED', '请先完成窗口中的验证。')
         this.engine.hide(session.accountId)
+        this.report(session.accountId, {
+          kind: 'auth',
+          message: '身份及所需接口核验成功，窗口已自动收起。',
+          durationMs: Date.now() - session.started
+        })
         this.stop()
       })
     } catch (error) {
       if (this.current !== session) return
       const detail = publicError(error)
+      if (['RATE_LIMITED', 'API_REJECTED'].includes(detail.code))
+        session.retryAfter = Date.now() + cadence.rejected
+      if (!['AUTH_REQUIRED', 'CANCELLED'].includes(detail.code))
+        this.report(session.accountId, { kind: 'auth', message: detail.message, code: detail.code })
       const needsDecision = ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT', 'WORK_UNAVAILABLE'].includes(
         detail.code
       )

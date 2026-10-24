@@ -26,6 +26,8 @@ export function purgeAccountRows(db: DatabaseSync, accountId: string): void {
     if (tables.has(table)) db.prepare(`DELETE FROM ${table} WHERE accountId=?`).run(accountId)
   }
   db.prepare('DELETE FROM accounts WHERE id=?').run(accountId)
+  db.prepare('DELETE FROM settings WHERE key=?').run(`runtime:${accountId}`)
+  db.prepare('DELETE FROM settings WHERE key=?').run(`collectionTail:${accountId}`)
   const references = ['account_items', 'saved_items', 'saved_members']
     .filter((table) => tables.has(table))
     .map((table) => `NOT EXISTS(SELECT 1 FROM ${table} a WHERE a.workId=works.id)`)

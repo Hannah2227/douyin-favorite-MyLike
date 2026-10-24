@@ -68,13 +68,15 @@ export function parseResponse(body: string, status: number): Obj {
   if (status < 200 || status >= 300) throw new AppError('NETWORK_ERROR', '平台请求未成功，请稍后重试。')
   if (/<(?:html|!doctype)/i.test(body.slice(0, 500)))
     throw new AppError('VERIFICATION_REQUIRED', '接口返回网页，请打开抖音窗口检查登录或人工验证。')
+  if (!body.trim()) throw new AppError('EMPTY_RESPONSE', '平台返回空响应，未确认列表末尾，进度未推进。')
   let data: Obj
   try {
     data = object(JSONbig.parse(body))
   } catch {
     throw new AppError('INVALID_RESPONSE', '接口没有返回有效 JSON，当前进度未推进。')
   }
-  if (!Object.keys(data).length) throw new AppError('INVALID_RESPONSE', '接口返回空响应，请检查抖音窗口。')
+  if (!Object.keys(data).length)
+    throw new AppError('EMPTY_RESPONSE', '平台返回空响应，未确认列表末尾，进度未推进。')
   if (
     data.status_code != null &&
     String(data.status_code) !== '0' &&
@@ -125,7 +127,7 @@ export function parseLikedPage(
   const hasMore = data.has_more === 1 || data.has_more === true || data.has_more === '1'
   if (!data.aweme_list.length && hasMore) {
     if (!options.allowEmpty)
-      throw new AppError('INVALID_RESPONSE', '接口返回空页但仍有更多内容，已保留断点。')
+      throw new AppError('EMPTY_PAGE', '平台返回空列表但仍标记更多，未确认末尾，已保留断点。')
     if (data.max_cursor == null || /^0+$/.test(String(data.max_cursor)))
       throw new AppError('EMPTY_PAGE', '空页没有提供可继续的游标。')
   }
@@ -154,7 +156,7 @@ export function parseFavoriteFolders(data: Obj): {
     throw new AppError('INVALID_RESPONSE', '收藏夹接口缺少可信的列表或结束标记。')
   const hasMore = [1, true, '1'].includes(data.has_more)
   if (hasMore && !data.collects_list.length)
-    throw new AppError('INVALID_RESPONSE', '收藏夹返回异常空页，断点未推进。')
+    throw new AppError('EMPTY_PAGE', '收藏夹返回空列表但仍标记更多，断点未推进。')
   return {
     folders: data.collects_list.map((entry: Obj) => ({
       id: numericId(entry.collects_id),

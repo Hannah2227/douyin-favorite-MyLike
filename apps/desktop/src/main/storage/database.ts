@@ -1,4 +1,5 @@
 import { FavoritesStore, favoritesMigration } from './favorites'
+import { RuntimeEventsStore } from './runtime-events'
 import { purgeAccountRows, purgeAccountBackups } from './account-purge'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
@@ -14,12 +15,14 @@ import { appPreferencesSchema } from '../../shared/preferences'
 
 export class Store {
   private readonly db: DatabaseSync
+  private readonly events: RuntimeEventsStore
   private readonly favorites: FavoritesStore
   private readonly playback: PlaybackStore
   private readonly transfer: TransferStore
   private readonly unlike: UnlikeStore
   constructor(private readonly file: string) {
     this.db = new DatabaseSync(file)
+    this.events = new RuntimeEventsStore(this.db)
     try {
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
@@ -85,6 +88,11 @@ export class Store {
         COMMIT;
       `)
       if (version.user_version < 6) this.db.exec('BEGIN IMMEDIATE; ' + favoritesMigration + ' COMMIT;')
+      const interrupted = this.db
+        .prepare(
+          "SELECT accountId,'喜欢采集' AS label FROM collection_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏同步' FROM saved_tasks WHERE status='running' UNION ALL SELECT accountId,'取消点赞' FROM unlike_tasks WHERE status='running'"
+        )
+        .all()
       this.db
         .prepare(
           "UPDATE saved_tasks SET status='paused',reason='应用已中断，可继续已保存的收藏断点。',errorCode='INTERRUPTED' WHERE status='running'"
@@ -108,6 +116,17 @@ export class Store {
         this.transaction.bind(this),
         this.backup.bind(this)
       )
+      for (const row of interrupted) {
+        try {
+          this.events.append(String(row.accountId), {
+            kind: 'task',
+            message: `${row.label}因上次应用中断而暂停，已恢复已保存进度；未确认写入不会自动重发。`,
+            code: 'INTERRUPTED'
+          })
+        } catch {
+          console.error('[MyLike] Interrupted task retained; runtime record could not be saved.')
+        }
+      }
     } catch (error) {
       this.db.close()
       throw error
@@ -137,10 +156,16 @@ export class Store {
     return row
   }
   private collection(accountId: string): CollectionTask | null {
-    return (
-      (this.db.prepare('SELECT * FROM collection_tasks WHERE accountId=?').get(accountId) as unknown as
-        CollectionTask | undefined) ?? null
-    )
+    const row = this.db
+      .prepare('SELECT * FROM collection_tasks WHERE accountId=?')
+      .get(accountId) as unknown as CollectionTask | undefined
+    return row ? { ...row, tailCursor: this.tailCursor(accountId) } : null
+  }
+  private tailCursor(accountId: string): string | null {
+    const value = this.db
+      .prepare('SELECT value FROM settings WHERE key=?')
+      .get(`collectionTail:${accountId}`)?.value
+    return typeof value === 'string' && /^\d{1,30}$/.test(value) ? value : null
   }
   private task(accountId: string, taskId: string): CollectionTask {
     const task = this.collection(accountId)
@@ -203,10 +228,50 @@ export class Store {
     }
   }
   call<K extends keyof Inputs>(method: K, input: Inputs[K]): Replies[K] {
-    return this.dispatch(method, input) as Replies[K]
+    const kind = ['startCollection', 'updateCollection', 'saveCollectionPage'].includes(method)
+      ? '喜欢采集'
+      : ['favoritesStart', 'favoritesUpdate', 'favoritesSave'].includes(method)
+        ? '收藏同步'
+        : ['unlikeCreate', 'unlikeUpdate'].includes(method)
+          ? '取消点赞'
+          : null
+    const accountId = (input as { accountId?: string } | undefined)?.accountId
+    const task = () =>
+      kind === '喜欢采集'
+        ? this.collection(accountId!)
+        : kind === '收藏同步'
+          ? this.favorites.task(accountId!)
+          : this.unlike.call('unlikeTask', { accountId: accountId! })
+    const before = kind ? task() : null
+    const result = this.dispatch(method, input) as Replies[K]
+    if (kind && accountId) {
+      try {
+        const after = task()
+        if (after && (after.id !== before?.id || after.status !== before?.status)) {
+          const status = {
+            running: before?.id === after.id ? '已继续' : '已开始',
+            paused: '已中断 / 暂停',
+            stopped: '已停止',
+            completed: '本轮正常完成'
+          }[after.status]
+          this.events.append(accountId, {
+            kind: 'task',
+            message: `${kind}${status}${after.reason ? `：${after.reason}` : ''}`.slice(0, 600),
+            ...(after.errorCode ? { code: after.errorCode } : {})
+          })
+        }
+      } catch {
+        console.error('[MyLike] Task outcome saved; runtime record could not be saved.')
+      }
+    }
+    return result
   }
   private dispatch(method: keyof Inputs, input: any): unknown {
     switch (method) {
+      case 'runtimeEvents':
+        return this.events.read(input.accountId)
+      case 'appendRuntimeEvent':
+        return this.events.append(input.accountId, input.event)
       case 'appPreferences': {
         if (input.preferences) {
           const current = this.call('appPreferences', {})
@@ -337,6 +402,14 @@ export class Store {
           this.account(input.accountId)
           const previous = this.collection(input.accountId)
           if (previous?.status === 'running') throw new AppError('BUSY', '采集任务正在运行。')
+          const tail = input.mode === 'recheck' ? this.tailCursor(input.accountId) : null
+          if (input.mode === 'recheck') {
+            if (previous && previous.status !== 'completed')
+              throw new AppError('TASK_INCOMPLETE', '请先完成当前任务，再复查末尾。')
+            if (this.call('checkpoint', { accountId: input.accountId })?.hasMore)
+              throw new AppError('TASK_INCOMPLETE', '请先继续历史采集，再复查末尾。')
+            if (tail === null) throw new AppError('NO_CHECKPOINT', '当前没有可复查的末尾记录。')
+          }
           // An interrupted head already contains this run's new works. Keep
           // its cursor, otherwise restarting at zero could stop on those rows.
           if (input.mode === 'incremental' && previous?.phase === 'head' && previous.status !== 'completed') {
@@ -348,7 +421,7 @@ export class Store {
             return this.collection(input.accountId)!
           }
           if (input.mode === 'update' && previous && previous.status !== 'completed')
-            throw new AppError('TASK_INCOMPLETE', '请继续未完成任务，或明确选择从头遍历。')
+            throw new AppError('TASK_INCOMPLETE', '请继续未完成任务，或使用更新检查新增。')
           let saved = this.call('checkpoint', { accountId: input.accountId })
           if (
             input.mode === 'incremental' &&
@@ -376,7 +449,7 @@ export class Store {
               input.mode,
               head ? 'head' : 'backfill',
               'running',
-              resumeBackfill ? saved!.cursor : '0',
+              tail ?? (resumeBackfill ? saved!.cursor : '0'),
               input.mode !== 'full' && saved?.hasMore ? saved.cursor : null,
               Date.now()
             )
@@ -386,7 +459,7 @@ export class Store {
         const task = this.task(input.accountId, input.taskId)
         if (input.status === 'paused' && task.status !== 'running') return task
         if (input.status === 'running' && task.status === 'completed')
-          throw new AppError('NO_MORE', '本轮任务已经结束，可重新检查新增或从头遍历。')
+          throw new AppError('NO_MORE', '本轮任务已经结束，可使用更新检查新增。')
         if (task.status !== 'completed')
           this.db
             .prepare(
@@ -436,6 +509,12 @@ export class Store {
           if (!input.hasMore) {
             status = 'completed'
             reason = task.mode === 'incremental' ? incrementalReason : '平台已返回列表末尾。'
+            if (task.phase === 'backfill')
+              this.db
+                .prepare(
+                  'INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value'
+                )
+                .run(`collectionTail:${task.accountId}`, task.cursor)
           } else if (
             phase === 'head' &&
             input.items.length &&
@@ -449,7 +528,7 @@ export class Store {
               cursor = task.backfillCursor
             } else {
               status = 'completed'
-              reason = '本页均已收录，本轮新增检查结束；需要重新遍历时可从头采集。'
+              reason = '本页均已收录，本轮新增检查结束。'
             }
           }
           this.db

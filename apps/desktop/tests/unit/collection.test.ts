@@ -128,6 +128,7 @@ describe('durable collection tasks', () => {
       backfillCursor: '0'
     })
     expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: true })
+    expect(() => start(store, 'recheck')).toThrow(/继续历史/)
     expect(start(store, 'update')).toMatchObject({ phase: 'backfill', cursor: '0' })
   })
   it('keeps a deep checkpoint even if the incremental scan receives an explicit terminal empty page', () => {
@@ -170,6 +171,49 @@ describe('durable collection tasks', () => {
     page(store, '0', '10', [work('1')])
     expect(page(store, '10', '20', [work('1')])).toMatchObject({ status: 'completed', backfillCursor: null })
     expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: false })
+  })
+  it('preserves the last terminal request across head updates and restart so rechecking can recover more works', () => {
+    const { store, file } = setup()
+    start(store, 'update')
+    page(store, '0', '10', [work('1')])
+    expect(page(store, '10', '0', [], false)).toMatchObject({ status: 'completed', tailCursor: '10' })
+    start(store, 'incremental')
+    expect(page(store, '0', '20', [work('1')])).toMatchObject({ status: 'completed', tailCursor: '10' })
+    store.call('close', undefined)
+    const reopened = new Store(file)
+    stores.push(reopened)
+    expect(
+      reopened.call('startCollection', { accountId: 'a', id: 'recheck', mode: 'recheck' })
+    ).toMatchObject({ phase: 'backfill', cursor: '10', mode: 'recheck' })
+    reopened.call('saveCollectionPage', {
+      accountId: 'a',
+      taskId: 'recheck',
+      remoteId: 'remote-a',
+      requestCursor: '10',
+      cursor: '30',
+      items: [work('2')],
+      hasMore: true
+    })
+    expect(
+      reopened.call('saveCollectionPage', {
+        accountId: 'a',
+        taskId: 'recheck',
+        remoteId: 'remote-a',
+        requestCursor: '30',
+        cursor: '0',
+        items: [],
+        hasMore: false
+      })
+    ).toMatchObject({ status: 'completed', tailCursor: '30' })
+    expect(reopened.call('query', query).total).toBe(2)
+  })
+  it('does not invent a terminal checkpoint or replace an unfinished task during terminal rechecking', () => {
+    const { store } = setup()
+    expect(() => start(store, 'recheck')).toThrow(/没有可复查/)
+    start(store, 'update')
+    store.call('updateCollection', { accountId: 'a', taskId: 'task', status: 'paused', reason: 'pause' })
+    expect(() => start(store, 'recheck')).toThrow(/先完成/)
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({ status: 'paused', cursor: '0' })
   })
   it('rolls back task progress, cursor and rows together; rejects stale or paused page commits', () => {
     const { store } = setup()
@@ -303,7 +347,7 @@ describe('request scheduling and task control', () => {
     }))
     await service.start('a', 'full')
     await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('completed')
-    expect(cursors).toEqual(['0', '1', '2'])
+    expect(cursors).toEqual(['0', '1', '2', '2'])
     expect(releases()).toBe(1)
     expect(store.call('query', query).total).toBe(3)
   })
@@ -346,6 +390,9 @@ describe('request scheduling and task control', () => {
     reply = undefined as any
     await service.control('a', task.id, 'resume')
     await expect.poll(() => !!reply).toBe(true)
+    reply({ aweme_list: [{ aweme_id: '1' }], max_cursor: '0', has_more: 0 })
+    const firstEnd = reply
+    await expect.poll(() => reply !== firstEnd).toBe(true)
     reply({ aweme_list: [{ aweme_id: '1' }], max_cursor: '0', has_more: 0 })
     await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('completed')
     const next = await service.start('a', 'full')
@@ -426,73 +473,99 @@ describe('request scheduling and task control', () => {
     expect(cursors.at(-1)).toBe('99')
     expect(store.call('checkpoint', { accountId: 'a' })?.hasMore).toBe(false)
   })
-  it('tries at most five advancing empty pages, retaining the first empty checkpoint rather than declaring completion', async () => {
+  it('rechecks the original empty cursor without skipping, then preserves it on pause and resume', async () => {
     const { service, store, releases, cursors } = serviceFixture(async (cursor) => ({
       aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
       has_more: 1,
       max_cursor: String(Number(cursor) + 1)
     }))
-    await service.start('a', 'full')
-    await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('paused')
-    expect(cursors).toEqual(['0', '1', '2', '3', '4', '5'])
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors).toEqual(['0', '1', '1', '1'])
     expect(store.call('collection', { accountId: 'a' })).toMatchObject({
-      pages: 1,
+      status: 'paused',
       cursor: '1',
-      received: 1,
-      added: 1,
+      pages: 1,
       errorCode: 'NO_AVAILABLE_ITEMS'
     })
     expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '1', hasMore: true })
-    expect(store.call('query', query).total).toBe(1)
-    expect(releases()).toBe(2)
+    expect(releases()).toBe(1)
     await service.control('a', store.call('collection', { accountId: 'a' })!.id, 'resume')
     await expect.poll(() => service.running).toBe(false)
-    expect(cursors.slice(6)).toEqual(['1', '2', '3', '4', '5'])
+    expect(cursors.slice(4)).toEqual(['1', '1', '1'])
   })
-  it('passes an empty gap and atomically saves the next available page, or accepts an explicit terminal marker', async () => {
-    for (const terminalEmpty of [true, false]) {
-      const { service, store, cursors } = serviceFixture(async (cursor) => ({
-        aweme_list:
-          cursor === '0' || (cursor === '3' && !terminalEmpty)
-            ? [{ aweme_id: cursor === '0' ? '1' : '2' }]
-            : [],
-        has_more: cursor !== '3',
-        max_cursor: cursor === '3' ? '0' : String(Number(cursor) + 1)
-      }))
-      await service.start('a', 'full')
-      await expect.poll(() => store.call('collection', { accountId: 'a' })?.status).toBe('completed')
-      expect(cursors).toEqual(['0', '1', '2', '3'])
-      expect(store.call('collection', { accountId: 'a' })).toMatchObject({
-        pages: 2,
-        added: terminalEmpty ? 1 : 2,
-        errorCode: null
-      })
-      expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: false })
-    }
-  })
-  it('does not commit skipped empty cursors on pause and resumes from the original checkpoint', async () => {
-    let release!: () => void
+  it('does not accept a temporary empty end marker when the same cursor subsequently returns works', async () => {
+    let calls = 0
     const { service, store, cursors } = serviceFixture(async (cursor) => {
-      if (cursor === '2')
-        await new Promise<void>((resolve) => {
-          release = resolve
-        })
+      if (cursor === '0' && ++calls === 1) return { aweme_list: [], has_more: 0, max_cursor: '0' }
       return {
+        aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
+        has_more: cursor === '0' ? 1 : 0,
+        max_cursor: cursor === '0' ? '1' : '0'
+      }
+    })
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors).toEqual(['0', '0', '1', '1'])
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'completed',
+      pages: 2,
+      added: 1
+    })
+  })
+  it('pauses a changing terminal response without committing any of its unstable pages', async () => {
+    let id = 0
+    const { service, store } = serviceFixture(async () => ({
+      aweme_list: [{ aweme_id: String(++id) }],
+      has_more: 0,
+      max_cursor: '0'
+    }))
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'paused',
+      pages: 0,
+      cursor: '0',
+      errorCode: 'END_UNCONFIRMED'
+    })
+    expect(store.call('query', query).total).toBe(0)
+  })
+  it('can pause a long empty-response cooldown immediately without advancing its checkpoint', async () => {
+    const { service, store, cursors } = serviceFixture(
+      async (cursor) => ({
         aweme_list: cursor === '0' ? [{ aweme_id: '1' }] : [],
         has_more: 1,
         max_cursor: String(Number(cursor) + 1)
-      }
-    })
-    const task = await service.start('a', 'full')
-    await expect.poll(() => !!release).toBe(true)
+      }),
+      { retry: 100 }
+    )
+    const task = await service.start('a', 'update')
+    await expect.poll(() => service.activity).toBe('cooling')
     await service.control('a', task.id, 'pause')
-    release()
-    expect(cursors).toEqual(['0', '1', '2'])
+    expect(cursors).toEqual(['0', '1'])
     expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '1', hasMore: true })
+    expect(service.running).toBe(false)
+  })
+  it('does not reset failed commit retries while waiting to confirm an end marker again', async () => {
+    const { service, store, cursors } = serviceFixture(async () => ({
+      aweme_list: [],
+      has_more: 0,
+      max_cursor: '0'
+    }))
+    const call = store.call.bind(store)
+    store.call = ((method: any, input: any) => {
+      if (method === 'saveCollectionPage')
+        throw new AppError('INVALID_RESPONSE', 'cannot commit terminal page')
+      return call(method, input)
+    }) as typeof store.call
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors).toHaveLength(6)
     expect(store.call('collection', { accountId: 'a' })).toMatchObject({
       status: 'paused',
-      pages: 1,
-      cursor: '1'
+      pages: 0,
+      cursor: '0',
+      errorCode: 'INVALID_RESPONSE'
     })
   })
   it('rechecks a stagnant empty cursor three times with one rebuild, then pauses as no available content', async () => {

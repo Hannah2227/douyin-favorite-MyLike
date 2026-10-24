@@ -14,6 +14,7 @@ import type { CollectionTask, Snapshot } from '../../shared/contracts'
 import { accountLabel } from '../../shared/account-label'
 import { call, statusLabels, type Perform } from './api'
 import { UnlikePanel } from './UnlikePanel'
+import { RuntimeHistory } from './RuntimeHistory'
 import './tasks.css'
 
 type Props = {
@@ -24,8 +25,7 @@ type Props = {
   login: () => void
   probe: () => void
   collect: (resume: boolean) => void
-  startCollection: (mode: CollectionTask['mode']) => void
-  history: { time: string; text: string }[]
+  startCollection: (mode: Exclude<CollectionTask['mode'], 'full'>) => void
   setError: Dispatch<SetStateAction<string>>
   perform: Perform
 }
@@ -93,7 +93,6 @@ export function ConnectionPanel({
   probe,
   collect,
   startCollection,
-  history,
   setError,
   perform
 }: Props) {
@@ -115,9 +114,13 @@ export function ConnectionPanel({
   const runningActivity = (activity: Snapshot['collectionActivity']) =>
     activity === 'recycling'
       ? '分段休息，稍后自动继续'
-      : activity === 'requesting'
-        ? '正在读取当前页'
-        : '等待下一页'
+      : activity === 'confirming'
+        ? '收到结束标记，正在等待复查同一断点'
+        : activity === 'cooling'
+          ? '平台返回空内容，等待冷却后复查同一断点'
+          : activity === 'requesting'
+            ? '正在读取当前页'
+            : '等待下一页'
   return (
     <div className="panel-scroll task-center">
       <div className="task-content">
@@ -141,7 +144,7 @@ export function ConnectionPanel({
               <LogIn size={15} />
               打开抖音窗口
             </button>
-            <button disabled={!accountId || busy} onClick={probe}>
+            <button className="primary verify-login" disabled={!accountId || busy} onClick={probe}>
               <ShieldCheck size={15} />
               核验登录
             </button>
@@ -166,12 +169,16 @@ export function ConnectionPanel({
             }
             activity={
               collection?.status === 'running'
-                ? `${collection.mode === 'incremental' ? '更新新增 · ' : ''}${runningActivity(snapshot?.collectionActivity ?? null)}`
+                ? `${collection.mode === 'incremental' ? '更新 · ' : ''}${runningActivity(snapshot?.collectionActivity ?? null)}`
                 : undefined
             }
-            reason={collection?.errorCode || collection?.status === 'completed' ? collection.reason : null}
+            reason={
+              collection?.errorCode || collection?.status === 'completed'
+                ? collection.reason?.replace('；需要重新遍历时可从头采集。', '。')
+                : null
+            }
             attention={!!collection?.errorCode && collection.errorCode !== 'NO_AVAILABLE_ITEMS'}
-            badge={collection?.errorCode === 'NO_AVAILABLE_ITEMS' ? '暂无更多' : undefined}
+            badge={collection?.errorCode === 'NO_AVAILABLE_ITEMS' ? '待复查' : undefined}
           >
             {collection?.status === 'running' ? (
               <>
@@ -212,18 +219,21 @@ export function ConnectionPanel({
                     onClick={() => startCollection('incremental')}
                     title="从列表头部检查新增点赞，保留历史采集断点"
                   >
-                    更新新增
+                    更新
                   </button>
                 )}
-                {collection && (
-                  <button
-                    className="task-text-button"
-                    disabled={busy}
-                    onClick={() => startCollection('full')}
-                  >
-                    从头遍历
-                  </button>
-                )}
+                {collection?.status === 'completed' &&
+                  collection.tailCursor != null &&
+                  (collection.phase === 'backfill' || collection.backfillCursor === null) && (
+                    <button
+                      className="task-text-button"
+                      disabled={busy}
+                      onClick={() => startCollection('recheck')}
+                      title="从上次确认结束的位置重新读取，检查平台是否恢复了更多内容"
+                    >
+                      复查末尾
+                    </button>
+                  )}
               </>
             )}
           </TaskCard>
@@ -315,18 +325,7 @@ export function ConnectionPanel({
                 释放页面引擎
               </button>
             </div>
-            {history.length > 0 ? (
-              <ul className="history">
-                {history.map((item, index) => (
-                  <li key={index}>
-                    <time>{item.time}</time>
-                    <span>{item.text}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="task-note">本次运行暂无诊断记录</p>
-            )}
+            <RuntimeHistory accountId={accountId} revision={snapshot} />
           </div>
         </details>
       </div>

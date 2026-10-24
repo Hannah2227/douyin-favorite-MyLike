@@ -37,6 +37,7 @@ async function requestInPage(request: PageRequest) {
   try {
     const response = await fetch('https://www.douyin.com' + paths[request.operation] + '?' + params, {
       credentials: 'include',
+      cache: 'no-store',
       signal: controller.signal,
       method: ['unlike', 'favorites'].includes(request.operation) ? 'POST' : 'GET',
       headers: {

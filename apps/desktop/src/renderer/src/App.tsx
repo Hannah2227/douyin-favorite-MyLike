@@ -31,7 +31,6 @@ export function App() {
   const [adding, setAdding] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const [name, setName] = useState('')
-  const [history, setHistory] = useState<{ time: string; text: string }[]>([])
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ accountId: string; ids: string[] } | null>(null)
@@ -139,13 +138,6 @@ export function App() {
     const timer = setTimeout(() => setNotice(''), 8000)
     return () => clearTimeout(timer)
   }, [notice])
-  const record = (text: string) =>
-    setHistory((old) =>
-      [
-        { time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), text },
-        ...old
-      ].slice(0, 30)
-    )
   async function perform(label: string, fn: () => Promise<unknown>) {
     setOperation(label)
     setError('')
@@ -156,7 +148,6 @@ export function App() {
     } catch (e) {
       const message = e instanceof Error ? e.message : '操作未完成'
       setError(message)
-      record(message)
     } finally {
       setOperation('')
     }
@@ -172,7 +163,6 @@ export function App() {
     void perform('核验登录', async () => {
       const value = await call(window.mylike.invoke('probe', { accountId }))
       setNotice(`已核验：${value.nickname || value.name}`)
-      record(`身份核验成功：${value.nickname || value.name}`)
     })
   const collect = (resume: boolean) =>
     accountId &&
@@ -180,15 +170,14 @@ export function App() {
       const result = await call(window.mylike.invoke('collectPage', { accountId, continue: resume }))
       const text = `本页接收 ${result.received} 条，新增 ${result.added} 条。${result.hasMore ? '还有更多内容，可继续验证下一页。' : '接口返回已到末尾。'}`
       setNotice(text)
-      record(text)
     })
-  const startCollection = (mode: CollectionTask['mode'] = 'update') =>
+  const startCollection = (mode: Exclude<CollectionTask['mode'], 'full'> = 'update') =>
     accountId &&
     void perform('启动采集', async () => {
       await call(window.mylike.invoke('collectionStart', { accountId, mode }))
       setNotice(
         mode === 'incremental'
-          ? '正在更新新增点赞，历史采集断点保留；期间可以浏览和播放。'
+          ? '更新已启动，历史采集断点保留；期间可以浏览和播放。'
           : '采集已启动，可在“连接与任务”查看进度或暂停；期间可以浏览和播放。'
       )
     })
@@ -299,7 +288,7 @@ export function App() {
                   }
                 >
                   <RefreshCw size={16} />
-                  更新新增
+                  更新
                 </button>
               )}
               <button className="primary" disabled={!accountId || busy} onClick={() => startCollection()}>
@@ -422,7 +411,6 @@ export function App() {
             probe={probe}
             collect={collect}
             startCollection={startCollection}
-            history={history}
             setError={setError}
             perform={perform}
           />

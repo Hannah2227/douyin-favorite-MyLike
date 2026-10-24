@@ -208,8 +208,10 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               max_cursor: '0',
               has_more: 0
             }
-          if ((globalThis as any).__mylikeLikedPages)
-            body = (globalThis as any).__mylikeLikedPages[url.searchParams.get('max_cursor')!]
+          if ((globalThis as any).__mylikeLikedPages) {
+            const entry = (globalThis as any).__mylikeLikedPages[url.searchParams.get('max_cursor')!]
+            body = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry
+          }
         } else if (
           url.pathname.includes('/aweme/listcollection/') ||
           url.pathname.includes('/collects/list/') ||
@@ -696,7 +698,7 @@ test('recovers the committed collection cursor after a forced process exit and w
   await app.evaluate((_electron, cursor) => {
     ;(globalThis as any).__mylikeHoldLikesAt = cursor
   }, cursor)
-  const start = await invoke('collectionStart', { accountId, mode: 'full' })
+  const start = await invoke('collectionStart', { accountId, mode: 'update' })
   expect(start.ok).toBe(true)
   await expect.poll(() => app.evaluate(() => !!(globalThis as any).__mylikeReleaseLikes)).toBe(true)
   expect((await invoke('snapshot')).data.collection).toMatchObject({ pages: 1, cursor, status: 'running' })
@@ -731,7 +733,7 @@ test('pauses with an engine crash reason and resumes collection from its committ
   await app.evaluate((_electron, cursor) => {
     ;(globalThis as any).__mylikeHoldLikesAt = cursor
   }, cursor)
-  const start = await invoke('collectionStart', { accountId, mode: 'full' })
+  const start = await invoke('collectionStart', { accountId, mode: 'update' })
   expect(start.ok).toBe(true)
   await expect.poll(() => app.evaluate(() => !!(globalThis as any).__mylikeReleaseLikes)).toBe(true)
   await app.evaluate(async ({ BrowserWindow, session }, accountId) => {
@@ -802,7 +804,7 @@ test('opens the login window when identity is missing and persists a rate-limit 
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeAuthLost = true
   })
-  const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+  const task = (await invoke('collectionStart', { accountId, mode: 'update' })).data
   // A cold engine may take 35s to initialize plus one bounded identity request.
   await expect
     .poll(
@@ -959,7 +961,7 @@ test('retries a page navigation during collection without treating it as a user 
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeSlowFirstIdentity = true
   })
-  await invoke('collectionStart', { accountId, mode: 'full' })
+  await invoke('collectionStart', { accountId, mode: 'update' })
   await expect
     .poll(() =>
       app.evaluate(() =>
@@ -2116,7 +2118,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   const overview = (await invoke('libraryOverview', { accountId })).data
   expect(overview.metadataBytes).toBeGreaterThan(0)
   expect(overview.metadataBytes).toBe((await invoke('dataInfo', { accountId })).data.metadataBytes)
-  await expect(page.getByRole('group', { name: '数据占用', exact: true })).toContainText(/KiB|MiB|GiB/)
+  await expect(page.getByRole('group', { name: '数据占用', exact: true })).toContainText(/MB/)
   await expect(page.getByRole('group', { name: '其中实况', exact: true })).toHaveCount(0)
   await screenshot(info.outputPath('dashboard-usage-light.png'))
   await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
@@ -2354,7 +2356,7 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
       cursor: '9007199254740993977',
       status: 'running'
     })
-  expect((await invoke('collectionStart', { accountId, mode: 'full' })).error.code).toBe('BUSY')
+  expect((await invoke('collectionStart', { accountId, mode: 'update' })).error.code).toBe('BUSY')
   const task = (await invoke('snapshot')).data.favorites
   expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'pause' })).ok).toBe(true)
   await app.evaluate(() => {
@@ -2644,7 +2646,7 @@ test('shows compact task cards with direct controls and clear errors at small si
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeHoldLikesAt = '0'
   })
-  await invoke('collectionStart', { accountId, mode: 'full' })
+  await invoke('collectionStart', { accountId, mode: 'update' })
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
   await expect(page.getByRole('button', { name: '暂停采集', exact: true })).toBeVisible()
   await expect(page.getByRole('progressbar', { name: '喜欢列表采集进度', exact: true })).not.toHaveAttribute(
@@ -3138,6 +3140,187 @@ test('waits for page SDK initialization before sending hidden collection request
   ).toBe(true)
 })
 
+test('wakes on changed login credentials, cancels a stale ten-second probe and still requires matching identity', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = true
+    ;(globalThis as any).__mylikeSlowFirstIdentity = true
+    ;(globalThis as any).__identityDelayMs = 10000
+  })
+  await invoke('login', { accountId })
+  await expect
+    .poll(() =>
+      app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[]).some((url) => url.includes('/profile/self/'))
+      )
+    )
+    .toBe(true)
+  const hint = (value: string) =>
+    app.evaluate(
+      async ({ session }, { accountId, value }) => {
+        await session.fromPartition(`persist:mylike-${accountId}`).cookies.set({
+          url: 'https://www.douyin.com',
+          name: 'sessionid',
+          value,
+          secure: true,
+          httpOnly: true
+        })
+      },
+      { accountId, value }
+    )
+  await hint('fixture-session-not-proof')
+  await expect
+    .poll(
+      () =>
+        app.evaluate(
+          () =>
+            ((globalThis as any).__mylikeTestCalls as string[]).filter((url) =>
+              url.includes('/profile/self/')
+            ).length
+        ),
+      { timeout: 4000 }
+    )
+    .toBeGreaterThan(1)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'visible' },
+    accounts: [{ remoteId: null }]
+  })
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = false
+  })
+  await hint('fixture-session-logged-in')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication, { timeout: 4000 }).toBeNull()
+  expect((await invoke('snapshot')).data.engine.status).toBe('ready')
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ kind: 'auth', message: expect.stringContaining('登录态变化') }),
+      expect.objectContaining({ kind: 'request', operation: 'self', code: 'CANCELLED' }),
+      expect.objectContaining({ kind: 'auth', message: expect.stringContaining('窗口已自动收起') })
+    ])
+  )
+  expect(JSON.stringify(events)).not.toMatch(/fixture-session|MS4wLjAB_fixture_identity/)
+})
+
+test('persists completion, interruption and response diagnostics per account with a prominent verify button and MB sizes', async ({}, info) => {
+  const { accountId } = await prepareQueue(2)
+  const collectionBackground = await page
+    .locator('.page-header .primary')
+    .evaluate((node) => getComputedStyle(node).backgroundColor)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const verify = page.getByRole('button', { name: '核验登录', exact: true })
+  await expect(verify).toHaveCSS('background-color', collectionBackground)
+  const rect = await verify.boundingBox()
+  expect(rect!.height).toBeGreaterThanOrEqual(44)
+  expect(rect!.width).toBeGreaterThanOrEqual(144)
+  await expect(page.getByRole('button', { name: '从头遍历', exact: true })).toHaveCount(0)
+  expect((await invoke('collectionStart', { accountId, mode: 'full' })).error.code).toBe('INVALID_INPUT')
+  await invoke('collectionStart', { accountId, mode: 'update' })
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeRateLimited = true
+  })
+  await invoke('collectionStart', { accountId, mode: 'update' })
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('paused')
+  await page.getByText('诊断与运行记录', { exact: true }).click()
+  const history = page.getByRole('list', { name: '运行记录', exact: true })
+  await expect(history).toContainText('正常完成')
+  await expect(history).toContainText('HTTP 429')
+  await expect(history).toContainText('RATE_LIMITED')
+  await expect(history).toContainText('返回类型')
+  await screenshot(info.outputPath('runtime-events-dark.png'))
+  await page.getByRole('button', { name: '仪表盘', exact: true }).click()
+  await expect(page.getByRole('group', { name: '数据占用', exact: true })).toContainText('MB')
+  await app.close()
+  await launch()
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events.some((event: any) => event.kind === 'task' && event.message.includes('正常完成'))).toBe(true)
+  expect(events.some((event: any) => event.kind === 'task' && event.code === 'RATE_LIMITED')).toBe(true)
+  const other = (await invoke('createAccount', { name: '独立运行记录' })).data
+  expect((await invoke('runtimeEvents', { accountId: other.id })).data).toEqual([])
+  expect((await invoke('runtimeEvents', { accountId })).error.code).toBe('ACCOUNT_CHANGED')
+})
+
+test('does not commit a temporary empty terminal response when rechecking returns more available works', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate((_electron, workId) => {
+    ;(globalThis as any).__mylikeLikedPages = {
+      '0': [
+        { aweme_list: [], has_more: 0, max_cursor: '0' },
+        { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' }
+      ],
+      '10': { aweme_list: [], has_more: 0, max_cursor: '0' }
+    }
+  }, workId)
+  await invoke('collectionStart', { accountId, mode: 'update' })
+  await expect.poll(async () => (await invoke('snapshot')).data.collectionActivity).toBe('confirming')
+  expect((await invoke('snapshot')).data.collection).toMatchObject({
+    status: 'running',
+    cursor: '0',
+    pages: 0
+  })
+  expect((await invoke('query', { accountId })).data.total).toBe(0)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 15000 })
+    .toBe('completed')
+  expect((await invoke('query', { accountId })).data.total).toBe(1)
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/favorite/'))
+        .map((url) => new URL(url).searchParams.get('max_cursor'))
+    )
+  ).toEqual(['0', '0', '10', '10'])
+})
+
+test('rechecks the retained terminal cursor after head updates and restart without a full rescan', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate((_electron, workId) => {
+    ;(globalThis as any).__mylikeLikedPages = {
+      '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' },
+      '10': { aweme_list: [], has_more: 0, max_cursor: '0' }
+    }
+  }, workId)
+  await invoke('collectionStart', { accountId, mode: 'update' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ status: 'completed', tailCursor: '10' })
+  await app.evaluate((_electron, workId) => {
+    ;(globalThis as any).__mylikeLikedPages = {
+      '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '99' }
+    }
+  }, workId)
+  await page.getByRole('button', { name: '更新', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ mode: 'incremental', status: 'completed', tailCursor: '10' })
+  await app.close()
+  await launch()
+  await installPlatform(accountId)
+  await app.evaluate((_electron, workId) => {
+    ;(globalThis as any).__mylikeLikedPages = {
+      '10': { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 1, max_cursor: '20' },
+      '20': { aweme_list: [], has_more: 0, max_cursor: '0' }
+    }
+  }, workId)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await page.getByRole('button', { name: '复查末尾', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ mode: 'recheck', status: 'completed', tailCursor: '20', added: 1 })
+  expect((await invoke('query', { accountId })).data.total).toBe(2)
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/favorite/'))
+        .map((url) => new URL(url).searchParams.get('max_cursor'))
+    )
+  ).toEqual(['10', '20', '20'])
+})
+
 for (const outcome of ['overlap', 'terminal-empty']) {
   test(`updates new likes independently of paused history on ${outcome} and resumes the original deep cursor after restart`, async ({}, info) => {
     const accountId = await addAccount()
@@ -3152,7 +3335,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
       },
       { workId, deep }
     )
-    const previous = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+    const previous = (await invoke('collectionStart', { accountId, mode: 'update' })).data
     await expect
       .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
       .toBe('function')
@@ -3186,7 +3369,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
       },
       { workId, outcome }
     )
-    await page.getByRole('button', { name: '更新新增', exact: true }).click()
+    await page.getByRole('button', { name: '更新', exact: true }).click()
     await expect
       .poll(async () => (await invoke('snapshot')).data.collection)
       .toMatchObject({
@@ -3205,7 +3388,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
           .filter((url) => url.includes('/aweme/favorite/'))
           .map((url) => new URL(url).searchParams.get('max_cursor'))
       )
-    ).toEqual(outcome === 'overlap' ? ['0', '10', '20'] : ['0'])
+    ).toEqual(outcome === 'overlap' ? ['0', '10', '20'] : ['0', '0'])
     await expect(page.getByRole('button', { name: '继续历史采集', exact: true })).toBeVisible()
     await screenshot(info.outputPath(`incremental-${outcome}.png`))
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
@@ -3224,7 +3407,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
         .poll(() => page.locator('.task-center').evaluate((node) => node.scrollWidth - node.clientWidth))
         .toBeLessThanOrEqual(1)
       await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
-      await expect(page.getByRole('button', { name: '更新新增', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: '更新', exact: true })).toBeVisible()
       expect(
         await page.locator('.main-area').evaluate((node) => node.scrollWidth - node.clientWidth)
       ).toBeLessThanOrEqual(1)
@@ -3251,7 +3434,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
           .filter((url) => url.includes('/aweme/favorite/'))
           .map((url) => new URL(url).searchParams.get('max_cursor'))
       )
-    ).toEqual([deep])
+    ).toEqual([deep, deep])
     expect((await invoke('query', { accountId })).data.total).toBe(outcome === 'overlap' ? 4 : 2)
   })
 }
@@ -3269,7 +3452,7 @@ test('continues an interrupted incremental update without restarting on its newl
     },
     { workId, old: ids[0] }
   )
-  await page.getByRole('button', { name: '更新新增', exact: true }).click()
+  await page.getByRole('button', { name: '更新', exact: true }).click()
   await expect
     .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
     .toBe('function')
@@ -3382,21 +3565,22 @@ test('guides a verified empty account to collection and keeps a breathing task i
   })
 })
 
-test('crosses empty liked-page gaps without losing later available works and accepts only an explicit end', async () => {
+test('rechecks an empty liked-page cursor instead of skipping it and confirms the final marker', async () => {
   const accountId = await addAccount()
   await installPlatform(accountId)
   await app.evaluate((_electron, workId) => {
     ;(globalThis as any).__mylikeLikedPages = {
       '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '10' },
-      '10': { aweme_list: [], has_more: 1, max_cursor: '20' },
-      '20': { aweme_list: [], has_more: 1, max_cursor: '30' },
-      '30': { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 1, max_cursor: '40' },
-      '40': { aweme_list: [], has_more: 0, max_cursor: '0' }
+      '10': [
+        { aweme_list: [], has_more: 1, max_cursor: '20' },
+        { aweme_list: [{ aweme_id: String(BigInt(workId) + 1n) }], has_more: 1, max_cursor: '30' }
+      ],
+      '30': { aweme_list: [], has_more: 0, max_cursor: '0' }
     }
   }, workId)
-  await invoke('collectionStart', { accountId, mode: 'full' })
+  await invoke('collectionStart', { accountId, mode: 'update' })
   await expect
-    .poll(async () => (await invoke('snapshot')).data.collection)
+    .poll(async () => (await invoke('snapshot')).data.collection, { timeout: 35000 })
     .toMatchObject({ status: 'completed', pages: 3, added: 2, received: 2, errorCode: null })
   expect((await invoke('query', { accountId })).data.total).toBe(2)
   expect(
@@ -3405,11 +3589,12 @@ test('crosses empty liked-page gaps without losing later available works and acc
         .filter((url) => url.includes('/aweme/favorite/'))
         .map((url) => new URL(url).searchParams.get('max_cursor'))
     )
-  ).toEqual(['0', '10', '20', '30', '40'])
+  ).toEqual(['0', '10', '10', '30', '30'])
 })
 
 for (const mode of ['advancing', 'stagnant']) {
   test(`keeps an ${mode} empty tail as a neutral pause with the original checkpoint and resumes after restart`, async ({}, info) => {
+    test.setTimeout(testTimeout(120000))
     const accountId = await addAccount()
     await installPlatform(accountId)
     await app.evaluate(
@@ -3427,9 +3612,9 @@ for (const mode of ['advancing', 'stagnant']) {
       },
       { mode, workId }
     )
-    await invoke('collectionStart', { accountId, mode: 'full' })
+    await invoke('collectionStart', { accountId, mode: 'update' })
     await expect
-      .poll(async () => (await invoke('snapshot')).data.collection, { timeout: 35000 })
+      .poll(async () => (await invoke('snapshot')).data.collection, { timeout: 90000 })
       .toMatchObject({
         status: 'paused',
         pages: 1,
@@ -3444,13 +3629,11 @@ for (const mode of ['advancing', 'stagnant']) {
         .filter((url) => url.includes('/aweme/favorite/'))
         .map((url) => new URL(url).searchParams.get('max_cursor'))
     )
-    expect(cursors).toEqual(
-      mode === 'advancing' ? ['0', '10', '11', '12', '13', '14'] : ['0', '10', '10', '10']
-    )
+    expect(cursors).toEqual(['0', '10', '10', '10'])
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
     const task = page.getByRole('region', { name: '自动采集任务' })
-    await expect(task).toContainText('暂无更多')
-    await expect(task).toContainText('抖音显示的数量可能包含已删除或不可访问的作品')
+    await expect(task).toContainText('待复查')
+    await expect(task).toContainText('尚未确认末尾')
     await expect(task.getByRole('alert')).toHaveCount(0)
     await screenshot(info.outputPath(`empty-tail-${mode}.png`))
     await app.close()
@@ -3476,7 +3659,7 @@ for (const mode of ['advancing', 'stagnant']) {
           .filter((url) => url.includes('/aweme/favorite/'))
           .map((url) => new URL(url).searchParams.get('max_cursor'))
       )
-    ).toEqual(['10'])
+    ).toEqual(['10', '10'])
   })
 }
 
@@ -3542,7 +3725,7 @@ for (const source of ['likes', 'favorites']) {
       ;(globalThis as any).__mylikeReplayCollection = source === 'likes'
       ;(globalThis as any).__favoriteReplayPage = source === 'favorites'
     }, source)
-    await invoke(source === 'likes' ? 'collectionStart' : 'favoritesStart', { accountId, mode: 'full' })
+    await invoke(source === 'likes' ? 'collectionStart' : 'favoritesStart', { accountId, mode: 'update' })
     const current = async () => {
       const snapshot = (await invoke('snapshot')).data
       return source === 'likes' ? snapshot.collection : snapshot.favorites
@@ -3590,7 +3773,7 @@ for (const shape of ['html', 'json']) {
     await app.evaluate((_electron, shape) => {
       ;(globalThis as any).__mylikeChallengeResponse = shape
     }, shape)
-    const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+    const task = (await invoke('collectionStart', { accountId, mode: 'update' })).data
     await expect
       .poll(async () => (await invoke('snapshot')).data.collection)
       .toMatchObject({ status: 'paused', errorCode: 'VERIFICATION_REQUIRED', pages: 0, cursor: '0' })
@@ -3627,7 +3810,7 @@ test('detects an in-page slider during a pending SDK read and stops verification
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeHoldLikesAt = '0'
   })
-  const task = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+  const task = (await invoke('collectionStart', { accountId, mode: 'update' })).data
   await expect
     .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
     .toBe('function')
@@ -3654,7 +3837,7 @@ test('abandons verification on manual close without reopening or resuming when t
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeChallengeResponse = 'json'
   })
-  await invoke('collectionStart', { accountId, mode: 'full' })
+  await invoke('collectionStart', { accountId, mode: 'update' })
   await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
   await closeRemoteWindow(accountId)
   await app.evaluate(() => {
@@ -3707,7 +3890,7 @@ test('keeps the original binding and login window when the logged-in identity di
 })
 
 test('bounds empty-response recovery to three reads and one rebuild, preserving the cursor without a false popup', async () => {
-  test.setTimeout(testTimeout(90000))
+  test.setTimeout(testTimeout(120000))
   const { accountId } = await prepareQueue(1)
   const count = () =>
     app.evaluate(
@@ -3719,15 +3902,15 @@ test('bounds empty-response recovery to three reads and one rebuild, preserving 
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeChallengeResponse = 'empty'
   })
-  await invoke('collectionStart', { accountId, mode: 'full' })
+  await invoke('collectionStart', { accountId, mode: 'update' })
   await expect
-    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 35000 })
+    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 90000 })
     .toBe('paused')
   expect(await count()).toBe(before + 3)
   expect((await invoke('snapshot')).data).toMatchObject({
     authentication: null,
     engine: { status: 'ready' },
-    collection: { pages: 0, cursor: '0', errorCode: 'INVALID_RESPONSE' }
+    collection: { pages: 0, cursor: '0', errorCode: 'NO_AVAILABLE_ITEMS' }
   })
 })
 
@@ -3763,7 +3946,9 @@ test('checks the failed folders API instead of accepting healthy identity or fav
   })
   expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
   await invoke('favoritesControl', { accountId, taskId: before.id, action: 'resume' })
-  await expect.poll(async () => (await invoke('snapshot')).data.favorites.status).toBe('completed')
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites.status, { timeout: 30000 })
+    .toBe('completed')
 })
 
 test('keeps an already-sent unlike alive through a visible slider and preserves its definite success without sending another write', async () => {

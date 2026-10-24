@@ -4,8 +4,15 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseFavoriteFolders, parseFavoritesPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
-import { retryableRead, rebuildReadPage, PageProgress } from './read-recovery'
+import {
+  retryableRead,
+  rebuildReadPage,
+  readRetryDelay,
+  PageProgress,
+  EndConfirmation
+} from './read-recovery'
 import { collectionPolicy as policy } from './collection-policy'
+import type { RuntimeEventInput } from '../shared/runtime-events'
 
 type Runner = <T>(
   accountId: string,
@@ -23,7 +30,8 @@ export class FavoritesService {
     private readonly run: Runner,
     private readonly identity: (accountId: string, check: () => void) => Promise<Account>,
     private readonly changed: (committed?: boolean) => void,
-    private readonly timing = policy
+    private readonly timing = policy,
+    private readonly report: (accountId: string, event: RuntimeEventInput) => void = () => {}
   ) {}
   get running() {
     return !!this.loop
@@ -85,6 +93,7 @@ export class FavoritesService {
   }
   private async collect(initial: FavoritesTask, signal: AbortSignal) {
     const progress = new PageProgress()
+    const ending = new EndConfirmation()
     let task = initial,
       retries = 0,
       pages = 0,
@@ -113,7 +122,7 @@ export class FavoritesService {
         }
         this.activity = 'waiting'
         this.changed()
-        task = await this.run(
+        const saved = await this.run(
           task.accountId,
           async (check) => {
             const guard = () => {
@@ -143,6 +152,15 @@ export class FavoritesService {
                 'folders' in page
                   ? page.folders.map((folder) => folder.id)
                   : page.items.map((item) => item.id)
+              if (!ending.check(`${task.stage}:${task.folderId ?? ''}:${task.cursor}`, ids, page.hasMore)) {
+                this.activity = 'confirming'
+                this.report(task.accountId, {
+                  kind: 'task',
+                  message: '收藏同步收到结束标记，稍后在同一断点再次确认。'
+                })
+                this.changed()
+                return null
+              }
               progress.check(`${task.stage}:${task.folderId ?? ''}`, ids, page.hasMore)
               const saved = await this.db.call('favoritesSave', {
                 accountId: task.accountId,
@@ -156,21 +174,26 @@ export class FavoritesService {
               this.changed(true)
               return saved
             } finally {
-              this.activity = 'waiting'
+              if (this.activity !== 'confirming') this.activity = 'waiting'
             }
           },
           true
         )
+        if (saved) {
+          task = saved
+          retries = 0
+        }
         this.current = task
         pages++
-        retries = 0
         this.changed()
-        if (task.status === 'running') await this.wait(this.timing.interval, signal)
+        if (task.status === 'running')
+          await this.wait(saved ? this.timing.interval : this.timing.retry, signal)
       } catch (error) {
         if (signal.aborted) return
         const detail = publicError(error)
+        ending.reset()
         if (retryableRead(detail.code) && retries < 2) {
-          this.activity = 'waiting'
+          this.activity = ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code) ? 'cooling' : 'waiting'
           this.changed()
           if (rebuildReadPage(detail.code, retries, this.engine.snapshot().status === 'visible')) {
             try {
@@ -187,7 +210,13 @@ export class FavoritesService {
               if (signal.aborted) return
             }
           }
-          await this.wait(this.timing.retry * 3 ** retries++, signal)
+          const delay = readRetryDelay(detail.code, retries++, this.timing.retry)
+          this.report(task.accountId, {
+            kind: 'task',
+            message: `收藏同步暂缓 ${(delay / 1000).toFixed(0)} 秒后重试同一断点（${retries}/2）：${detail.message}`,
+            code: detail.code
+          })
+          await this.wait(delay, signal)
           continue
         }
         try {

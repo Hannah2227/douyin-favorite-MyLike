@@ -23,8 +23,11 @@ import type {
 } from '../../shared/contracts'
 import type { FavoritesPage } from './favorites'
 import type { AppPreferences, WindowState } from '../../shared/preferences'
+import type { RuntimeEvent, RuntimeEventInput } from '../../shared/runtime-events'
 
 export interface Inputs {
+  runtimeEvents: { accountId: string }
+  appendRuntimeEvent: { accountId: string; event: RuntimeEventInput }
   appPreferences: { preferences?: Partial<AppPreferences> }
   windowState: { state?: WindowState }
   checkDatabase: Record<string, never>
@@ -119,6 +122,8 @@ export interface Inputs {
   close: undefined
 }
 export interface Replies {
+  runtimeEvents: RuntimeEvent[]
+  appendRuntimeEvent: null
   appPreferences: AppPreferences
   windowState: WindowState | null
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }

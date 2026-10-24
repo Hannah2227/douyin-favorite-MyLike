@@ -10,19 +10,22 @@ function fixture() {
     show: vi.fn(async () => {}),
     hide: vi.fn(),
     setInteraction: vi.fn(),
+    cancelRecovery: vi.fn(),
     pageState: vi.fn(async () => ({ ready: true, captcha: false }))
   }
   const probe = vi.fn(async (_id: string, _target: unknown, check: () => void) => {
     check()
   })
+  const report = vi.fn()
   const auth = new Authentication(
     engine,
     (_id, action) => action(() => {}),
     probe,
-    () => {}
+    () => {},
+    report
   )
   sessions.push(auth)
-  return { auth, engine, probe }
+  return { auth, engine, probe, report }
 }
 afterEach(() => {
   for (const auth of sessions.splice(0)) auth.stop()
@@ -43,9 +46,13 @@ it('hides login only after the scoped identity probe succeeds', async () => {
   expect(probe).toHaveBeenCalledTimes(1)
 })
 it('continues bounded detection after an initial navigation failure and closes after recovery', async () => {
-  const { auth, engine, probe } = fixture()
+  const { auth, engine, probe, report } = fixture()
   engine.show.mockRejectedValueOnce(new AppError('BROWSER_NOT_READY', 'initial navigation failed'))
   await expect(auth.open('a', 'login')).rejects.toThrow('initial navigation failed')
+  expect(report).toHaveBeenCalledWith(
+    'a',
+    expect.objectContaining({ kind: 'auth', code: 'BROWSER_NOT_READY' })
+  )
   engine.pageState.mockResolvedValue({ ready: false, captcha: false })
   await vi.advanceTimersByTimeAsync(500)
   expect(probe).not.toHaveBeenCalled()
@@ -188,6 +195,38 @@ it('never treats verification, rate limits, account mismatch or business rejecti
   expect(rebuildReadPage('TIMEOUT', 1, false)).toBe(true)
   expect(rebuildReadPage('TIMEOUT', 0, false)).toBe(false)
   expect(rebuildReadPage('TIMEOUT', 1, true)).toBe(false)
+})
+it('wakes login checks on changed credentials, discards the old probe and never treats the hint as identity proof', async () => {
+  const { auth, engine, probe } = fixture()
+  let reject!: (error: Error) => void
+  probe.mockImplementationOnce(async () => {
+    await new Promise<void>((_resolve, fail) => {
+      reject = fail
+    })
+  })
+  engine.cancelRecovery.mockImplementation(() => reject(new AppError('CANCELLED', 'old probe')))
+  await auth.open('a', 'login')
+  await vi.advanceTimersByTimeAsync(300)
+  auth.handle({ type: 'changed', accountId: 'b' })
+  expect(engine.cancelRecovery).not.toHaveBeenCalled()
+  auth.handle({ type: 'changed', accountId: 'a' })
+  expect(engine.hide).not.toHaveBeenCalled()
+  expect(engine.cancelRecovery).toHaveBeenCalledExactlyOnceWith('a')
+  await vi.advanceTimersByTimeAsync(600)
+  expect(probe).toHaveBeenCalledTimes(2)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
+})
+it('does not let changed-cookie hints bypass an explicit rate-limit cooldown', async () => {
+  const { auth, engine, probe } = fixture()
+  probe.mockRejectedValueOnce(new AppError('RATE_LIMITED', 'limited'))
+  await auth.open('a', 'login')
+  await vi.advanceTimersByTimeAsync(300)
+  auth.handle({ type: 'changed', accountId: 'a' })
+  await vi.advanceTimersByTimeAsync(29_000)
+  expect(probe).toHaveBeenCalledTimes(1)
+  expect(engine.cancelRecovery).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
 })
 it('scopes replay detection to the collection phase or folder and permits an actual terminal page', () => {
   const progress = new PageProgress()

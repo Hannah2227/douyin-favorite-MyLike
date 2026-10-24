@@ -30,7 +30,7 @@ export interface DecodedTransfer {
 }
 export function decodeTransfer(text: string): DecodedTransfer {
   if (Buffer.byteLength(text, 'utf8') > MAX_TRANSFER_BYTES)
-    throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 64 MiB。')
+    throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 67.11 MB。')
   let value: unknown
   try {
     value = JSON.parse(text)
@@ -62,7 +62,7 @@ export function readTransfer(file: string): DecodedTransfer {
   try {
     const stat = fstatSync(fd)
     if (!stat.isFile()) throw new AppError('IMPORT_INVALID', '请选择普通的元数据文件。')
-    if (stat.size > MAX_TRANSFER_BYTES) throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 64 MiB。')
+    if (stat.size > MAX_TRANSFER_BYTES) throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 67.11 MB。')
     const chunks: Buffer[] = []
     let total = 0
     while (total <= MAX_TRANSFER_BYTES) {
@@ -72,7 +72,7 @@ export function readTransfer(file: string): DecodedTransfer {
       chunks.push(chunk.subarray(0, read))
       total += read
     }
-    if (total > MAX_TRANSFER_BYTES) throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 64 MiB。')
+    if (total > MAX_TRANSFER_BYTES) throw new AppError('IMPORT_TOO_LARGE', '导入文件不能超过 67.11 MB。')
     let text: string
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total))
@@ -109,6 +109,6 @@ export function encodeTransfer(
     throw new AppError('EXPORT_INVALID', '部分本地记录无法导出，请检查数据；原记录已保留。')
   const text = JSON.stringify(value, null, 2) + '\n'
   if (Buffer.byteLength(text, 'utf8') > MAX_TRANSFER_BYTES)
-    throw new AppError('EXPORT_TOO_LARGE', '导出文件超过 64 MiB，请缩小筛选范围或分批导出。')
+    throw new AppError('EXPORT_TOO_LARGE', '导出文件超过 67.11 MB，请缩小筛选范围或分批导出。')
   return text
 }
