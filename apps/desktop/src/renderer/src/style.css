@@ -494,6 +494,10 @@ h1 {
   font-size: 14px;
   font-weight: 600;
 }
+.header-actions > button:not(.primary) {
+  min-height: 44px;
+  padding: 0 14px;
+}
 .header-actions .primary svg {
   width: 18px;
   height: 18px;

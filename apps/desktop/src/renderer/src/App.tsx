@@ -1,7 +1,7 @@
 import { FavoritesPanel, useFavoriteFolders } from './FavoritesPanel'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, LoaderCircle, X } from 'lucide-react'
-import type { Diagnostics, ImportPreview, Snapshot, Work } from '../../shared/contracts'
+import { ArrowDownToLine, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import type { CollectionTask, Diagnostics, ImportPreview, Snapshot, Work } from '../../shared/contracts'
 import { Player } from './Player'
 
 import { call, type Tab } from './api'
@@ -87,6 +87,12 @@ export function App() {
     !!snapshot?.favoritesActivity
   const unliking = snapshot?.unlike?.status === 'running'
   const busy = !!operation || !!snapshot?.busy || collecting || unliking
+  const incrementalPending =
+    snapshot?.collection?.mode === 'incremental' && snapshot.collection.status !== 'completed'
+  const historyPending =
+    snapshot?.collection?.mode === 'incremental' &&
+    snapshot.collection.status === 'completed' &&
+    snapshot.collection.backfillCursor !== null
   const refresh = useCallback(async () => {
     const seq = ++snapshotSequence.current
     const next = await call(window.mylike.invoke('snapshot', {}))
@@ -176,11 +182,15 @@ export function App() {
       setNotice(text)
       record(text)
     })
-  const startCollection = (mode: 'update' | 'full' = 'update') =>
+  const startCollection = (mode: CollectionTask['mode'] = 'update') =>
     accountId &&
     void perform('启动采集', async () => {
       await call(window.mylike.invoke('collectionStart', { accountId, mode }))
-      setNotice('采集已启动，可在“连接与任务”查看进度或暂停；期间可以浏览和播放。')
+      setNotice(
+        mode === 'incremental'
+          ? '正在更新新增点赞，历史采集断点保留；期间可以浏览和播放。'
+          : '采集已启动，可在“连接与任务”查看进度或暂停；期间可以浏览和播放。'
+      )
     })
   const back = presentation.exit
   const startQueue = (mode: 'sequence' | 'shuffle', work?: Work) => {
@@ -278,14 +288,34 @@ export function App() {
           )}
           {tab === 'library' && (
             <div className="header-actions">
+              {account?.lastVerifiedAt && (snapshot?.collection || likesLibrary.page.total > 0) && (
+                <button
+                  disabled={busy || incrementalPending}
+                  onClick={() => startCollection('incremental')}
+                  title={
+                    incrementalPending
+                      ? '请先继续当前未完成的新增更新'
+                      : '从列表头部检查新增点赞，保留历史采集断点'
+                  }
+                >
+                  <RefreshCw size={16} />
+                  更新新增
+                </button>
+              )}
               <button className="primary" disabled={!accountId || busy} onClick={() => startCollection()}>
                 {busy ? <LoaderCircle className="spin" size={16} /> : <ArrowDownToLine size={16} />}
                 {operation ||
                   (collecting
-                    ? '正在采集'
+                    ? snapshot?.collection?.mode === 'incremental'
+                      ? '正在更新'
+                      : '正在采集'
                     : snapshot?.collection && snapshot.collection.status !== 'completed'
-                      ? '继续采集'
-                      : '自动采集')}
+                      ? incrementalPending
+                        ? '继续更新'
+                        : '继续采集'
+                      : historyPending
+                        ? '继续历史采集'
+                        : '自动采集')}
               </button>
             </div>
           )}

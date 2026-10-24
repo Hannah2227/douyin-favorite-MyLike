@@ -10,7 +10,7 @@ import {
   Unplug,
   type LucideIcon
 } from 'lucide-react'
-import type { Snapshot } from '../../shared/contracts'
+import type { CollectionTask, Snapshot } from '../../shared/contracts'
 import { accountLabel } from '../../shared/account-label'
 import { call, statusLabels, type Perform } from './api'
 import { UnlikePanel } from './UnlikePanel'
@@ -24,7 +24,7 @@ type Props = {
   login: () => void
   probe: () => void
   collect: (resume: boolean) => void
-  startCollection: (mode: 'update' | 'full') => void
+  startCollection: (mode: CollectionTask['mode']) => void
   history: { time: string; text: string }[]
   setError: Dispatch<SetStateAction<string>>
   perform: Perform
@@ -161,12 +161,12 @@ export function ConnectionPanel({
             status={collection?.status}
             summary={
               collection
-                ? `新增 ${collection.added} 条 · 接收 ${collection.received} 条 · 已保存 ${collection.pages} 页`
+                ? `本轮新增 ${collection.added} 条 · 接收 ${collection.received} 条 · 已保存 ${collection.pages} 页`
                 : '将喜欢的作品收录到本机'
             }
             activity={
               collection?.status === 'running'
-                ? runningActivity(snapshot?.collectionActivity ?? null)
+                ? `${collection.mode === 'incremental' ? '更新新增 · ' : ''}${runningActivity(snapshot?.collectionActivity ?? null)}`
                 : undefined
             }
             reason={collection?.errorCode || collection?.status === 'completed' ? collection.reason : null}
@@ -198,8 +198,23 @@ export function ConnectionPanel({
                   }
                 >
                   <Play size={15} />
-                  {collection && collection.status !== 'completed' ? '继续采集' : '采集喜欢'}
+                  {collection && collection.status !== 'completed'
+                    ? collection.mode === 'incremental'
+                      ? '继续更新'
+                      : '继续采集'
+                    : collection?.mode === 'incremental' && collection.backfillCursor !== null
+                      ? '继续历史采集'
+                      : '采集喜欢'}
                 </button>
+                {collection && !(collection.mode === 'incremental' && collection.status !== 'completed') && (
+                  <button
+                    disabled={busy}
+                    onClick={() => startCollection('incremental')}
+                    title="从列表头部检查新增点赞，保留历史采集断点"
+                  >
+                    更新新增
+                  </button>
+                )}
                 {collection && (
                   <button
                     className="task-text-button"

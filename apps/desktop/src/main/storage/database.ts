@@ -335,15 +335,36 @@ export class Store {
       case 'startCollection':
         return this.transaction(() => {
           this.account(input.accountId)
-          if (this.collection(input.accountId)?.status === 'running')
-            throw new AppError('BUSY', '采集任务正在运行。')
-          if (
-            input.mode === 'update' &&
-            this.collection(input.accountId) &&
-            this.collection(input.accountId)!.status !== 'completed'
-          )
+          const previous = this.collection(input.accountId)
+          if (previous?.status === 'running') throw new AppError('BUSY', '采集任务正在运行。')
+          // An interrupted head already contains this run's new works. Keep
+          // its cursor, otherwise restarting at zero could stop on those rows.
+          if (input.mode === 'incremental' && previous?.phase === 'head' && previous.status !== 'completed') {
+            this.db
+              .prepare(
+                "UPDATE collection_tasks SET mode='incremental',status='running',reason=NULL,errorCode=NULL,updatedAt=? WHERE accountId=? AND id=?"
+              )
+              .run(Date.now(), input.accountId, previous.id)
+            return this.collection(input.accountId)!
+          }
+          if (input.mode === 'update' && previous && previous.status !== 'completed')
             throw new AppError('TASK_INCOMPLETE', '请继续未完成任务，或明确选择从头遍历。')
-          const saved = this.call('checkpoint', { accountId: input.accountId })
+          let saved = this.call('checkpoint', { accountId: input.accountId })
+          if (
+            input.mode === 'incremental' &&
+            previous?.phase === 'backfill' &&
+            previous.status !== 'completed'
+          ) {
+            // Preserve even a full traversal paused before its first page.
+            this.db
+              .prepare(
+                'INSERT INTO checkpoints VALUES(?,?,1) ON CONFLICT(accountId) DO UPDATE SET cursor=excluded.cursor,hasMore=1'
+              )
+              .run(input.accountId, previous.cursor)
+            saved = { cursor: previous.cursor, hasMore: true }
+          }
+          const resumeBackfill = input.mode === 'update' && previous?.mode === 'incremental' && saved?.hasMore
+          const head = input.mode === 'incremental' || (input.mode === 'update' && saved && !resumeBackfill)
           this.db.prepare('DELETE FROM collection_tasks WHERE accountId=?').run(input.accountId)
           this.db
             .prepare(
@@ -353,10 +374,10 @@ export class Store {
               input.accountId,
               input.id,
               input.mode,
-              input.mode === 'update' && saved ? 'head' : 'backfill',
+              head ? 'head' : 'backfill',
               'running',
-              '0',
-              input.mode === 'update' && saved?.hasMore ? saved.cursor : null,
+              resumeBackfill ? saved!.cursor : '0',
+              input.mode !== 'full' && saved?.hasMore ? saved.cursor : null,
               Date.now()
             )
           return this.collection(input.accountId)!
@@ -400,21 +421,30 @@ export class Store {
             .run(task.id, task.phase, task.cursor)
           const result = this.savePage({
             ...input,
-            preserveCheckpoint: task.phase === 'head' && input.hasMore
+            preserveCheckpoint:
+              task.phase === 'head' &&
+              (input.hasMore || (task.mode === 'incremental' && task.backfillCursor !== null))
           })
           let phase = task.phase,
             cursor = input.cursor,
             status: CollectionTask['status'] = 'running',
             reason: string | null = null
+          const incrementalReason =
+            task.backfillCursor !== null
+              ? '新增更新已完成；历史采集断点已保留，可继续历史采集。'
+              : '新增更新已完成。'
           if (!input.hasMore) {
             status = 'completed'
-            reason = '平台已返回列表末尾。'
+            reason = task.mode === 'incremental' ? incrementalReason : '平台已返回列表末尾。'
           } else if (
             phase === 'head' &&
             input.items.length &&
             result.previouslyCollected === new Set(input.items.map((item: { id: string }) => item.id)).size
           ) {
-            if (task.backfillCursor) {
+            if (task.mode === 'incremental') {
+              status = 'completed'
+              reason = incrementalReason
+            } else if (task.backfillCursor) {
               phase = 'backfill'
               cursor = task.backfillCursor
             } else {

@@ -109,6 +109,68 @@ describe('durable collection tasks', () => {
     expect(page(store, '0', '10', [work('1')])).toMatchObject({ status: 'completed', phase: 'head' })
     expect(store.call('checkpoint', { accountId: 'a' })?.hasMore).toBe(false)
   })
+  it('updates only the head, keeps mixed pages, preserves the deep checkpoint and explicitly resumes history', () => {
+    const { store } = setup()
+    save(store, [work('1')], '9007199254740993000')
+    start(store)
+    store.call('updateCollection', { accountId: 'a', taskId: 'task', status: 'paused', reason: 'pause' })
+    // This full traversal was paused at zero, before its first committed page.
+    expect(start(store, 'incremental')).toMatchObject({
+      mode: 'incremental',
+      phase: 'head',
+      cursor: '0',
+      backfillCursor: '0'
+    })
+    expect(page(store, '0', '10', [work('1'), work('2')])).toMatchObject({ status: 'running', added: 1 })
+    expect(page(store, '10', '20', [work('1')])).toMatchObject({
+      status: 'completed',
+      phase: 'head',
+      backfillCursor: '0'
+    })
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: true })
+    expect(start(store, 'update')).toMatchObject({ phase: 'backfill', cursor: '0' })
+  })
+  it('keeps a deep checkpoint even if the incremental scan receives an explicit terminal empty page', () => {
+    const { store } = setup()
+    save(store, [work('1')], '9007199254740993000')
+    expect(start(store, 'incremental')).toMatchObject({
+      phase: 'head',
+      backfillCursor: '9007199254740993000'
+    })
+    expect(page(store, '0', '0', [], false)).toMatchObject({ status: 'completed', mode: 'incremental' })
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({
+      cursor: '9007199254740993000',
+      hasMore: true
+    })
+    expect(start(store, 'update')).toMatchObject({ phase: 'backfill', cursor: '9007199254740993000' })
+  })
+  it('continues an interrupted existing head when switching to head-only updates, instead of stopping early on its own rows', () => {
+    const { store } = setup()
+    save(store, [work('1')], '9007199254740993000')
+    start(store, 'update')
+    page(store, '0', '10', [work('2')])
+    store.call('updateCollection', { accountId: 'a', taskId: 'task', status: 'paused', reason: 'pause' })
+    expect(start(store, 'incremental')).toMatchObject({
+      id: 'task',
+      mode: 'incremental',
+      cursor: '10',
+      pages: 1,
+      added: 1
+    })
+    expect(page(store, '10', '20', [work('3')])).toMatchObject({ status: 'running', added: 2 })
+    expect(page(store, '20', '30', [work('1')])).toMatchObject({ status: 'completed', added: 2 })
+    expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('9007199254740993000')
+  })
+  it('does not reopen a completed historical checkpoint during incremental updates, and supports an initially empty account', () => {
+    const { store } = setup()
+    start(store, 'incremental')
+    page(store, '0', '0', [], false)
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: false })
+    start(store, 'incremental')
+    page(store, '0', '10', [work('1')])
+    expect(page(store, '10', '20', [work('1')])).toMatchObject({ status: 'completed', backfillCursor: null })
+    expect(store.call('checkpoint', { accountId: 'a' })).toEqual({ cursor: '0', hasMore: false })
+  })
   it('rolls back task progress, cursor and rows together; rejects stale or paused page commits', () => {
     const { store } = setup()
     start(store)
@@ -327,6 +389,42 @@ describe('request scheduling and task control', () => {
       added: 1,
       errorCode: 'CURSOR_STALLED'
     })
+  })
+  it('resumes a paused incremental scan from its head cursor and can later resume the untouched historical cursor', async () => {
+    let held = true,
+      release!: () => void
+    const { service, store, cursors } = serviceFixture(async (cursor) => {
+      if (cursor === '10' && held)
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+      return {
+        aweme_list: cursor === '99' ? [] : [{ aweme_id: cursor === '0' ? '2' : cursor === '10' ? '3' : '1' }],
+        has_more: cursor !== '99',
+        max_cursor: cursor === '0' ? '10' : cursor === '10' ? '20' : cursor === '20' ? '30' : '0'
+      }
+    })
+    save(store, [work('1')], '99')
+    const original = await service.start('a', 'incremental')
+    await expect.poll(() => !!release).toBe(true)
+    await service.control('a', original.id, 'pause')
+    held = false
+    release()
+    expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('99')
+    expect((await service.start('a', 'incremental')).id).toBe(original.id)
+    await expect.poll(() => service.running).toBe(false)
+    expect(store.call('collection', { accountId: 'a' })).toMatchObject({
+      status: 'completed',
+      mode: 'incremental',
+      added: 2,
+      backfillCursor: '99'
+    })
+    expect(cursors).toEqual(['0', '10', '10', '20'])
+    expect(store.call('checkpoint', { accountId: 'a' })?.cursor).toBe('99')
+    await service.start('a', 'update')
+    await expect.poll(() => service.running).toBe(false)
+    expect(cursors.at(-1)).toBe('99')
+    expect(store.call('checkpoint', { accountId: 'a' })?.hasMore).toBe(false)
   })
   it('tries at most five advancing empty pages, retaining the first empty checkpoint rather than declaring completion', async () => {
     const { service, store, releases, cursors } = serviceFixture(async (cursor) => ({

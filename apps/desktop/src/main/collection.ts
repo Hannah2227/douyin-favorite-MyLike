@@ -47,6 +47,8 @@ export class CollectionService {
     const previous = await this.db.call('collection', { accountId })
     if (mode === 'update' && previous && previous.status !== 'completed')
       return this.control(accountId, previous.id, 'resume')
+    if (mode === 'incremental' && previous?.mode === 'incremental' && previous.status !== 'completed')
+      return this.control(accountId, previous.id, 'resume')
     const task = await this.db.call('startCollection', { accountId, id: randomUUID(), mode })
     this.launch(task)
     return task

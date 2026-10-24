@@ -3138,6 +3138,180 @@ test('waits for page SDK initialization before sending hidden collection request
   ).toBe(true)
 })
 
+for (const outcome of ['overlap', 'terminal-empty']) {
+  test(`updates new likes independently of paused history on ${outcome} and resumes the original deep cursor after restart`, async ({}, info) => {
+    const accountId = await addAccount()
+    await installPlatform(accountId)
+    const deep = '9007199254740993988'
+    await app.evaluate(
+      (_electron, { workId, deep }) => {
+        ;(globalThis as any).__mylikeLikedPages = {
+          '0': { aweme_list: [{ aweme_id: workId, desc: '历史作品' }], has_more: 1, max_cursor: deep }
+        }
+        ;(globalThis as any).__mylikeHoldLikesAt = deep
+      },
+      { workId, deep }
+    )
+    const previous = (await invoke('collectionStart', { accountId, mode: 'full' })).data
+    await expect
+      .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
+      .toBe('function')
+    await invoke('collectionControl', { accountId, taskId: previous.id, action: 'pause' })
+    await app.evaluate(
+      (_electron, { workId, outcome }) => {
+        ;(globalThis as any).__mylikeHoldLikesAt = null
+        ;(globalThis as any).__mylikeReleaseLikes()
+        ;(globalThis as any).__mylikeTestCalls.length = 0
+        ;(globalThis as any).__mylikeLikedPages =
+          outcome === 'terminal-empty'
+            ? { '0': { aweme_list: [], has_more: 0, max_cursor: '0' } }
+            : {
+                '0': {
+                  aweme_list: [
+                    { aweme_id: workId },
+                    { aweme_id: String(BigInt(workId) + 1n), desc: '新点赞一' }
+                  ],
+                  has_more: 1,
+                  max_cursor: '10'
+                },
+                '10': {
+                  aweme_list: [
+                    { aweme_id: String(BigInt(workId) + 2n), desc: '新点赞二', create_time: 1500000000 }
+                  ],
+                  has_more: 1,
+                  max_cursor: '20'
+                },
+                '20': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '30' }
+              }
+      },
+      { workId, outcome }
+    )
+    await page.getByRole('button', { name: '更新新增', exact: true }).click()
+    await expect
+      .poll(async () => (await invoke('snapshot')).data.collection)
+      .toMatchObject({
+        mode: 'incremental',
+        phase: 'head',
+        status: 'completed',
+        backfillCursor: deep,
+        added: outcome === 'overlap' ? 2 : 0,
+        pages: outcome === 'overlap' ? 3 : 1
+      })
+    expect((await invoke('snapshot')).data.collection.id).not.toBe(previous.id)
+    expect((await invoke('query', { accountId })).data.total).toBe(outcome === 'overlap' ? 3 : 1)
+    expect(
+      await app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[])
+          .filter((url) => url.includes('/aweme/favorite/'))
+          .map((url) => new URL(url).searchParams.get('max_cursor'))
+      )
+    ).toEqual(outcome === 'overlap' ? ['0', '10', '20'] : ['0'])
+    await expect(page.getByRole('button', { name: '继续历史采集', exact: true })).toBeVisible()
+    await screenshot(info.outputPath(`incremental-${outcome}.png`))
+    await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+    await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText(
+      '新增更新已完成；历史采集断点已保留'
+    )
+    if (outcome === 'overlap') {
+      await app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows().find((win) =>
+          win.webContents.getURL().startsWith('mylike://ui/')
+        )!
+        win.setSize(920, 640)
+        win.webContents.setZoomFactor(1.5)
+      })
+      await expect
+        .poll(() => page.locator('.task-center').evaluate((node) => node.scrollWidth - node.clientWidth))
+        .toBeLessThanOrEqual(1)
+      await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
+      await expect(page.getByRole('button', { name: '更新新增', exact: true })).toBeVisible()
+      expect(
+        await page.locator('.main-area').evaluate((node) => node.scrollWidth - node.clientWidth)
+      ).toBeLessThanOrEqual(1)
+      await screenshot(info.outputPath('incremental-small.png'))
+    }
+    await app.close()
+    await launch()
+    await installPlatform(accountId)
+    await app.evaluate(
+      (_electron, { workId, deep }) => {
+        ;(globalThis as any).__mylikeLikedPages = {
+          [deep]: { aweme_list: [{ aweme_id: String(BigInt(workId) + 3n) }], has_more: 0, max_cursor: '0' }
+        }
+      },
+      { workId, deep }
+    )
+    await page.getByRole('button', { name: '继续历史采集', exact: true }).click()
+    await expect
+      .poll(async () => (await invoke('snapshot')).data.collection)
+      .toMatchObject({ phase: 'backfill', status: 'completed', added: 1 })
+    expect(
+      await app.evaluate(() =>
+        ((globalThis as any).__mylikeTestCalls as string[])
+          .filter((url) => url.includes('/aweme/favorite/'))
+          .map((url) => new URL(url).searchParams.get('max_cursor'))
+      )
+    ).toEqual([deep])
+    expect((await invoke('query', { accountId })).data.total).toBe(outcome === 'overlap' ? 4 : 2)
+  })
+}
+
+test('continues an interrupted incremental update without restarting on its newly saved head rows', async () => {
+  const { accountId, ids } = await prepareQueue(1)
+  await app.evaluate(
+    (_electron, { workId, old }) => {
+      ;(globalThis as any).__mylikeLikedPages = {
+        '0': { aweme_list: [{ aweme_id: String(BigInt(workId) + 20n) }], has_more: 1, max_cursor: '10' },
+        '10': { aweme_list: [{ aweme_id: String(BigInt(workId) + 21n) }], has_more: 1, max_cursor: '20' },
+        '20': { aweme_list: [{ aweme_id: old }], has_more: 1, max_cursor: '30' }
+      }
+      ;(globalThis as any).__mylikeHoldLikesAt = '10'
+    },
+    { workId, old: ids[0] }
+  )
+  await page.getByRole('button', { name: '更新新增', exact: true }).click()
+  await expect
+    .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
+    .toBe('function')
+  const task = (await invoke('snapshot')).data.collection
+  expect(task).toMatchObject({ mode: 'incremental', cursor: '10', pages: 1, added: 1 })
+  await invoke('collectionControl', { accountId, taskId: task.id, action: 'pause' })
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeReleaseLikes()
+  })
+  await app.close()
+  await launch()
+  await installPlatform(accountId)
+  await app.evaluate(
+    (_electron, { workId, old }) => {
+      ;(globalThis as any).__mylikeLikedPages = {
+        '10': { aweme_list: [{ aweme_id: String(BigInt(workId) + 21n) }], has_more: 1, max_cursor: '20' },
+        '20': { aweme_list: [{ aweme_id: old }], has_more: 1, max_cursor: '30' }
+      }
+    },
+    { workId, old: ids[0] }
+  )
+  await page.getByRole('button', { name: '继续更新', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({
+      id: task.id,
+      mode: 'incremental',
+      status: 'completed',
+      added: 2,
+      pages: 3,
+      backfillCursor: null
+    })
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[])
+        .filter((url) => url.includes('/aweme/favorite/'))
+        .map((url) => new URL(url).searchParams.get('max_cursor'))
+    )
+  ).toEqual(['10', '20'])
+  expect((await invoke('query', { accountId })).data.total).toBe(3)
+})
+
 test('guides a verified empty account to collection and keeps a breathing task indicator through page waits', async ({}, info) => {
   const accountId = await addAccount()
   await installPlatform(accountId)

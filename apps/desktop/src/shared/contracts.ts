@@ -48,7 +48,7 @@ export const commands = {
   probe: z.object({ accountId: idSchema }),
   releaseEngine: z.object({}),
   collectPage: z.object({ accountId: idSchema, continue: z.boolean() }),
-  collectionStart: z.object({ accountId: idSchema, mode: z.enum(['update', 'full']) }),
+  collectionStart: z.object({ accountId: idSchema, mode: z.enum(['update', 'full', 'incremental']) }),
   favoritesStart: z.object({ accountId: idSchema }),
   favoritesControl: z.object({
     accountId: idSchema,
@@ -218,7 +218,7 @@ export type EngineStatus = 'stopped' | 'starting' | 'ready' | 'visible' | 'faile
 export interface CollectionTask {
   id: string
   accountId: string
-  mode: 'update' | 'full'
+  mode: 'update' | 'full' | 'incremental'
   phase: 'head' | 'backfill'
   status: 'running' | 'paused' | 'stopped' | 'completed'
   cursor: string
