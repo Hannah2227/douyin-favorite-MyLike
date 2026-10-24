@@ -56,7 +56,7 @@ it('preserves legacy custom keys when newly introduced defaults would conflict',
   ).toThrow(/快捷键不能重复/)
   expect(() => readPlaybackPreferences({ shortcuts: { playPause: 'InvalidKey' } })).toThrow()
 })
-it('limits shortcuts to twelve actions, upgrades old defaults and preserves new custom bindings', () => {
+it('adds clean screen to the focused shortcuts, upgrades defaults and preserves custom bindings', () => {
   const value = readPlaybackPreferences({
     shortcuts: {
       previous: 'KeyP',
@@ -70,7 +70,7 @@ it('limits shortcuts to twelve actions, upgrades old defaults and preserves new 
       sidebar: 'KeyB'
     }
   })
-  expect(Object.keys(value.shortcuts)).toHaveLength(12)
+  expect(Object.keys(value.shortcuts)).toHaveLength(13)
   expect(value.shortcuts).toMatchObject({
     previous: 'ArrowUp',
     next: 'ArrowDown',
@@ -78,7 +78,8 @@ it('limits shortcuts to twelve actions, upgrades old defaults and preserves new 
     queue: 'KeyQ',
     original: 'None',
     unlike: 'KeyZ',
-    rateCycle: 'None'
+    rateCycle: 'None',
+    clean: 'KeyH'
   })
   expect(value.shortcuts).not.toHaveProperty('copyLink')
   const customized = {
@@ -86,6 +87,9 @@ it('limits shortcuts to twelve actions, upgrades old defaults and preserves new 
     shortcuts: { ...value.shortcuts, next: 'KeyN' as const, mute: 'KeyM' as const }
   }
   expect(readPlaybackPreferences(customized)).toEqual(customized)
+  expect(
+    readPlaybackPreferences({ shortcutVersion: 2, shortcuts: { playPause: 'KeyH' } }).shortcuts
+  ).toMatchObject({ playPause: 'KeyH', clean: 'None' })
   expect(
     readPlaybackPreferences({ shortcuts: { playPause: 'KeyQ', copyLink: 'KeyN' } }).shortcuts
   ).toMatchObject({ playPause: 'KeyQ', queue: 'None', mute: 'KeyN' })

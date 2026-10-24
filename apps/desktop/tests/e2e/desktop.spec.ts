@@ -341,6 +341,7 @@ async function installMedia(portrait = false) {
     async ({ session }, { bytes, portrait }) => {
       const data = new Uint8Array(bytes)
       await session.fromPartition('persist:mylike-ui').protocol.handle('https', async (request) => {
+        ;((globalThis as any).__mediaRequests ??= []).push(request.url)
         const delay = (globalThis as any).__mediaResponseDelayMs ?? 0
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
         if (request.url.endsWith('/missing.svg')) return new Response('', { status: 404 })
@@ -1222,6 +1223,177 @@ test('promotes a queued next-item read when advancing while a different media re
   expect((await first).error.code).toBe('CANCELLED')
   expect((await pending).data.work.id).toBe(queue.next.id)
   expect((await invoke('snapshot')).data.playback.work.id).toBe(queue.next.id)
+})
+
+test('reuses the decoded next video without a second CDN request and releases detached warmups on exit', async ({}, info) => {
+  test.setTimeout(testTimeout(60000))
+  const { ids } = await prepareQueue(3)
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
+  await app.evaluate(() => {
+    ;(globalThis as any).__mediaResponseDelayMs = 900
+  })
+  await page.evaluate(() => {
+    const create = document.createElement.bind(document)
+    ;(window as any).__createdVideos = []
+    ;(document as any).createElement = (tag: string, ...args: unknown[]) => {
+      const node = (create as any)(tag, ...args)
+      if (tag === 'video') (window as any).__createdVideos.push(node)
+      return node
+    }
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo(0)
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
+  const source = `https://fixture.douyinvod.com/video-${ids[1]}.mp4`
+  await expect
+    .poll(() =>
+      page.evaluate((source) => {
+        const node = (window as any).__createdVideos.find((v: HTMLVideoElement) => v.src === source)
+        if (node?.readyState >= 2) (window as any).__preparedNext = node
+        return (
+          !!node &&
+          !node.isConnected &&
+          node.paused &&
+          node.muted &&
+          node.volume === 0 &&
+          node.readyState >= 2
+        )
+      }, source)
+    )
+    .toBe(true)
+  const count = () =>
+    app.evaluate(
+      (_electron, source) =>
+        ((globalThis as any).__mediaRequests as string[]).filter((url) => url === source).length,
+      source
+    )
+  const before = await count()
+  // Measure an actual visible compositor, not Chromium's hidden-window frame throttle.
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()
+      .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+      .showInactive()
+  })
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  )
+  await page.evaluate(() => {
+    const node = (window as any).__preparedNext as HTMLVideoElement
+    const at = performance.now()
+    const observer = new MutationObserver(() => {
+      if (!node.isConnected) return
+      ;(window as any).__nextFrame = { ready: node.readyState, mountedMs: performance.now() - at }
+      node.requestVideoFrameCallback(() => {
+        ;(window as any).__nextFrame.paintedMs = performance.now() - at
+      })
+      observer.disconnect()
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    document.querySelector<HTMLButtonElement>('[aria-label="下一条"]')!.click()
+  })
+  await readyVideo(1)
+  await expect.poll(() => page.evaluate(() => (window as any).__nextFrame?.paintedMs ?? 0)).toBeGreaterThan(0)
+  const frame = await page.evaluate(() => (window as any).__nextFrame)
+  console.log('Prepared next frame:', JSON.stringify(frame))
+  expect(frame.ready).toBeGreaterThanOrEqual(2)
+  expect(frame.mountedMs).toBeLessThan(process.env.CI ? 750 : 300)
+  expect(frame.paintedMs).toBeLessThan(process.env.CI ? 1000 : 400)
+  expect(await count()).toBe(before)
+  expect(await page.evaluate(() => document.querySelector('video') === (window as any).__preparedNext)).toBe(
+    true
+  )
+  expect(
+    await page
+      .locator('video')
+      .evaluate((v) => ({ muted: (v as HTMLVideoElement).muted, volume: (v as HTMLVideoElement).volume }))
+  ).toEqual({ muted: false, volume: preferences.volume })
+  await screenshot(info.outputPath('prepared-next.png'))
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await expect(page.getByRole('region', { name: '播放器' })).toHaveCount(0)
+  expect(
+    await page.evaluate(() =>
+      (window as any).__createdVideos.every((v: HTMLVideoElement) => v.paused && !v.getAttribute('src'))
+    )
+  ).toBe(true)
+})
+
+test('keeps clean screen across tracks and restores the queue, layout and fullscreen without resizing controls', async ({}, info) => {
+  await prepareQueue(3)
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo(0)
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
+  await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
+  const original = await page.locator('.player-footer').evaluate((node) => {
+    const controls = document.querySelector('.playback-controls')!.getBoundingClientRect()
+    const box = node.getBoundingClientRect()
+    return {
+      height: box.height,
+      clearance: box.bottom - controls.bottom,
+      buttonHeight: document.querySelector('[aria-label="下一条"]')!.getBoundingClientRect().height
+    }
+  })
+  expect(original.clearance).toBeGreaterThanOrEqual(8)
+  expect(original.buttonHeight).toBe(26)
+  await page.getByRole('checkbox', { name: '清屏', exact: true }).check()
+  for (const selector of ['.player-footer', '.player-heading', '.media-caption', '.queue-panel'])
+    await expect(page.locator(selector)).toBeHidden()
+  await expect(page.getByRole('button', { name: '退出清屏', exact: true })).toBeVisible()
+  await page.keyboard.press('ArrowDown')
+  await readyVideo(1)
+  await expect(page.getByRole('button', { name: '退出清屏', exact: true })).toBeVisible()
+  await expect(page.locator('.player-footer')).toBeHidden()
+  await screenshot(info.outputPath('clean-screen.png'))
+  await page.getByRole('button', { name: '退出清屏', exact: true }).click()
+  await expect(page.getByRole('complementary', { name: '播放队列' })).toBeVisible()
+  expect(await page.locator('.player-footer').evaluate((node) => node.getBoundingClientRect().height)).toBe(
+    original.height
+  )
+  await page.keyboard.press('f')
+  await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  await page.keyboard.press('h')
+  await expect(page.locator('.player-footer')).toBeHidden()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.player-footer')).toBeVisible()
+  expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false)
+  await page.keyboard.press('h')
+  await page.keyboard.press('h')
+  await expect(page.locator('.player-footer')).toBeVisible()
+})
+
+test('mixes live original audio with gallery music and controls both through pause, mute and speed', async () => {
+  await prepareQueue(2, true)
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo(0)
+  const sound = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('video,audio')).map((v) => ({
+        volume: (v as HTMLMediaElement).volume,
+        muted: (v as HTMLMediaElement).muted,
+        paused: (v as HTMLMediaElement).paused,
+        rate: (v as HTMLMediaElement).playbackRate
+      }))
+    )
+  await expect.poll(sound).toEqual([
+    { volume: preferences.volume, muted: false, paused: false, rate: 1 },
+    { volume: preferences.volume, muted: false, paused: false, rate: 1 }
+  ])
+  await page.keyboard.press('n')
+  await expect.poll(async () => (await sound()).map((v) => v.volume)).toEqual([0, 0])
+  await page.keyboard.press('n')
+  await page.getByRole('button', { name: '倍速', exact: true }).click()
+  await page.getByRole('menuitemradio', { name: '1.5x', exact: true }).click()
+  await expect.poll(async () => (await sound()).map((v) => v.rate)).toEqual([1.5, 1.5])
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
+  await expect.poll(async () => (await sound()).map((v) => v.paused)).toEqual([true, true])
+  await page.getByRole('button', { name: '开始播放', exact: true }).click()
+  await expect.poll(async () => (await sound()).map((v) => v.paused)).toEqual([false, false])
 })
 
 test('keeps the latest track during rapid moves and opens comments externally while preserving paused playback', async ({}, info) => {
@@ -2589,7 +2761,7 @@ test('persists general and playback settings, restores a visible window, and pro
   expect((await invoke('snapshot')).data.engine.status).toBe('stopped')
 })
 
-test('uses twelve focused player shortcuts and keeps inputs and unlike confirmation protected', async ({}, info) => {
+test('uses focused player shortcuts and keeps inputs and unlike confirmation protected', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   await prepareQueue(3)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
@@ -2639,7 +2811,7 @@ test('uses twelve focused player shortcuts and keeps inputs and unlike confirmat
   await page.keyboard.press('c')
   await expect.poll(() => app.evaluate(() => (globalThis as any).__opened.length)).toBe(1)
   await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
-  for (const key of ['b', 'h', 'y', 't', 'u']) await page.keyboard.press(key)
+  for (const key of ['b', 'y', 't', 'u']) await page.keyboard.press(key)
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect
     .poll(() => page.locator('.sidebar-region').evaluate((node) => node.getBoundingClientRect().width))
@@ -2664,7 +2836,7 @@ test('uses twelve focused player shortcuts and keeps inputs and unlike confirmat
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByLabel('失焦时暂停', { exact: true }).check()
   await page.getByRole('button', { name: '快捷键', exact: true }).click()
-  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(12)
+  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(13)
   await screenshot(info.outputPath('settings-shortcuts.png'))
   await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
   await page.getByRole('button', { name: '继续回看', exact: true }).click()

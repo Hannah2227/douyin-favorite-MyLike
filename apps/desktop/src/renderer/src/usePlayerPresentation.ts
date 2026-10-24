@@ -8,8 +8,12 @@ export function usePlayerPresentation(playback: Playback) {
   latest.current = playback
   const [leaving, setLeaving] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
+  const [clean, setClean] = useState(false)
   const pending = useRef<Promise<void> | null>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    setClean(false)
+  }, [playback.view?.queue.queueId])
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement === frame.current)
     document.addEventListener('fullscreenchange', changed)
@@ -52,6 +56,8 @@ export function usePlayerPresentation(playback: Playback) {
     frame,
     leaving,
     fullscreen,
+    clean,
+    setClean,
     exit,
     rememberFocus: () => {
       returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null

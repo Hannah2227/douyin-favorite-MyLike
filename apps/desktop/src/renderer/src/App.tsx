@@ -445,6 +445,8 @@ export function App() {
             playback={playback}
             fullscreenRoot={presentation.frame}
             fullscreenActive={presentation.fullscreen}
+            clean={presentation.clean}
+            setClean={presentation.setClean}
             exit={back}
             preferences={preferences.value}
             updatePreferences={preferences.update}

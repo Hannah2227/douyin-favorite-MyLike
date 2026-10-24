@@ -6,12 +6,15 @@ export function usePlayerShortcuts(
   shortcuts: PlaybackPreferences['shortcuts'],
   actions: Record<ShortcutAction, () => void>,
   root: RefObject<HTMLElement | null>,
-  back: () => void
+  back: () => void,
+  leaveClean?: () => boolean
 ) {
   const current = useRef(actions)
   const exit = useRef(back)
   current.current = actions
   exit.current = back
+  const leave = useRef(leaveClean)
+  leave.current = leaveClean
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (
@@ -32,6 +35,7 @@ export function usePlayerShortcuts(
         return
       if (event.code === 'Escape') {
         event.preventDefault()
+        if (leave.current?.()) return
         if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
         else exit.current()
         return

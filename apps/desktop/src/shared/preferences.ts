@@ -28,7 +28,8 @@ export const shortcutActions = {
   unlike: { label: '取消当前条目点赞', key: 'KeyZ', group: '作品' },
   rateCycle: { label: '倍速循环（0.75x–2x）', key: 'None', group: '声音与倍速' },
   original: { label: '打开原页看评论', key: 'None', group: '作品' },
-  queue: { label: '播放列表', key: 'KeyQ', group: '界面' }
+  queue: { label: '播放列表', key: 'KeyQ', group: '界面' },
+  clean: { label: '清屏 / 退出清屏', key: 'KeyH', group: '界面' }
 } as const
 export type ShortcutAction = keyof typeof shortcutActions
 const shortcutShape = Object.fromEntries(

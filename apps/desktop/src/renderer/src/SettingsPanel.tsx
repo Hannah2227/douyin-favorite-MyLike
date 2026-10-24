@@ -340,7 +340,7 @@ export function SettingsPanel({
             </div>
             <p className="settings-description">
               仅播放器中生效。PageUp / PageDown 也可切换作品，左右键在图集中翻页。 Esc
-              退出全屏或返回；输入框、菜单和弹窗优先。取消点赞始终需要确认。
+              依次退出清屏、全屏或返回；输入框、菜单和弹窗优先。取消点赞始终需要确认。
             </p>
             {(
               Object.entries(shortcutActions) as [ShortcutAction, (typeof shortcutActions)[ShortcutAction]][]

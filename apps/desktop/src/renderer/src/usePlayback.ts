@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Media, PlaybackPosition, QueueCreate, QueueState } from '../../shared/contracts'
 import { call, CommandError } from './api'
+import { VideoWarmup } from './video-warmup'
 
 const key = (queue: QueueState) => `${queue.accountId}:${queue.queueId}:${queue.revision}`
-type View = { queue: QueueState; media: Media | null; error: string }
+type View = { queue: QueueState; media: Media | null; error: string; prepared?: HTMLVideoElement }
 type Cache = { queueId: string; expires: number; media?: Media; promise?: Promise<Media> }
 export function usePlayback(
   accountId: string | null,
@@ -15,6 +16,8 @@ export function usePlayback(
     intent = useRef(0),
     cache = useRef(new Map<string, Cache>())
   const activeIntent = useRef(0)
+  const warmup = useRef<VideoWarmup | null>(null)
+  if (!warmup.current) warmup.current = new VideoWarmup()
   const wheelAt = useRef(0)
   const position = useRef<{ key: string; value: PlaybackPosition } | null>(null),
     reader = useRef<{ key: string; read: () => PlaybackPosition; suspend: () => void } | null>(null)
@@ -83,6 +86,8 @@ export function usePlayback(
     setView(null)
     reader.current = null
     cache.current.clear()
+    warmup.current?.clear()
+    return () => warmup.current?.clear()
   }, [accountId])
   const getMedia = (queue: QueueState, workId: string): Promise<Media> => {
     const cacheKey = `${queue.accountId}:${workId}`,
@@ -139,8 +144,19 @@ export function usePlayback(
         }
       }
       if (seq !== intent.current || !media) return
-      set({ queue, media, error: '' })
-      if (queue.next && !queue.completed) void getMedia(queue, queue.next.id).catch(() => {})
+      const prepared =
+        media.work.mediaType === 'video' && media.videos[0]
+          ? warmup.current!.take(media.videos[0])
+          : undefined
+      if (media.work.mediaType !== 'video') warmup.current!.clear()
+      set({ queue, media, error: '', prepared })
+      if (queue.next && !queue.completed)
+        void getMedia(queue, queue.next.id)
+          .then((next) => {
+            if (seq === intent.current && next.work.mediaType === 'video' && next.videos[0])
+              warmup.current!.prepare(next.videos[0])
+          })
+          .catch(() => {})
     } catch (error) {
       if (seq === intent.current)
         set({ queue, media: null, error: error instanceof Error ? error.message : '未能取得播放地址。' })
@@ -148,6 +164,7 @@ export function usePlayback(
   }
   const start = async (source: QueueCreate['source'], mode: QueueCreate['mode'], startWorkId?: string) => {
     if (!accountId) return
+    warmup.current!.clear()
     const seq = ++intent.current
     const queue = await call(window.mylike.invoke('queueCreate', { accountId, source, mode, startWorkId }))
     if (seq === intent.current) await load(queue, seq)
@@ -226,12 +243,14 @@ export function usePlayback(
     const value = readPosition() ?? currentView.queue.position,
       queue = { ...currentView.queue, position: value }
     cache.current.delete(`${queue.accountId}:${queue.work.id}`)
+    warmup.current!.clear()
     void load(queue, ++intent.current)
   }
   const exit = async () => {
     const queue = current.current?.queue
     const seq = ++intent.current
     reader.current?.suspend()
+    warmup.current!.clear()
     await flush()
     if (queue)
       try {

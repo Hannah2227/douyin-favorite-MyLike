@@ -23,6 +23,7 @@ import type { PlaybackPosition, PlaybackPreferences } from '../../shared/contrac
 import type { Playback } from './usePlayback'
 import { QueuePanel } from './QueuePanel'
 import { MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
+import { PreparedVideo } from './PreparedVideo'
 import './player.css'
 import { usePlayerShortcuts } from './usePlayerShortcuts'
 import { keyLabel, type ShortcutAction } from '../../shared/preferences'
@@ -40,6 +41,8 @@ type Props = {
   setQueueOpen: (open: boolean) => void
   fullscreenRoot: RefObject<HTMLDivElement | null>
   fullscreenActive: boolean
+  clean: boolean
+  setClean: (clean: boolean) => void
   exit: () => Promise<void>
 }
 const seconds = (value: number) => (Number.isFinite(value) ? Math.max(0, Math.min(86400, value)) : 0)
@@ -58,6 +61,8 @@ export function Player({
   setQueueOpen,
   fullscreenRoot,
   fullscreenActive,
+  clean,
+  setClean,
   exit
 }: Props) {
   const { queue, media, error } = playback.view!,
@@ -179,7 +184,7 @@ export function Player({
   }, [media])
   useEffect(() => {
     if (video.current) {
-      video.current.volume = gallery && !!media?.music ? 0 : preferences.volume
+      video.current.volume = preferences.volume
       video.current.playbackRate = preferences.speed
     }
     if (music.current) {
@@ -189,6 +194,7 @@ export function Player({
   }, [preferences.volume, preferences.speed, source, media])
   useEffect(() => {
     const element = video.current
+    if (element) disposed.current.delete(element)
     return () => {
       if (element) {
         disposed.current.add(element)
@@ -333,6 +339,7 @@ export function Player({
           : seek(preferences.seekStep),
       fullscreen,
       queue: () => setQueueOpen(!queueOpen),
+      clean: () => setClean(!clean),
       continuous: () => updatePreferences({ continuous: !preferences.continuous }),
       rateCycle: cycleSpeed,
       mute: toggleMute,
@@ -345,7 +352,12 @@ export function Player({
       }
     },
     stage,
-    back
+    back,
+    () => {
+      if (!clean) return false
+      setClean(false)
+      return true
+    }
   )
   const wheelAction = useRef<(delta: number) => void>(() => {})
   wheelAction.current = (delta) => {
@@ -387,7 +399,20 @@ export function Player({
   }, [])
   const hasContent = !!source || !!slide
   return (
-    <section ref={stage} className={`player-view${queueOpen ? ' queue-visible' : ''}`} aria-label="播放器">
+    <section
+      ref={stage}
+      className={`player-view${queueOpen && !clean ? ' queue-visible' : ''}${clean ? ' is-clean' : ''}`}
+      aria-label="播放器"
+    >
+      {clean && (
+        <button
+          className="exit-clean quiet"
+          title={hint('clean', '退出清屏')}
+          onClick={() => setClean(false)}
+        >
+          退出清屏
+        </button>
+      )}
       <header className="player-heading">
         <button className="quiet" aria-label="返回内容库" title="返回内容库 (Esc)" onClick={back}>
           <ArrowLeft size={18} />
@@ -430,9 +455,12 @@ export function Player({
             </div>
           )}
           {source && !mediaError && (
-            <video
+            <PreparedVideo
               key={source}
-              ref={video}
+              videoRef={video}
+              element={!gallery && candidate === 0 ? playback.view?.prepared : undefined}
+              volume={preferences.volume}
+              speed={preferences.speed}
               src={source}
               className={liveStill ? 'live-resting' : undefined}
               aria-label="当前视频"
@@ -698,6 +726,17 @@ export function Player({
                 onChange={(event) => updatePreferences({ continuous: event.target.checked })}
               />
               连播
+            </label>
+            <label className="clean-control" title={hint('clean', '清屏 / 退出清屏')}>
+              <input
+                type="checkbox"
+                checked={clean}
+                onChange={(event) => {
+                  setClean(event.target.checked)
+                  event.target.blur()
+                }}
+              />
+              清屏
             </label>
             {(!queue.source || queue.source === 'likes') && (
               <button
