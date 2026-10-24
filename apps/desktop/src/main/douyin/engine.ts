@@ -328,7 +328,7 @@ export class DouyinEngine {
     accountId: string,
     operation: Operation,
     parameters: Record<string, string> = {},
-    options: { recovery?: boolean } = {}
+    options: { recovery?: boolean; loginCheck?: boolean } = {}
   ): Promise<Record<string, any>> {
     const started = Date.now()
     let summary: Pick<RuntimeEventInput, 'responseType' | 'count'> = { responseType: 'no-response' }
@@ -451,15 +451,21 @@ export class DouyinEngine {
       this.requestGeneration = null
       this.operation = null
       this.recoveryRequest = false
-      this.observer?.(accountId, {
-        kind: 'request',
-        message: code ? '接口请求未正常结束' : '接口已返回',
-        operation,
-        ...summary,
-        ...(status === undefined ? {} : { status }),
-        ...(code ? { code } : {}),
-        durationMs: Date.now() - started
-      })
+      if (!(
+        options.recovery &&
+        options.loginCheck &&
+        operation === 'self' &&
+        ['AUTH_REQUIRED', 'API_REJECTED'].includes(code ?? '')
+      ))
+        this.observer?.(accountId, {
+          kind: 'request',
+          message: code ? '接口请求未正常结束' : '接口已返回',
+          operation,
+          ...summary,
+          ...(status === undefined ? {} : { status }),
+          ...(code ? { code } : {}),
+          durationMs: Date.now() - started
+        })
       this.armIdle()
     }
   }

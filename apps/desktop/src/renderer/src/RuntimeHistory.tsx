@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
-import { operationLabels, responseLabels, type RuntimeEvent } from '../../shared/runtime-events'
+import {
+  operationLabels,
+  responseLabels,
+  runtimeEventCategory,
+  type RuntimeEvent
+} from '../../shared/runtime-events'
 import { call } from './api'
 
 export function RuntimeHistory({ accountId, revision }: { accountId: string | null; revision: unknown }) {
@@ -34,18 +39,15 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
       </div>
     )
   const events = current.events
-    .filter(
-      (event) =>
-        filter === 'all' || (filter === 'requests' ? event.kind === 'request' : event.kind !== 'request')
-    )
+    .filter((event) => filter === 'all' || runtimeEventCategory(event) === filter)
     .toReversed()
   return (
     <>
       <div className="runtime-filters segmented" aria-label="运行记录筛选">
         {[
           ['all', '全部'],
-          ['tasks', '任务与登录'],
-          ['requests', '接口返回']
+          ['exception', '异常'],
+          ['end', '确认触底']
         ].map(([value, label]) => (
           <button
             key={value}
@@ -57,7 +59,7 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
           </button>
         ))}
       </div>
-      <p className="task-note">保留最近各 150 条接口与任务记录，仅记录返回类型、耗时和结果。</p>
+      <p className="task-note">仅记录异常与确认触底，重复异常会合并，最多保留 300 条。</p>
       {events.length ? (
         <ul className="history" aria-label="运行记录">
           {events.map((event) => (

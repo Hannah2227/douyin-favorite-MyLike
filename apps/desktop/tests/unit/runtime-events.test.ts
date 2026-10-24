@@ -1,4 +1,5 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -19,6 +20,7 @@ function setup() {
   return { store, root, file }
 }
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const store of stores.splice(0)) {
     try {
       store.call('close', undefined)
@@ -31,6 +33,58 @@ afterEach(() => {
       throw Error('Unsafe test cleanup')
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+it('drops routine reads and controls, hides old noise, and retains only committed ends and exceptions', () => {
+  const { store, file } = setup()
+  const normal = [
+    { kind: 'auth' as const, message: '开始登录检测。' },
+    { kind: 'request' as const, operation: 'self', responseType: 'identity', message: '接口已返回' },
+    { kind: 'request' as const, operation: 'likes', responseType: 'list', message: '接口已返回' },
+    { kind: 'request' as const, operation: 'likes', responseType: 'terminal-list', message: '待确认末页' },
+    { kind: 'task' as const, message: '喜欢采集已开始' },
+    { kind: 'task' as const, message: '喜欢采集本轮正常完成：本页均已收录，本轮新增检查结束。' },
+    { kind: 'auth' as const, code: 'CANCELLED', message: '用户关窗' }
+  ]
+  for (const event of normal) store.call('appendRuntimeEvent', { accountId: 'a', event })
+  store.call('startCollection', { accountId: 'a', id: 'task', mode: 'update' })
+  store.call('updateCollection', { accountId: 'a', taskId: 'task', status: 'paused', reason: '手动暂停' })
+  expect(store.call('runtimeEvents', { accountId: 'a' })).toEqual([])
+  const db = new DatabaseSync(file)
+  expect(db.prepare('SELECT value FROM settings WHERE key=?').get('runtime:a')).toBeUndefined()
+  db.prepare('INSERT INTO settings VALUES(?,?)').run(
+    'runtime:a',
+    JSON.stringify([
+      ...normal.map((event) => ({ ...event, id: randomUUID(), time: Date.now() })),
+      {
+        kind: 'task',
+        message: '喜欢采集本轮正常完成：平台已返回列表末尾。',
+        id: randomUUID(),
+        time: Date.now()
+      }
+    ])
+  )
+  db.close()
+  expect(store.call('runtimeEvents', { accountId: 'a' })).toEqual([
+    expect.objectContaining({ message: expect.stringContaining('平台已返回列表末尾') })
+  ])
+})
+
+it('suppresses identical exceptions for thirty seconds while keeping distinct errors and each confirmed end', () => {
+  const { store } = setup()
+  const event = { kind: 'request' as const, message: '读取超时', code: 'TIMEOUT', operation: 'self' }
+  for (let n = 0; n < 20; n++) store.call('appendRuntimeEvent', { accountId: 'a', event })
+  const first = store.call('runtimeEvents', { accountId: 'a' })
+  expect(first).toHaveLength(1)
+  vi.spyOn(Date, 'now').mockReturnValue(first[0]!.time + 30_001)
+  store.call('appendRuntimeEvent', { accountId: 'a', event })
+  store.call('appendRuntimeEvent', { accountId: 'a', event: { ...event, code: 'NETWORK_ERROR' } })
+  for (let n = 0; n < 2; n++)
+    store.call('appendRuntimeEvent', {
+      accountId: 'a',
+      event: { kind: 'task', code: 'END_CONFIRMED', message: '收藏夹作品已确认触底。' }
+    })
+  expect(store.call('runtimeEvents', { accountId: 'a' })).toHaveLength(5)
 })
 
 it('records task outcomes durably and scopes them to the owning account', () => {
@@ -52,7 +106,7 @@ it('records task outcomes durably and scopes them to the owning account', () => 
   store.call('close', undefined)
   const reopened = new Store(file)
   stores.push(reopened)
-  expect(reopened.call('runtimeEvents', { accountId: 'a' })).toHaveLength(2)
+  expect(reopened.call('runtimeEvents', { accountId: 'a' })).toHaveLength(1)
   reopened.call('updateCollection', { accountId: 'a', taskId: 'task', status: 'running', reason: null })
   reopened.call('bindAccount', { accountId: 'a', remoteId: 'remote-a', nickname: 'A', avatarUrl: null })
   reopened.call('saveCollectionPage', {
@@ -64,7 +118,10 @@ it('records task outcomes durably and scopes them to the owning account', () => 
     items: [],
     hasMore: false
   })
-  expect(reopened.call('runtimeEvents', { accountId: 'a' }).at(-1)?.message).toContain('正常完成')
+  expect(reopened.call('runtimeEvents', { accountId: 'a' }).at(-1)).toMatchObject({
+    code: 'END_CONFIRMED',
+    message: expect.stringContaining('确认触底')
+  })
 })
 
 it('keeps task events when the bounded request history fills and purges all copies on account deletion', () => {
@@ -73,15 +130,20 @@ it('keeps task events when the bounded request history fills and purges all copi
     accountId: 'a',
     event: { kind: 'task', message: '早期中断原因', code: 'EMPTY_PAGE' }
   })
-  store.call('appendRuntimeEvent', { accountId: 'b', event: { kind: 'auth', message: '其他账号' } })
+  store.call('appendRuntimeEvent', {
+    accountId: 'b',
+    event: { kind: 'auth', message: '其他账号异常', code: 'TIMEOUT' }
+  })
   for (let n = 0; n < 170; n++)
     store.call('appendRuntimeEvent', {
       accountId: 'a',
       event: {
         kind: 'request',
-        message: '接口已返回',
+        message: `异常响应 ${n}`,
         operation: 'likes',
-        responseType: 'list',
+        responseType: 'http-error',
+        code: 'RATE_LIMITED',
+        status: 429,
         count: 18,
         durationMs: 10
       }

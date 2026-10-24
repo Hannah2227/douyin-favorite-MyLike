@@ -18,7 +18,7 @@ type Runner = <T>(accountId: string, action: (check: () => void) => Promise<T>) 
 
 // Local DOM checks are cheap; identity requests remain serialized and wait
 // for the preceding reply. Rejected/limited APIs retain their long backoff.
-const cadence = { initial: 300, page: 500, login: 1000, retry: 3000, rejected: 30_000 }
+const cadence = { initial: 300, page: 500, login: 2000, retry: 3000, rejected: 30_000 }
 
 /** A bounded, account-scoped interaction. Probes use the same request lane as
  * business operations; completion never resumes a task or repeats a write. */
@@ -34,7 +34,8 @@ export class Authentication {
     private readonly probe: (
       accountId: string,
       target: AccessTarget | null,
-      check: () => void
+      check: () => void,
+      kind: Session['kind']
     ) => Promise<void>,
     private readonly changed: () => void,
     private readonly report: (accountId: string, event: RuntimeEventInput) => void = () => {}
@@ -205,7 +206,7 @@ export class Authentication {
           valid()
         }
         guard()
-        await this.probe(session.accountId, session.target, guard)
+        await this.probe(session.accountId, session.target, guard, session.kind)
         guard()
         const after = await this.engine.pageState(session.accountId)
         guard()
@@ -224,7 +225,7 @@ export class Authentication {
       const detail = publicError(error)
       if (['RATE_LIMITED', 'API_REJECTED'].includes(detail.code))
         session.retryAfter = Date.now() + cadence.rejected
-      if (!['AUTH_REQUIRED', 'CANCELLED'].includes(detail.code))
+      if (!['AUTH_REQUIRED', 'LOGIN_PENDING', 'CANCELLED'].includes(detail.code))
         this.report(session.accountId, { kind: 'auth', message: detail.message, code: detail.code })
       const needsDecision = ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT', 'WORK_UNAVAILABLE'].includes(
         detail.code
@@ -232,7 +233,7 @@ export class Authentication {
       delay =
         needsDecision || ['RATE_LIMITED', 'API_REJECTED'].includes(detail.code)
           ? cadence.rejected
-          : detail.code === 'AUTH_REQUIRED'
+          : ['AUTH_REQUIRED', 'LOGIN_PENDING'].includes(detail.code)
             ? cadence.login
             : ['BROWSER_NOT_READY', 'PAGE_CHANGED', 'VERIFICATION_REQUIRED', 'CANCELLED'].includes(
                   detail.code

@@ -39,7 +39,7 @@ it('hides login only after the scoped identity probe succeeds', async () => {
   await vi.advanceTimersByTimeAsync(299)
   expect(probe).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1)
-  expect(probe).toHaveBeenCalledWith('a', null, expect.any(Function))
+  expect(probe).toHaveBeenCalledWith('a', null, expect.any(Function), 'login')
   expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
   expect(auth.snapshot()).toBeNull()
   await vi.advanceTimersByTimeAsync(60_000)
@@ -151,18 +151,21 @@ it('leaves mismatched accounts visible and bounds automatic checking to ten minu
   expect(probe).toHaveBeenCalledTimes(count)
 })
 
-it('detects a newly logged-in identity within one second after the previous reply', async () => {
-  const { auth, engine, probe } = fixture()
-  probe.mockRejectedValueOnce(new AppError('AUTH_REQUIRED', 'not logged in'))
-  await auth.open('a', 'login')
-  await vi.advanceTimersByTimeAsync(300)
-  expect(probe).toHaveBeenCalledTimes(1)
-  expect(engine.hide).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(999)
-  expect(probe).toHaveBeenCalledTimes(1)
-  await vi.advanceTimersByTimeAsync(1)
-  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
-})
+it.each(['AUTH_REQUIRED', 'LOGIN_PENDING'])(
+  'polls login every two seconds after %s without the business-API cooldown',
+  async (code) => {
+    const { auth, engine, probe } = fixture()
+    probe.mockRejectedValueOnce(new AppError(code, 'not logged in'))
+    await auth.open('a', 'login')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(engine.hide).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(probe).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
+  }
+)
 
 it('does not overlap slow probes or close before their identity result arrives', async () => {
   const { auth, engine, probe } = fixture()

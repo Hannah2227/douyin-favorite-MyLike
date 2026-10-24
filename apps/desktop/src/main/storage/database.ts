@@ -247,17 +247,46 @@ export class Store {
     if (kind && accountId) {
       try {
         const after = task()
-        if (after && (after.id !== before?.id || after.status !== before?.status)) {
-          const status = {
-            running: before?.id === after.id ? '已继续' : '已开始',
-            paused: '已中断 / 暂停',
-            stopped: '已停止',
-            completed: '本轮正常完成'
-          }[after.status]
+        const end =
+          ['saveCollectionPage', 'favoritesSave'].includes(method) &&
+          (input as { hasMore?: boolean }).hasMore === false
+        if (end) {
+          const stage = (input as { stage?: string }).stage
+          const operation =
+            kind === '喜欢采集'
+              ? 'likes'
+              : stage === 'all'
+                ? 'favorites'
+                : stage === 'folders'
+                  ? 'folders'
+                  : 'folderItems'
+          const label = {
+            likes: '喜欢列表',
+            favorites: '全部收藏作品',
+            folders: '收藏夹列表',
+            folderItems: '收藏夹作品'
+          }[operation]
           this.events.append(accountId, {
             kind: 'task',
-            message: `${kind}${status}${after.reason ? `：${after.reason}` : ''}`.slice(0, 600),
-            ...(after.errorCode ? { code: after.errorCode } : {})
+            code: 'END_CONFIRMED',
+            operation,
+            responseType: 'terminal-list',
+            message: `${label}已确认触底。`,
+            count:
+              (input as { items?: unknown[]; folders?: unknown[] }).items?.length ??
+              (input as { folders?: unknown[] }).folders?.length ??
+              0
+          })
+        } else if (
+          after?.errorCode &&
+          (after.id !== before?.id ||
+            after.status !== before?.status ||
+            after.errorCode !== before?.errorCode)
+        ) {
+          this.events.append(accountId, {
+            kind: 'task',
+            message: `${kind}异常中断${after.reason ? `：${after.reason}` : ''}`.slice(0, 600),
+            code: after.errorCode
           })
         }
       } catch {

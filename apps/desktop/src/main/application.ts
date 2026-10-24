@@ -22,7 +22,7 @@ import { AccountService } from './accounts'
 import { DataMaintenance } from './data-maintenance'
 import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
-import type { RuntimeEventInput } from '../shared/runtime-events'
+import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
 
 export class Application {
   private playerVisible = false
@@ -52,8 +52,8 @@ export class Application {
     this.authentication = new Authentication(
       engine,
       this.run.bind(this),
-      async (accountId, target, check) => {
-        await this.verifyAccess(accountId, target, check)
+      async (accountId, target, check, kind) => {
+        await this.verifyAccess(accountId, target, check, kind === 'login')
       },
       changed,
       this.record.bind(this)
@@ -116,7 +116,7 @@ export class Application {
     this.maintenance = new DataMaintenance(engine)
   }
   private record(accountId: string, event: RuntimeEventInput) {
-    if (this.closing) return
+    if (this.closing || !runtimeEventCategory(event)) return
     void this.database
       .call('appendRuntimeEvent', { accountId, event })
       .then(() => this.changed())
@@ -223,11 +223,24 @@ export class Application {
   private async verifyAccess(
     accountId: string,
     target: AccessTarget | null,
-    check: () => void
+    check: () => void,
+    loginCheck = false
   ): Promise<Account> {
     const account = await this.active(accountId)
     check()
-    const identity = parseIdentity(await this.engine.request(accountId, 'self', {}, { recovery: true }))
+    let identity: ReturnType<typeof parseIdentity>
+    try {
+      identity = parseIdentity(
+        await this.engine.request(accountId, 'self', {}, { recovery: true, loginCheck })
+      )
+    } catch (error) {
+      // Before login, self can reject with HTTP 200 instead of an empty user.
+      // Only this identity check uses the two-second login cadence. Explicit
+      // HTTP rate limits and failures of the blocked business API stay distinct.
+      if (loginCheck && error instanceof AppError && error.code === 'API_REJECTED')
+        throw new AppError('LOGIN_PENDING', '尚未取得已登录身份，请完成窗口中的登录。')
+      throw error
+    }
     check()
     if (account.remoteId && account.remoteId !== identity.remoteId)
       throw new AppError(

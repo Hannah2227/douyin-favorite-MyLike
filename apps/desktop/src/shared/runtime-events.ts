@@ -14,6 +14,22 @@ export const runtimeEventSchema = z.object({
 })
 export type RuntimeEvent = z.infer<typeof runtimeEventSchema>
 export type RuntimeEventInput = Omit<RuntimeEvent, 'id' | 'time'>
+export function runtimeEventCategory(event: RuntimeEventInput): 'exception' | 'end' | null {
+  if (
+    event.code === 'END_CONFIRMED' ||
+    (event.kind === 'task' && event.message.includes('正常完成') && event.message.includes('末尾'))
+  )
+    return 'end'
+  if (['CANCELLED', 'LOGIN_PENDING'].includes(event.code ?? '')) return null
+  if (
+    event.code ||
+    ['empty-body', 'invalid-json', 'html', 'http-error', 'api-error', 'empty-list', 'oversized'].includes(
+      event.responseType ?? ''
+    )
+  )
+    return 'exception'
+  return null
+}
 export const responseLabels: Record<string, string> = {
   'no-response': '未取得响应',
   'empty-body': '空响应',

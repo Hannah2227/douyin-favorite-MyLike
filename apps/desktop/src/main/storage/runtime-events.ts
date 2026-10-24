@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
-import { runtimeEventSchema, type RuntimeEvent, type RuntimeEventInput } from '../../shared/runtime-events'
+import {
+  runtimeEventCategory,
+  runtimeEventSchema,
+  type RuntimeEvent,
+  type RuntimeEventInput
+} from '../../shared/runtime-events'
 import { AppError } from '../errors'
 
 export class RuntimeEventsStore {
@@ -16,14 +21,33 @@ export class RuntimeEventsStore {
         .array(runtimeEventSchema)
         .max(300)
         .parse(JSON.parse(String(row.value)))
+        .filter((event) => runtimeEventCategory(event) !== null)
     } catch {
       throw new AppError('LOG_READ_FAILED', '运行记录读取失败，请重试。')
     }
   }
   append(accountId: string, input: RuntimeEventInput): null {
     const events = this.read(accountId)
-    events.push(runtimeEventSchema.parse({ ...input, id: randomUUID(), time: Date.now() }))
-    // Keep task/auth history even during thousands of successful page reads.
+    const event = runtimeEventSchema.parse({ ...input, id: randomUUID(), time: Date.now() })
+    const category = runtimeEventCategory(event)
+    if (!category) return null
+    // Repeated polling failures should not fill the history with identical rows.
+    if (
+      category === 'exception' &&
+      events.some(
+        (previous) =>
+          event.time - previous.time < 30_000 &&
+          previous.kind === event.kind &&
+          previous.operation === event.operation &&
+          previous.code === event.code &&
+          previous.responseType === event.responseType &&
+          previous.status === event.status &&
+          previous.message === event.message
+      )
+    )
+      return null
+    events.push(event)
+    // Bound request failures separately so they cannot erase task outcomes.
     const requests = events.filter((e) => e.kind === 'request').slice(-150)
     const transitions = events.filter((e) => e.kind !== 'request').slice(-150)
     const retained = [...requests, ...transitions].sort((a, b) => a.time - b.time)

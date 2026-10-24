@@ -148,6 +148,7 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           if ((globalThis as any).__mylikeOtherIdentity)
             body = { status_code: 0, user: { sec_uid: 'MS4wLjAB_fixture_identity_2', nickname: '其他用户' } }
           if ((globalThis as any).__mylikeAuthLost) body = { status_code: 0, user: {} }
+          if ((globalThis as any).__mylikeIdentityRejected) body = { status_code: 8 }
         } else if (url.pathname.includes('/aweme/favorite/')) {
           if (url.searchParams.get('max_cursor') === (globalThis as any).__mylikeHoldLikesAt)
             await new Promise<void>((resolve) => {
@@ -3193,17 +3194,44 @@ test('wakes on changed login credentials, cancels a stale ten-second probe and s
   await expect.poll(async () => (await invoke('snapshot')).data.authentication, { timeout: 4000 }).toBeNull()
   expect((await invoke('snapshot')).data.engine.status).toBe('ready')
   const events = (await invoke('runtimeEvents', { accountId })).data
-  expect(events).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ kind: 'auth', message: expect.stringContaining('登录态变化') }),
-      expect.objectContaining({ kind: 'request', operation: 'self', code: 'CANCELLED' }),
-      expect.objectContaining({ kind: 'auth', message: expect.stringContaining('窗口已自动收起') })
-    ])
-  )
+  expect(events).toEqual([])
   expect(JSON.stringify(events)).not.toMatch(/fixture-session|MS4wLjAB_fixture_identity/)
 })
 
-test('persists completion, interruption and response diagnostics per account with a prominent verify button and MB sizes', async ({}, info) => {
+test('polls login every two seconds after an HTTP 200 identity rejection and closes without a cookie hint or thirty-second cooldown', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeIdentityRejected = true
+  })
+  await invoke('login', { accountId })
+  await expect
+    .poll(
+      () =>
+        app.evaluate(
+          () =>
+            ((globalThis as any).__mylikeTestCalls as string[]).filter((url) =>
+              url.includes('/profile/self/')
+            ).length
+        ),
+      { timeout: 6000 }
+    )
+    .toBeGreaterThanOrEqual(2)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'visible' },
+    accounts: [{ remoteId: null }]
+  })
+  expect((await invoke('runtimeEvents', { accountId })).data).toEqual([])
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeIdentityRejected = false
+  })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication, { timeout: 4000 }).toBeNull()
+  expect((await invoke('snapshot')).data.engine.status).toBe('ready')
+  expect((await invoke('snapshot')).data.accounts[0].remoteId).toBeTruthy()
+  expect((await invoke('runtimeEvents', { accountId })).data).toEqual([])
+})
+
+test('persists only exceptions and confirmed ends per account with a prominent verify button and MB sizes', async ({}, info) => {
   const { accountId } = await prepareQueue(2)
   const collectionBackground = await page
     .locator('.page-header .primary')
@@ -3225,7 +3253,9 @@ test('persists completion, interruption and response diagnostics per account wit
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('paused')
   await page.getByText('诊断与运行记录', { exact: true }).click()
   const history = page.getByRole('list', { name: '运行记录', exact: true })
-  await expect(history).toContainText('正常完成')
+  await expect(history).toContainText('确认触底')
+  await expect(history).not.toContainText('接口已返回')
+  await expect(history).not.toContainText('已开始')
   await expect(history).toContainText('HTTP 429')
   await expect(history).toContainText('RATE_LIMITED')
   await expect(history).toContainText('返回类型')
@@ -3235,7 +3265,7 @@ test('persists completion, interruption and response diagnostics per account wit
   await app.close()
   await launch()
   const events = (await invoke('runtimeEvents', { accountId })).data
-  expect(events.some((event: any) => event.kind === 'task' && event.message.includes('正常完成'))).toBe(true)
+  expect(events.some((event: any) => event.code === 'END_CONFIRMED')).toBe(true)
   expect(events.some((event: any) => event.kind === 'task' && event.code === 'RATE_LIMITED')).toBe(true)
   const other = (await invoke('createAccount', { name: '独立运行记录' })).data
   expect((await invoke('runtimeEvents', { accountId: other.id })).data).toEqual([])
