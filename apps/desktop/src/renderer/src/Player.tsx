@@ -16,6 +16,7 @@ import {
   Minimize,
   RotateCcw,
   HeartOff,
+  Star,
   MessageCircle,
   X
 } from 'lucide-react'
@@ -27,6 +28,8 @@ import { PreparedVideo } from './PreparedVideo'
 import './player.css'
 import { usePlayerShortcuts } from './usePlayerShortcuts'
 import { keyLabel, type ShortcutAction } from '../../shared/preferences'
+import { FavoriteDialog } from './FavoriteDialog'
+import { call } from './api'
 
 type Props = {
   playback: Playback
@@ -37,6 +40,7 @@ type Props = {
   login: () => void
   unlike: () => void
   unlikeBusy: boolean
+  libraryRevision: number
   queueOpen: boolean
   setQueueOpen: (open: boolean) => void
   fullscreenRoot: RefObject<HTMLDivElement | null>
@@ -57,6 +61,7 @@ export function Player({
   login,
   unlike,
   unlikeBusy,
+  libraryRevision,
   queueOpen,
   setQueueOpen,
   fullscreenRoot,
@@ -85,6 +90,19 @@ export function Player({
     [videoDuration, setVideoDuration] = useState(0),
     [musicWarning, setMusicWarning] = useState('')
   const [captionExpanded, setCaptionExpanded] = useState(false)
+  const [favoriteOpen, setFavoriteOpen] = useState(false),
+    [collected, setCollected] = useState(false)
+  useEffect(() => {
+    let current = true
+    void call(window.mylike.invoke('favoriteStatus', { accountId: queue.accountId, workId: work.id }))
+      .then((state) => {
+        if (current) setCollected(state.collected)
+      })
+      .catch(() => {})
+    return () => {
+      current = false
+    }
+  }, [queue.accountId, work.id, libraryRevision])
   const lastVolume = useRef(preferences.volume || 0.7)
   const hint = (id: ShortcutAction, text: string) =>
     preferences.shortcuts[id] === 'None' ? text : `${text} (${keyLabel(preferences.shortcuts[id])})`
@@ -294,6 +312,19 @@ export function Player({
     pause()
     void playback.original(scope).catch((e) => setMusicWarning(e.message))
   }
+  const openFavorite = () => {
+    if (unlikeBusy || favoriteOpen) return
+    if (queue.source === 'favorites') {
+      if (collected) {
+        pause()
+        unlike()
+      }
+      return
+    }
+    if (queue.source && queue.source !== 'likes') return
+    pause()
+    setFavoriteOpen(true)
+  }
   const retryMedia = () => {
     pause()
     playingRef.current = true
@@ -344,6 +375,7 @@ export function Player({
       rateCycle: cycleSpeed,
       mute: toggleMute,
       original: openOriginal,
+      favorite: openFavorite,
       unlike: () => {
         if ((!queue.source || queue.source === 'likes') && !unlikeBusy) {
           pause()
@@ -404,15 +436,6 @@ export function Player({
       className={`player-view${queueOpen && !clean ? ' queue-visible' : ''}${clean ? ' is-clean' : ''}`}
       aria-label="播放器"
     >
-      {clean && (
-        <button
-          className="exit-clean quiet"
-          title={hint('clean', '退出清屏')}
-          onClick={() => setClean(false)}
-        >
-          退出清屏
-        </button>
-      )}
       <header className="player-heading">
         <button className="quiet" aria-label="返回内容库" title="返回内容库 (Esc)" onClick={back}>
           <ArrowLeft size={18} />
@@ -738,6 +761,27 @@ export function Player({
               />
               清屏
             </label>
+            {(!queue.source || queue.source === 'likes' || queue.source === 'favorites') && (
+              <button
+                className={`favorite-control${collected ? ' is-collected' : ''}`}
+                aria-label={queue.source === 'favorites' ? '取消当前收藏' : '收藏当前作品'}
+                aria-pressed={collected}
+                title={hint(
+                  'favorite',
+                  queue.source === 'favorites'
+                    ? collected
+                      ? '取消当前收藏（需确认）'
+                      : '已取消收藏'
+                    : collected
+                      ? '已收藏，添加至收藏夹'
+                      : '收藏 / 选择收藏夹'
+                )}
+                disabled={unlikeBusy || (queue.source === 'favorites' && !collected)}
+                onClick={openFavorite}
+              >
+                <Star size={19} fill="currentColor" />
+              </button>
+            )}
             {(!queue.source || queue.source === 'likes') && (
               <button
                 className="unlike-control"
@@ -800,6 +844,19 @@ export function Player({
           </div>
         </div>
       </footer>
+      {favoriteOpen && (
+        <FavoriteDialog
+          scope={{
+            accountId: queue.accountId,
+            queueId: queue.queueId,
+            revision: queue.revision,
+            workId: work.id
+          }}
+          close={() => setFavoriteOpen(false)}
+          login={login}
+          saved={() => setCollected(true)}
+        />
+      )}
     </section>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { HeartOff, Play, Square } from 'lucide-react'
+import { HeartOff, StarOff, Play, Square } from 'lucide-react'
 import type { UnlikeTask, UnlikeItem } from '../../shared/contracts'
 import { call, type Perform } from './api'
 import { Select } from './Select'
@@ -46,6 +46,8 @@ export function UnlikePanel({
   const history = current?.history ?? []
   const record = history.find((task) => task.id === selected) ?? active ?? history[0]
   const task = active?.id === record?.id ? active : record
+  const favorite = task?.source === 'favorites'
+  const label = favorite ? '收藏' : '点赞'
   const items = current?.taskId === task?.id && current?.offset === offset ? current.items : []
   useEffect(() => {
     setSelected('')
@@ -89,16 +91,14 @@ export function UnlikePanel({
   }, [task?.id, task?.unknown])
   const control = (action: 'resume' | 'stop') =>
     task &&
-    void perform('更新取消点赞任务', () =>
+    void perform(`更新取消${label}任务`, () =>
       call(window.mylike.invoke('unlikeControl', { accountId: task.accountId, taskId: task.id, action }))
     )
   return (
-    <section className="simple-task unlike-task" aria-label="取消点赞任务">
+    <section className="simple-task unlike-task" aria-label={`取消${label}任务`}>
       <div className="simple-task-heading">
-        <span className="simple-task-icon">
-          <HeartOff size={19} />
-        </span>
-        <h2>取消点赞</h2>
+        <span className="simple-task-icon">{favorite ? <StarOff size={19} /> : <HeartOff size={19} />}</span>
+        <h2>取消{label}</h2>
         <span
           className={`task-badge ${task?.unknown || task?.failed || task?.errorCode ? 'attention' : (task?.status ?? '')}`}
         >
@@ -139,7 +139,7 @@ export function UnlikePanel({
             {task.status === 'running' ? (
               <button disabled={busy} onClick={() => control('stop')}>
                 <Square size={14} />
-                停止后续取消点赞
+                停止后续取消{label}
               </button>
             ) : (
               task.pending > 0 && (
@@ -173,7 +173,7 @@ export function UnlikePanel({
           <div className="unlike-records-content" aria-busy={loading}>
             {history.length > 1 && (
               <Select
-                label="取消点赞历史任务"
+                label={`取消${label}历史任务`}
                 value={task?.id ?? ''}
                 onChange={(value) => {
                   setSelected(value)
@@ -181,12 +181,12 @@ export function UnlikePanel({
                 }}
                 options={history.map((task) => ({
                   value: task.id,
-                  label: `${new Date(task.createdAt).toLocaleString('zh-CN')} · ${task.total} 条 · ${states[task.status]}`
+                  label: `${new Date(task.createdAt).toLocaleString('zh-CN')} · 取消${task.source === 'favorites' ? '收藏' : '点赞'} · ${task.total} 条 · ${states[task.status]}`
                 }))}
               />
             )}
             {task?.unknown ? (
-              <p className="task-note">结果未知项不会自动重发；重新核验只读取当前点赞状态。</p>
+              <p className="task-note">结果未知项不会自动重发；重新核验只读取当前{label}状态。</p>
             ) : null}
             <ol className="write-results" start={offset + 1}>
               {items.map((item) => (
@@ -194,7 +194,7 @@ export function UnlikePanel({
                   <div>
                     <strong>{item.title || item.workId}</strong>
                     <small>
-                      {itemStates[item.status]}
+                      {favorite && item.status === 'success' ? '已确认未收藏' : itemStates[item.status]}
                       {item.reason ? ` · ${item.reason}` : ''}
                     </small>
                   </div>
@@ -202,7 +202,7 @@ export function UnlikePanel({
                     <button
                       disabled={busy || loading || active?.status === 'running'}
                       onClick={() =>
-                        void perform('读取当前点赞状态', () =>
+                        void perform(`读取当前${label}状态`, () =>
                           call(
                             window.mylike.invoke('unlikeVerify', {
                               accountId: task.accountId,

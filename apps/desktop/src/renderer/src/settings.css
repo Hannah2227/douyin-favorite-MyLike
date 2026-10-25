@@ -234,10 +234,6 @@
 .settings-no-results p {
   font-size: 12px;
 }
-.check-success {
-  color: #62b39a;
-  font-size: 12px;
-}
 :root[data-motion='reduce'] *,
 :root[data-motion='reduce'] *::before,
 :root[data-motion='reduce'] *::after {

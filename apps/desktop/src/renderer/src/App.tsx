@@ -37,6 +37,7 @@ export function App() {
   const [unlikeTarget, setUnlikeTarget] = useState<{
     accountId: string
     ids: string[]
+    source: 'likes' | 'favorites'
     mode: 'single' | 'batch'
   } | null>(null)
   const snapshotSequence = useRef(0)
@@ -187,7 +188,12 @@ export function App() {
     void perform('准备播放队列', () =>
       playback.start(
         !work && library.selection.ids.size
-          ? { type: 'ids', ids: [...library.selection.ids], sort: library.sort }
+          ? {
+              type: 'ids',
+              ids: [...library.selection.ids],
+              sort: library.sort,
+              source: tab === 'favorites' ? 'favorites' : 'likes'
+            }
           : { type: 'filter', filter: library.filter },
         mode,
         work?.id
@@ -393,7 +399,13 @@ export function App() {
             exportFile={() => exportFile()}
             unlike={() => {
               setError('')
-              if (accountId) setUnlikeTarget({ accountId, ids: [...library.selection.ids], mode: 'batch' })
+              if (accountId)
+                setUnlikeTarget({
+                  accountId,
+                  ids: [...library.selection.ids],
+                  mode: 'batch',
+                  source: tab === 'favorites' ? 'favorites' : 'likes'
+                })
             }}
             remove={() => {
               setError('')
@@ -454,12 +466,14 @@ export function App() {
             clearError={() => setError('')}
             login={login}
             unlikeBusy={!!operation || unliking}
+            libraryRevision={snapshot?.libraryRevision ?? 0}
             unlike={() => {
               setError('')
               if (playback.view)
                 setUnlikeTarget({
                   accountId: playback.view.queue.accountId,
                   ids: [playback.view.queue.work.id],
+                  source: playback.view.queue.source === 'favorites' ? 'favorites' : 'likes',
                   mode: 'single'
                 })
             }}
@@ -480,29 +494,34 @@ export function App() {
       )}
       {unlikeTarget && (
         <ConfirmDialog
-          title="取消抖音点赞"
+          title={unlikeTarget.source === 'favorites' ? '取消抖音收藏' : '取消抖音点赞'}
           busy={!!operation}
           cancel={() => setUnlikeTarget(null)}
-          confirmLabel="确认取消抖音点赞"
+          confirmLabel={unlikeTarget.source === 'favorites' ? '确认取消抖音收藏' : '确认取消抖音点赞'}
           confirm={() =>
-            void perform('启动取消点赞任务', async () => {
-              await call(
-                window.mylike.invoke('unlikeStart', {
-                  accountId: unlikeTarget.accountId,
-                  workIds: unlikeTarget.ids,
-                  mode: unlikeTarget.mode
-                })
-              )
-              library.selection.clear()
-              setUnlikeTarget(null)
-              if (!playback.view) setTab('tasks')
-            })
+            void perform(
+              unlikeTarget.source === 'favorites' ? '启动取消收藏任务' : '启动取消点赞任务',
+              async () => {
+                await call(
+                  window.mylike.invoke('unlikeStart', {
+                    accountId: unlikeTarget.accountId,
+                    workIds: unlikeTarget.ids,
+                    source: unlikeTarget.source,
+                    mode: unlikeTarget.mode
+                  })
+                )
+                library.selection.clear()
+                setUnlikeTarget(null)
+                if (!playback.view) setTab('tasks')
+              }
+            )
           }
         >
           <p>
             将以“{account?.name}”（抖音昵称：{account?.nickname || '尚未核验'}）取消 {unlikeTarget.ids.length}{' '}
-            条作品的抖音点赞。
+            条作品的抖音{unlikeTarget.source === 'favorites' ? '收藏' : '点赞'}。
           </p>
+          {unlikeTarget.source === 'favorites' && <p>取消后会从默认收藏及所有收藏夹中移除，喜欢列表保留。</p>}
           <p>
             这会修改抖音账号。每条成功后移除对应本地条目；未知结果保留条目。采集将先暂停，一次最多 1000
             条，任务详情可停止后续未发送项。

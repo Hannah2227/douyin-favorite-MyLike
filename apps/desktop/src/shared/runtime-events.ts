@@ -52,5 +52,9 @@ export const operationLabels: Record<string, string> = {
   folders: '收藏夹列表',
   folderItems: '收藏夹作品',
   detail: '作品详情',
-  unlike: '取消点赞'
+  unlike: '取消点赞',
+  favoriteRemove: '取消收藏',
+  favoriteAdd: '收藏作品',
+  favoriteFolderAdd: '加入收藏夹',
+  favoriteFolderCreate: '新建收藏夹'
 }

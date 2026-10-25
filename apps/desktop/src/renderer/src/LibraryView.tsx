@@ -142,22 +142,22 @@ export function LibraryView({
               ? '读取失败'
               : `${page.total} 条内容`}
         </span>
-        {!readOnly && (
-          <div className="list-actions">
+        <div className="list-actions">
+          {!readOnly && (
             <button disabled={!page.total || querying || busy} onClick={exportFile}>
               {selection.ids.size ? '导出所选' : '导出当前范围'}
             </button>
-            <button
-              disabled={!page.total || busy}
-              onClick={selection.enabled ? selection.clear : selection.enable}
-            >
-              <CheckSquare size={15} />
-              {selection.enabled ? '退出选择' : '批量选择'}
-            </button>
-          </div>
-        )}
+          )}
+          <button
+            disabled={!page.total || busy}
+            onClick={selection.enabled ? selection.clear : selection.enable}
+          >
+            <CheckSquare size={15} />
+            {selection.enabled ? '退出选择' : '批量选择'}
+          </button>
+        </div>
       </div>
-      {!readOnly && selection.enabled && (
+      {selection.enabled && (
         <div className="batch-bar" aria-label="批量操作">
           <strong aria-live="polite">已选 {selection.ids.size} 条</strong>
           <button disabled={busy || querying} onClick={selectAll}>
@@ -166,19 +166,21 @@ export function LibraryView({
           <button disabled={!selection.ids.size || busy} onClick={selection.clear}>
             清空选择
           </button>
-          <button disabled={!selection.ids.size || mutationBusy} onClick={remove}>
-            <Trash2 size={14} />
-            删除本地条目
-          </button>
+          {!readOnly && (
+            <button disabled={!selection.ids.size || mutationBusy} onClick={remove}>
+              <Trash2 size={14} />
+              删除本地条目
+            </button>
+          )}
           {pendingChanges && <span>内容有更新，清空选择后刷新。</span>}
           <button
             className="danger-button"
             disabled={!selection.ids.size || selection.ids.size > 1000 || mutationBusy}
             onClick={unlike}
           >
-            取消抖音点赞
+            {readOnly ? '取消抖音收藏' : '取消抖音点赞'}
           </button>
-          {selection.ids.size > 1000 && <span>取消点赞一次最多 1000 条，请缩小选择范围。</span>}
+          {selection.ids.size > 1000 && <span>一次最多 1000 条，请缩小选择范围。</span>}
         </div>
       )}
       <div className="library-scroll" ref={scroll}>

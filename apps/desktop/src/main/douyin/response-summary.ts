@@ -4,7 +4,8 @@ import type { RuntimeEventInput } from '../../shared/runtime-events'
  * is retained, including when the response cannot be parsed. */
 export function responseSummary(
   body: string,
-  status: number
+  status: number,
+  operation?: string
 ): Pick<RuntimeEventInput, 'responseType' | 'count'> {
   if (body.length > 16 * 1024 * 1024) return { responseType: 'oversized' }
   if (status < 200 || status >= 300) return { responseType: 'http-error' }
@@ -15,6 +16,13 @@ export function responseSummary(
     if (!data || typeof data !== 'object' || !Object.keys(data).length) return { responseType: 'empty-body' }
     if (data.status_code != null && String(data.status_code) !== '0') return { responseType: 'api-error' }
     const items = data.aweme_list ?? data.collects_list
+    if (
+      items == null &&
+      ['favorites', 'folders', 'folderItems'].includes(operation ?? '') &&
+      String(data.status_code) === '0' &&
+      [0, false, '0'].includes(data.has_more)
+    )
+      return { responseType: 'terminal-list', count: 0 }
     if (Array.isArray(items))
       return {
         responseType: [0, false, '0'].includes(data.has_more)

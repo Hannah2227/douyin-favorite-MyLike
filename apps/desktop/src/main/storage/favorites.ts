@@ -48,6 +48,62 @@ export class FavoritesStore {
       )
       .all(accountId) as unknown as FavoriteFolder[]
   }
+  status(accountId: string, workId: string): { collected: boolean } {
+    return {
+      collected: !!this.db
+        .prepare('SELECT 1 FROM saved_items WHERE accountId=? AND workId=?')
+        .get(accountId, workId)
+    }
+  }
+  private verifyIdentity(accountId: string, remoteId: string): void {
+    if (this.db.prepare('SELECT remoteId FROM accounts WHERE id=?').get(accountId)?.remoteId !== remoteId)
+      throw new AppError('IDENTITY_MISMATCH', '账号身份已变化，收藏结果未写入其他账号。')
+  }
+  private remember(accountId: string, folder: FavoriteFolder): void {
+    // A paused sync may finish later. Preserve this explicitly confirmed change
+    // when that older scan prunes entries it did not encounter.
+    const run = this.task(accountId)?.id ?? 'manual'
+    this.db
+      .prepare(
+        `INSERT INTO saved_folders VALUES(?,?,?,?,?)
+      ON CONFLICT(accountId,id) DO UPDATE SET title=excluded.title,remoteCount=max(saved_folders.remoteCount,excluded.remoteCount),seenRun=excluded.seenRun`
+      )
+      .run(accountId, folder.id, folder.title, folder.remoteCount, run)
+  }
+  rememberFolder(accountId: string, remoteId: string, folder: FavoriteFolder): FavoriteFolder {
+    return this.transaction(() => {
+      this.verifyIdentity(accountId, remoteId)
+      this.remember(accountId, folder)
+      return {
+        ...folder,
+        localCount: this.folders(accountId).find((entry) => entry.id === folder.id)!.localCount
+      }
+    })
+  }
+  confirm(input: { accountId: string; remoteId: string; work: Work; folder?: FavoriteFolder }): null {
+    return this.transaction(() => {
+      this.verifyIdentity(input.accountId, input.remoteId)
+      const work = input.work
+      this.db
+        .prepare(
+          `INSERT INTO works VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        title=excluded.title,author=excluded.author,publishedAt=excluded.publishedAt,coverUrl=excluded.coverUrl,mediaType=excluded.mediaType,isLive=excluded.isLive`
+        )
+        .run(work.id, work.title, work.author, work.publishedAt, work.coverUrl, work.mediaType, +work.isLive)
+      this.db
+        .prepare('INSERT OR IGNORE INTO saved_items VALUES(?,?,?)')
+        .run(input.accountId, work.id, Date.now())
+      if (input.folder) {
+        this.remember(input.accountId, input.folder)
+        this.db
+          .prepare(
+            `INSERT INTO saved_members VALUES(?,?,?,?) ON CONFLICT(accountId,folderId,workId) DO UPDATE SET seenRun=excluded.seenRun`
+          )
+          .run(input.accountId, input.folder.id, work.id, this.task(input.accountId)?.id ?? 'manual')
+      }
+      return null
+    })
+  }
   start(accountId: string, id: string): FavoritesTask {
     const previous = this.task(accountId)
     if (previous && previous.status !== 'completed')

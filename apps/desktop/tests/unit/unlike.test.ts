@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -266,4 +266,201 @@ it('keeps unknown results when readonly verification lacks a definite flag, then
   await value.verify('a', 'task', '1')
   expect(store.call('unlikeTask', scope)).toMatchObject({ success: 1, unknown: 0 })
   expect(store.call('query', query).total).toBe(1)
+})
+
+function collectFavorites(store: Store) {
+  for (const accountId of ['a', 'b']) {
+    for (const id of ['1', '2']) {
+      for (const folderId of ['10', '20'])
+        store.call('favoriteConfirm', {
+          accountId,
+          remoteId: `remote-${accountId}`,
+          work: work(id),
+          folder: { id: folderId, title: folderId, remoteCount: 2, localCount: 0 }
+        })
+    }
+  }
+}
+const favoriteDetail = (id: string, collected = true) => ({
+  status_code: 0,
+  aweme_detail: {
+    aweme_id: id,
+    collect_stat: collected ? 1 : 0,
+    aweme_type: 68,
+    desc: 'fixture',
+    create_time: 1700000000,
+    author: { nickname: 'A' }
+  }
+})
+it('atomically removes a confirmed collection from all folders, preserving likes, queues and other accounts', () => {
+  const { store, file } = setup()
+  collectFavorites(store)
+  const queue = store.call('queueCreate', {
+    accountId: 'a',
+    source: { type: 'ids', source: 'favorites', ids: ['1'], sort: 'published' },
+    mode: 'sequence'
+  })
+  expect(queue.source).toBe('favorites')
+  store.call('unlikeCreate', { ...scope, id: 'task', mode: 'single', source: 'favorites', workIds: ['1'] })
+  reserve(store)
+  const raw = new DatabaseSync(file)
+  raw.exec(
+    "CREATE TRIGGER fail_remove BEFORE DELETE ON saved_items BEGIN SELECT RAISE(ABORT,'fixture disk failure'); END;"
+  )
+  expect(() => finish(store, 'success')).toThrow(/fixture disk failure/)
+  expect(store.call('unlikeTask', scope)?.inflight).toBe(1)
+  expect(store.call('favoriteFolders', { accountId: 'a' }).map((folder) => folder.localCount)).toEqual([2, 2])
+  raw.exec('DROP TRIGGER fail_remove')
+  raw.close()
+  expect(finish(store, 'success')).toMatchObject({ source: 'favorites', success: 1 })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(1)
+  expect(
+    store.call('favoriteFolders', { accountId: 'a' }).map((folder) => [folder.localCount, folder.remoteCount])
+  ).toEqual([
+    [1, 1],
+    [1, 1]
+  ])
+  expect(store.call('query', query).total).toBe(2)
+  expect(store.call('query', { ...query, accountId: 'b', source: 'favorites' }).total).toBe(2)
+  expect(store.call('queueState', { accountId: 'a' })).toMatchObject({
+    queueId: queue.queueId,
+    work: { id: '1' }
+  })
+})
+it('reads collection state and type before cancelling, syncing already-uncollected items without a POST', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  const operations: string[] = []
+  const value = service(store, async (_account, operation, parameters) => {
+    operations.push(`${operation}:${parameters.aweme_id}`)
+    if (operation === 'detail') return favoriteDetail(parameters.aweme_id, parameters.aweme_id === '1')
+    expect(parameters.aweme_type).toBe('68')
+    return { status_code: 0 }
+  })
+  await value.start('a', ['1', '2'], 'batch', 'favorites')
+  await settled(value)
+  expect(operations).toEqual(['detail:1', 'favoriteRemove:1', 'detail:2'])
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    source: 'favorites',
+    success: 2,
+    unknown: 0,
+    status: 'completed'
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(0)
+  expect(store.call('query', query).total).toBe(2)
+})
+it('keeps an uncertain uncollect, prevents conflicting collect writes, and only resumes unsent items', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  const writes: string[] = []
+  const value = service(store, async (_account, operation, parameters) => {
+    if (operation === 'detail') return favoriteDetail(parameters.aweme_id)
+    writes.push(parameters.aweme_id)
+    if (parameters.aweme_id === '1') throw new AppError('TIMEOUT', 'fixture')
+    return { status_code: 0 }
+  })
+  const task = await value.start('a', ['1', '2'], 'batch', 'favorites')
+  await settled(value)
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    unknown: 1,
+    pending: 1,
+    status: 'paused'
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(2)
+  expect(() => store.call('favoriteWriteGuard', { accountId: 'a', workId: '1' })).toThrow(/重新核验/)
+  expect(() =>
+    store.call('unlikeCreate', {
+      accountId: 'a',
+      id: 'conflict',
+      mode: 'single',
+      source: 'favorites',
+      workIds: ['1']
+    })
+  ).toThrow(/结果未知/)
+  await value.resume('a', task.id)
+  await settled(value)
+  expect(writes).toEqual(['1', '2'])
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({ success: 1, unknown: 1, pending: 0 })
+  // The independent like operation must not inherit the collection's unknown result.
+  expect(
+    store.call('unlikeCreate', { accountId: 'a', id: 'independent-like', mode: 'single', workIds: ['1'] })
+      .source
+  ).toBe('likes')
+})
+it('waits for a sent uncollect when stopped and preserves its success without sending the next item', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  let writes = 0,
+    release!: () => void
+  const value = service(store, async (_account, operation, parameters) => {
+    if (operation === 'detail') return favoriteDetail(parameters.aweme_id)
+    writes++
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return { status_code: 0 }
+  })
+  await value.start('a', ['1', '2'], 'batch', 'favorites')
+  for (let i = 0; i < 100 && !writes; i++) await new Promise((r) => setTimeout(r, 1))
+  const stop = value.stop()
+  expect(value.running).toBe(true)
+  release()
+  await stop
+  expect(writes).toBe(1)
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    success: 1,
+    unknown: 0,
+    pending: 1,
+    status: 'stopped'
+  })
+})
+it('retains collection source across restart and resolves unknown removal using only detail reads', async () => {
+  const { store, file } = setup()
+  collectFavorites(store)
+  store.call('unlikeCreate', {
+    ...scope,
+    id: 'task',
+    mode: 'batch',
+    source: 'favorites',
+    workIds: ['1', '2']
+  })
+  reserve(store)
+  store.call('close', undefined)
+  const reopened = new Store(file)
+  stores.push(reopened)
+  expect(reopened.call('unlikeTask', scope)).toMatchObject({
+    source: 'favorites',
+    status: 'paused',
+    unknown: 1,
+    pending: 1
+  })
+  const value = service(reopened, async (_account, operation, parameters) => {
+    expect(operation).toBe('detail')
+    return favoriteDetail(parameters.aweme_id, false)
+  })
+  await value.verify('a', 'task', '1')
+  expect(reopened.call('unlikeTask', scope)).toMatchObject({ success: 1, unknown: 0 })
+  expect(reopened.call('query', { ...query, source: 'favorites' }).total).toBe(1)
+  expect(reopened.call('query', query).total).toBe(2)
+  expect(reopened.call('favoriteWriteGuard', { accountId: 'a', workId: '1' })).toBeNull()
+})
+it('migrates a v6 library preserving prior unlike history, with a consistent v6 backup', () => {
+  const { store, file, folder } = setup()
+  collectFavorites(store)
+  create(store)
+  store.call('close', undefined)
+  const old = new DatabaseSync(file)
+  old.exec('ALTER TABLE unlike_tasks DROP COLUMN source; PRAGMA user_version=6;')
+  old.close()
+  const reopened = new Store(file)
+  stores.push(reopened)
+  expect(reopened.call('unlikeTask', scope)).toMatchObject({ source: 'likes', pending: 2, status: 'paused' })
+  expect(reopened.call('query', { ...query, source: 'favorites' }).total).toBe(2)
+  const backups = readdirSync(join(folder, 'backups'))
+  expect(backups).toHaveLength(1)
+  expect(backups[0]).toMatch(/^before-v7-/)
+  const backup = new DatabaseSync(join(folder, 'backups', backups[0]!))
+  expect(backup.prepare('PRAGMA user_version').get()?.user_version).toBe(6)
+  expect(backup.prepare('PRAGMA quick_check').get()?.quick_check).toBe('ok')
+  backup.close()
 })

@@ -98,7 +98,35 @@ export function parseLikeState(data: Obj, workId: string): boolean {
   throw new AppError('LIKE_STATE_UNKNOWN', '平台未返回明确的当前点赞状态，请在作品原页核对。')
 }
 export function parseUnlikeResult(data: Obj): void {
+  parseWriteResult(data)
+}
+export function parseWriteResult(data: Obj): void {
   if (String(data.status_code) !== '0') throw new AppError('WRITE_UNCONFIRMED', '平台未返回明确的成功确认。')
+}
+export function parseFavoriteState(
+  data: Obj,
+  workId: string
+): { collected: boolean; work: Work; type: string } {
+  const detail = object(data.aweme_detail)
+  if (numericId(detail.aweme_id) !== workId)
+    throw new AppError('INVALID_RESPONSE', '收藏状态与目标作品不一致。')
+  if (![0, 1, '0', '1'].includes(detail.collect_stat))
+    throw new AppError('FAVORITE_STATE_UNKNOWN', '平台未返回明确的收藏状态，请重新读取或在原页核对。')
+  return {
+    collected: String(detail.collect_stat) === '1',
+    work: parseWork(detail),
+    type: detail.aweme_type == null ? '0' : numericId(detail.aweme_type)
+  }
+}
+export function parseFavoriteFolder(value: unknown): Omit<FavoriteFolder, 'localCount'> {
+  const entry = object(value)
+  return {
+    id: numericId(entry.collects_id_str ?? entry.collects_id),
+    title: text(entry.collects_name ?? entry.name).slice(0, 500) || '未命名收藏夹',
+    remoteCount: Math.max(0, Number(entry.aweme_count ?? entry.total_number ?? entry.total ?? 0) || 0),
+    ...(entry.status == null ? {} : { private: String(entry.status) === '0' }),
+    ...(entry.collects_cover == null ? {} : { coverUrl: first(entry.collects_cover?.url_list) })
+  }
 }
 export function parseWork(value: unknown): Work {
   const data = object(value),
@@ -145,24 +173,33 @@ export function parseIdentity(data: Obj): { remoteId: string; nickname: string; 
   }
 }
 export function parseFavoritesPage(data: Obj): { items: Work[]; cursor: string; hasMore: boolean } {
-  return parseLikedPage({ ...data, max_cursor: data.cursor ?? data.max_cursor })
+  return parseLikedPage({
+    ...data,
+    aweme_list: collectionList(data, 'aweme_list', '收藏作品'),
+    max_cursor: data.cursor ?? data.max_cursor
+  })
+}
+function collectionList(data: Obj, field: string, label: string): unknown[] {
+  if (Array.isArray(data[field])) return data[field]
+  // Empty collection endpoints can omit their array or return null. This is
+  // only a candidate end when both business success and has_more=0 are explicit;
+  // the collector still confirms it twice and the store protects nonempty folders.
+  if (data[field] == null && String(data.status_code) === '0' && [0, false, '0'].includes(data.has_more))
+    return []
+  throw new AppError('INVALID_RESPONSE', `${label}列表缺少有效的作品或收藏夹数组，进度未推进。`)
 }
 export function parseFavoriteFolders(data: Obj): {
   folders: Omit<FavoriteFolder, 'localCount'>[]
   cursor: string
   hasMore: boolean
 } {
-  if (!Array.isArray(data.collects_list) || ![0, 1, false, true, '0', '1'].includes(data.has_more))
+  if (![0, 1, false, true, '0', '1'].includes(data.has_more))
     throw new AppError('INVALID_RESPONSE', '收藏夹接口缺少可信的列表或结束标记。')
+  const list = collectionList(data, 'collects_list', '收藏夹')
   const hasMore = [1, true, '1'].includes(data.has_more)
-  if (hasMore && !data.collects_list.length)
-    throw new AppError('EMPTY_PAGE', '收藏夹返回空列表但仍标记更多，断点未推进。')
+  if (hasMore && !list.length) throw new AppError('EMPTY_PAGE', '收藏夹返回空列表但仍标记更多，断点未推进。')
   return {
-    folders: data.collects_list.map((entry: Obj) => ({
-      id: numericId(entry.collects_id),
-      title: text(entry.collects_name ?? entry.name).slice(0, 500) || '未命名收藏夹',
-      remoteCount: Math.max(0, Number(entry.aweme_count ?? entry.total_number ?? entry.total ?? 0) || 0)
-    })),
+    folders: list.map(parseFavoriteFolder),
     cursor: pageCursor(data.cursor ?? data.max_cursor, hasMore),
     hasMore
   }

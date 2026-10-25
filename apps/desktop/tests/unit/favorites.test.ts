@@ -220,7 +220,7 @@ it('upgrades a v5 library and playback queue without losing data, keeping a cons
   const old = new DatabaseSync(file)
   try {
     old.exec(
-      'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;PRAGMA user_version=5;'
+      'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;ALTER TABLE unlike_tasks DROP COLUMN source;PRAGMA user_version=5;'
     )
   } finally {
     old.close()
@@ -303,7 +303,7 @@ it('removes an account from current data and all backup versions without losing 
   const old = new DatabaseSync(join(root, 'backups', legacy.fileName))
   try {
     old.exec(
-      'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;PRAGMA user_version=5;'
+      'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;ALTER TABLE unlike_tasks DROP COLUMN source;PRAGMA user_version=5;'
     )
   } finally {
     old.close()

@@ -1,4 +1,11 @@
-export type Operation = 'self' | 'likes' | 'detail' | 'unlike' | 'favorites' | 'folders' | 'folderItems'
+export type WriteOperation =
+  'unlike' | 'favoriteRemove' | 'favoriteAdd' | 'favoriteFolderAdd' | 'favoriteFolderCreate'
+export type Operation = 'self' | 'likes' | 'detail' | 'favorites' | 'folders' | 'folderItems' | WriteOperation
+export function isWriteOperation(operation: Operation): operation is WriteOperation {
+  return ['unlike', 'favoriteRemove', 'favoriteAdd', 'favoriteFolderAdd', 'favoriteFolderCreate'].includes(
+    operation
+  )
+}
 export interface PageRequest {
   id: string
   operation: Operation
@@ -16,7 +23,11 @@ async function requestInPage(request: PageRequest) {
     unlike: '/aweme/v1/web/commit/item/digg/',
     favorites: '/aweme/v1/web/aweme/listcollection/',
     folders: '/aweme/v1/web/collects/list/',
-    folderItems: '/aweme/v1/web/collects/video/list/'
+    folderItems: '/aweme/v1/web/collects/video/list/',
+    favoriteAdd: '/aweme/v1/web/aweme/collect/',
+    favoriteRemove: '/aweme/v1/web/aweme/collect/',
+    favoriteFolderAdd: '/aweme/v1/web/collects/video/move/',
+    favoriteFolderCreate: '/aweme/v1/web/collects/maintain/'
   }
   const scope = globalThis as typeof globalThis & { __mylikeRequests?: Map<string, AbortController> }
   const controllers = (scope.__mylikeRequests ??= new Map())
@@ -32,8 +43,15 @@ async function requestInPage(request: PageRequest) {
     update_version_code: '170400',
     cookie_enabled: 'true',
     platform: 'PC',
-    ...(['unlike', 'favorites'].includes(request.operation) ? {} : request.parameters)
+    ...(['unlike', 'favorites', 'favoriteAdd', 'favoriteRemove'].includes(request.operation)
+      ? {}
+      : request.parameters)
   })
+  if (request.operation === 'favoriteFolderCreate') {
+    params.set('version_code', '230000')
+    params.set('version_name', '23.0.0')
+  }
+  if (request.operation === 'favoriteFolderAdd') params.delete('aweme_id')
   try {
     // Match the original page-SDK request: use only the current page's token,
     // never a fabricated or persisted signing value.
@@ -55,10 +73,19 @@ async function requestInPage(request: PageRequest) {
       credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,
-      method: ['unlike', 'favorites'].includes(request.operation) ? 'POST' : 'GET',
+      method: [
+        'unlike',
+        'favorites',
+        'favoriteAdd',
+        'favoriteRemove',
+        'favoriteFolderAdd',
+        'favoriteFolderCreate'
+      ].includes(request.operation)
+        ? 'POST'
+        : 'GET',
       headers: {
         accept: 'application/json, text/plain, */*',
-        ...(['unlike', 'favorites'].includes(request.operation)
+        ...(['unlike', 'favorites', 'favoriteAdd', 'favoriteRemove'].includes(request.operation)
           ? { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' }
           : {})
       },
@@ -69,12 +96,18 @@ async function requestInPage(request: PageRequest) {
               item_type: '0',
               type: '0'
             }).toString()
-          : request.operation === 'favorites'
+          : request.operation === 'favoriteAdd' || request.operation === 'favoriteRemove'
             ? new URLSearchParams({
-                cursor: request.parameters.cursor ?? '0',
-                count: request.parameters.count ?? '18'
+                aweme_id: request.parameters.aweme_id ?? '',
+                action: request.operation === 'favoriteRemove' ? '0' : '1',
+                aweme_type: request.parameters.aweme_type ?? '0'
               }).toString()
-            : undefined
+            : request.operation === 'favorites'
+              ? new URLSearchParams({
+                  cursor: request.parameters.cursor ?? '0',
+                  count: request.parameters.count ?? '18'
+                }).toString()
+              : undefined
     })
     const length = Number(response.headers.get('content-length') ?? 0)
     if (length > 16 * 1024 * 1024) return { id: request.id, error: 'TOO_LARGE' }

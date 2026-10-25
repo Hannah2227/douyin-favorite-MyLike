@@ -78,7 +78,7 @@ const groups = [
     id: 'storage',
     title: '数据与存储',
     icon: Database,
-    keywords: '数据 存储 备份 导入 导出 元数据 目录 路径 占用 缓存 清理 检查 完整性'
+    keywords: '数据 存储 备份 导入 导出 元数据 目录 路径 占用'
   },
   {
     id: 'about',
@@ -340,7 +340,8 @@ export function SettingsPanel({
             </div>
             <p className="settings-description">
               仅播放器中生效。PageUp / PageDown 也可切换作品，左右键在图集中翻页。 Esc
-              依次退出清屏、全屏或返回；输入框、菜单和弹窗优先。取消点赞始终需要确认。
+              依次退出清屏、全屏或返回；清屏不显示退出按钮，可用 Esc
+              或绑定的清屏按键退出。输入框、菜单和弹窗优先，取消点赞及收藏均需确认。
             </p>
             {(
               Object.entries(shortcutActions) as [ShortcutAction, (typeof shortcutActions)[ShortcutAction]][]
@@ -388,7 +389,6 @@ export function SettingsPanel({
               perform={perform}
               importFile={importFile}
               exportAll={exportAll}
-              notice={notice}
             />
           </div>
           <section id="settings-about" className="panel settings-section" hidden={!visible('about')}>

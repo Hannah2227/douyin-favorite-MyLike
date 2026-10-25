@@ -2,13 +2,11 @@ import { app, shell } from 'electron'
 import { mkdir, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DataInfo } from '../shared/contracts'
-import type { DouyinEngine } from './douyin/engine'
 import { AppError } from './errors'
 import { metadataBytes } from './storage/usage'
 
 export class DataMaintenance {
-  constructor(private readonly engine: Pick<DouyinEngine, 'cacheSize'>) {}
-  async info(accountId: string | null): Promise<DataInfo> {
+  async info(): Promise<DataInfo> {
     const folder = app.getPath('userData')
     const size = async (file: string) => {
       try {
@@ -26,17 +24,15 @@ export class DataMaintenance {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
       const backups = entries.filter((file) => file.endsWith('.sqlite'))
-      const [metadata, backupsSizes, cacheBytes] = await Promise.all([
+      const [metadata, backupsSizes] = await Promise.all([
         metadataBytes(folder),
-        Promise.all(backups.map((file) => size(join(folder, 'backups', file)))),
-        this.engine.cacheSize(accountId)
+        Promise.all(backups.map((file) => size(join(folder, 'backups', file))))
       ])
       return {
         folder,
         metadataBytes: metadata,
         backupsCount: backups.length,
-        backupsBytes: backupsSizes.reduce((a, b) => a + b, 0),
-        cacheBytes
+        backupsBytes: backupsSizes.reduce((a, b) => a + b, 0)
       }
     } catch {
       throw new AppError('DATA_INFO_FAILED', '无法读取数据占用信息，请检查数据目录权限。')

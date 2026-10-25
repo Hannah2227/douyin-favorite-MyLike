@@ -26,11 +26,12 @@ export class Store {
     try {
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
-      if (version.user_version > 6) throw new Error('Database version is newer than this application')
+      if (version.user_version > 7) throw new Error('Database version is newer than this application')
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;')
       if (version.user_version > 0 && version.user_version < 6) {
         this.backup('before-v6')
       }
+      if (version.user_version === 6) this.backup('before-v7')
       if (!version.user_version)
         this.db.exec(`
       BEGIN IMMEDIATE;
@@ -88,9 +89,13 @@ export class Store {
         COMMIT;
       `)
       if (version.user_version < 6) this.db.exec('BEGIN IMMEDIATE; ' + favoritesMigration + ' COMMIT;')
+      if (version.user_version < 7)
+        this.db.exec(
+          "BEGIN IMMEDIATE; ALTER TABLE unlike_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'likes' CHECK(source IN ('likes','favorites')); PRAGMA user_version=7; COMMIT;"
+        )
       const interrupted = this.db
         .prepare(
-          "SELECT accountId,'喜欢采集' AS label FROM collection_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏同步' FROM saved_tasks WHERE status='running' UNION ALL SELECT accountId,'取消点赞' FROM unlike_tasks WHERE status='running'"
+          "SELECT accountId,'喜欢采集' AS label FROM collection_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏同步' FROM saved_tasks WHERE status='running' UNION ALL SELECT accountId,CASE source WHEN 'favorites' THEN '取消收藏' ELSE '取消点赞' END FROM unlike_tasks WHERE status='running'"
         )
         .all()
       this.db
@@ -285,7 +290,11 @@ export class Store {
         ) {
           this.events.append(accountId, {
             kind: 'task',
-            message: `${kind}异常中断${after.reason ? `：${after.reason}` : ''}`.slice(0, 600),
+            message:
+              `${'source' in after && after.source === 'favorites' ? '取消收藏' : kind}异常中断${after.reason ? `：${after.reason}` : ''}`.slice(
+                0,
+                600
+              ),
             code: after.errorCode
           })
         }
@@ -345,6 +354,13 @@ export class Store {
         return this.favorites.task(input.accountId)
       case 'favoriteFolders':
         return this.favorites.folders(input.accountId)
+      case 'favoriteStatus':
+        this.account(input.accountId)
+        return this.favorites.status(input.accountId, input.workId)
+      case 'favoriteRememberFolder':
+        return this.favorites.rememberFolder(input.accountId, input.remoteId, input.folder)
+      case 'favoriteConfirm':
+        return this.favorites.confirm(input)
       case 'favoritesStart':
         this.account(input.accountId)
         return this.favorites.start(input.accountId, input.id)
@@ -675,6 +691,7 @@ export class Store {
       case 'playbackPreferences':
         return this.playback.call(method, input)
       case 'unlikeTask':
+      case 'favoriteWriteGuard':
       case 'unlikeHistory':
       case 'unlikeItems':
       case 'unlikeCreate':

@@ -96,6 +96,7 @@
 }
 .stage {
   position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -105,9 +106,9 @@
   overflow: hidden;
   background: radial-gradient(ellipse at center, #26262b 0%, #17171a 50%, #111113 85%);
 }
-.prepared-video,
+.video-surface,
 .stage > video,
-.prepared-video > video,
+.video-surface > video,
 .gallery-image {
   position: absolute;
   inset: 0;
@@ -121,11 +122,17 @@
 .stage > audio {
   display: none;
 }
-.stage > video {
-  z-index: 1;
+.video-surface {
+  z-index: 0;
+  isolation: isolate;
+}
+.stage > video,
+.video-surface > video {
+  display: block;
+  transform: translateZ(0);
   transition: opacity 0.1s ease;
 }
-.stage > video.live-resting {
+.video-surface > video.live-resting {
   opacity: 0;
   pointer-events: none;
 }
@@ -427,6 +434,10 @@
 .playback-controls .unlike-control {
   color: #ff6683;
 }
+.playback-controls .favorite-control.is-collected {
+  color: #ffcd58;
+  background: transparent;
+}
 .player-footer label {
   display: flex;
   align-items: center;
@@ -493,17 +504,8 @@
 .player-view.is-clean .player-notice,
 .player-view.is-clean .player-footer,
 .player-view.is-clean .queue-panel,
-.player-view.is-clean .stage > :not(video, audio, img, .prepared-video) {
+.player-view.is-clean .stage > :not(video, audio, img, .video-surface) {
   display: none;
-}
-.exit-clean {
-  position: absolute;
-  top: 8px;
-  left: 10px;
-  z-index: 5;
-  -webkit-app-region: no-drag;
-  background: #11111388 !important;
-  backdrop-filter: blur(8px);
 }
 .player-time {
   font-size: 11px;

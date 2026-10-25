@@ -54,6 +54,25 @@ export function PreparedVideo({ element, videoRef, volume, speed, ...props }: Pr
     }
   }, [element, videoRef])
   useLayoutEffect(() => {
+    const surface = host.current,
+      node = videoRef.current
+    if (!surface || !node) return
+    const resize = (width: number, height: number) => {
+      if (width <= 0 || height <= 0) return
+      // Give Chromium's video compositor explicit dimensions after controls,
+      // fullscreen or zoom change. Do not reset src, seek or replace the decoder.
+      node.style.width = `${width}px`
+      node.style.height = `${height}px`
+    }
+    const box = surface.getBoundingClientRect()
+    resize(box.width, box.height)
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) resize(entry.contentRect.width, entry.contentRect.height)
+    })
+    observer.observe(surface)
+    return () => observer.disconnect()
+  }, [element, videoRef])
+  useLayoutEffect(() => {
     if (!element) return
     element.setAttribute('aria-label', props['aria-label'] ?? '当前视频')
     element.loop = !!props.loop
@@ -62,5 +81,9 @@ export function PreparedVideo({ element, videoRef, volume, speed, ...props }: Pr
     element.playbackRate = speed
     if (props.autoPlay) void element.play().catch(() => {})
   }, [element, props.autoPlay, props.loop, volume, speed])
-  return element ? <div className="prepared-video" ref={host} /> : <video {...props} ref={videoRef} />
+  return (
+    <div className={`video-surface${element ? ' prepared-video' : ''}`} ref={host}>
+      {!element && <video {...props} ref={videoRef} />}
+    </div>
+  )
 }

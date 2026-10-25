@@ -4,6 +4,7 @@ import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
 
 type Method =
+  | 'favoriteWriteGuard'
   | 'unlikeTask'
   | 'unlikeHistory'
   | 'unlikeItems'
@@ -25,7 +26,7 @@ export class UnlikeStore {
       )
       .get(...(taskId ? [accountId, taskId] : [accountId]))
     if (!row) {
-      if (taskId) throw new AppError('TASK_CHANGED', '取消点赞任务不存在或账号已变化。')
+      if (taskId) throw new AppError('TASK_CHANGED', '任务不存在或账号已变化。')
       return null
     }
     const counts = this.db
@@ -46,8 +47,16 @@ export class UnlikeStore {
     }
     return task
   }
-  private remove(accountId: string, workId: string): void {
-    this.db.prepare('DELETE FROM account_items WHERE accountId=? AND workId=?').run(accountId, workId)
+  private remove(accountId: string, workId: string, source: UnlikeTask['source']): void {
+    if (source === 'favorites') {
+      this.db
+        .prepare(
+          `UPDATE saved_folders SET remoteCount=max(0,remoteCount-1) WHERE accountId=? AND id IN (SELECT folderId FROM saved_members WHERE accountId=? AND workId=?)`
+        )
+        .run(accountId, accountId, workId)
+    }
+    const table = source === 'favorites' ? 'saved_items' : 'account_items'
+    this.db.prepare(`DELETE FROM ${table} WHERE accountId=? AND workId=?`).run(accountId, workId)
     this.db
       .prepare(
         'DELETE FROM works WHERE id=? AND NOT EXISTS(SELECT 1 FROM account_items WHERE workId=?) AND NOT EXISTS(SELECT 1 FROM playback_items WHERE workId=?) AND NOT EXISTS(SELECT 1 FROM saved_items WHERE workId=?)'
@@ -65,6 +74,19 @@ export class UnlikeStore {
   }
   private dispatch(method: Method, input: any): unknown {
     switch (method) {
+      case 'favoriteWriteGuard':
+        if (
+          this.db
+            .prepare(
+              "SELECT 1 FROM unlike_items i JOIN unlike_tasks t ON t.id=i.taskId WHERE t.accountId=? AND t.source='favorites' AND i.workId=? AND i.status IN ('unknown','inflight')"
+            )
+            .get(input.accountId, input.workId)
+        )
+          throw new AppError(
+            'UNRESOLVED_WRITE',
+            '此作品有结果未知的取消收藏请求，请先到连接与任务重新核验，再操作收藏。'
+          )
+        return null
       case 'unlikeTask':
         return this.task(input.accountId, input.taskId)
       case 'unlikeHistory':
@@ -87,6 +109,10 @@ export class UnlikeStore {
       }
       case 'unlikeCreate':
         return this.transaction(() => {
+          const source: UnlikeTask['source'] = input.source ?? 'likes'
+          if (!['likes', 'favorites'].includes(source))
+            throw new AppError('INVALID_TARGETS', '不支持的操作来源。')
+          const table = source === 'favorites' ? 'saved_items' : 'account_items'
           const account = this.db.prepare('SELECT remoteId FROM accounts WHERE id=?').get(input.accountId)
           if (!account?.remoteId) throw new AppError('AUTH_REQUIRED', '请先登录并核验当前账号身份。')
           if (
@@ -94,7 +120,7 @@ export class UnlikeStore {
               .prepare("SELECT 1 FROM unlike_tasks WHERE accountId=? AND status='running'")
               .get(input.accountId)
           )
-            throw new AppError('BUSY', '已有取消点赞任务正在运行。')
+            throw new AppError('BUSY', '已有取消点赞或收藏任务正在运行。')
           const ids = [...new Set<string>(input.workIds)]
           if (!ids.length || ids.length > 1000 || (input.mode === 'single' && ids.length !== 1))
             throw new AppError('INVALID_TARGETS', '单条操作只能选择一条；批量操作一次最多 1000 条。')
@@ -102,9 +128,9 @@ export class UnlikeStore {
             if (
               this.db
                 .prepare(
-                  "SELECT 1 FROM unlike_items i JOIN unlike_tasks t ON t.id=i.taskId WHERE t.accountId=? AND i.workId=? AND i.status IN ('unknown','inflight')"
+                  "SELECT 1 FROM unlike_items i JOIN unlike_tasks t ON t.id=i.taskId WHERE t.accountId=? AND i.workId=? AND t.source=? AND i.status IN ('unknown','inflight')"
                 )
-                .get(input.accountId, id)
+                .get(input.accountId, id, source)
             )
               throw new AppError(
                 'UNRESOLVED_WRITE',
@@ -112,7 +138,7 @@ export class UnlikeStore {
               )
             const row = this.db
               .prepare(
-                'SELECT w.title FROM works w JOIN account_items a ON a.workId=w.id WHERE a.accountId=? AND w.id=?'
+                `SELECT w.title FROM works w JOIN ${table} a ON a.workId=w.id WHERE a.accountId=? AND w.id=?`
               )
               .get(input.accountId, id)
             if (!row) throw new AppError('WORK_NOT_FOUND', '部分作品已不在当前本地列表，请刷新选择。')
@@ -120,8 +146,10 @@ export class UnlikeStore {
           })
           const now = Date.now()
           this.db
-            .prepare("INSERT INTO unlike_tasks VALUES(?,?,?,?,'running',NULL,NULL,?,?)")
-            .run(input.id, input.accountId, input.mode, account.remoteId, now, now)
+            .prepare(
+              "INSERT INTO unlike_tasks(id,accountId,mode,remoteId,status,reason,errorCode,createdAt,updatedAt,source) VALUES(?,?,?,?,'running',NULL,NULL,?,?,?)"
+            )
+            .run(input.id, input.accountId, input.mode, account.remoteId, now, now, source)
           const insert = this.db.prepare("INSERT INTO unlike_items VALUES(?,?,?,?,'pending',NULL,NULL,?)")
           rows.forEach((row, index) => insert.run(input.id, index, row.id, row.title, now))
           return this.task(input.accountId, input.id)
@@ -150,9 +178,11 @@ export class UnlikeStore {
       case 'unlikeNext': {
         const task = this.task(input.accountId, input.taskId)!
         if (task.status !== 'running') return null
+        const table = task.source === 'favorites' ? 'saved_items' : 'account_items'
+        const platformSeen = task.source === 'favorites' ? '0 AS platformSeen' : 'a.platformSeen'
         const row = this.db
           .prepare(
-            "SELECT i.*,a.platformSeen FROM unlike_items i LEFT JOIN account_items a ON a.accountId=? AND a.workId=i.workId WHERE i.taskId=? AND i.status='pending' ORDER BY i.position LIMIT 1"
+            `SELECT i.*,${platformSeen} FROM unlike_items i LEFT JOIN ${table} a ON a.accountId=? AND a.workId=i.workId WHERE i.taskId=? AND i.status='pending' ORDER BY i.position LIMIT 1`
           )
           .get(input.accountId, task.id)
         return row ? { ...row, platformSeen: row.platformSeen === 1 } : null
@@ -161,6 +191,7 @@ export class UnlikeStore {
         return this.transaction(() => {
           const task = this.task(input.accountId, input.taskId)!,
             item = this.item(input.accountId, input.taskId, input.workId)
+          const table = task.source === 'favorites' ? 'saved_items' : 'account_items'
           if (task.status !== 'running' || item.status !== 'pending')
             throw new AppError('TASK_CHANGED', '任务或目标状态已变化，未发送请求。')
           if (
@@ -170,16 +201,16 @@ export class UnlikeStore {
             throw new AppError('IDENTITY_MISMATCH', '操作账号身份已变化。')
           if (
             !this.db
-              .prepare('SELECT 1 FROM account_items WHERE accountId=? AND workId=?')
+              .prepare(`SELECT 1 FROM ${table} WHERE accountId=? AND workId=?`)
               .get(input.accountId, input.workId)
           )
             throw new AppError('WORK_NOT_FOUND', '作品已从本地列表移除，未发送请求。')
           if (
             this.db
               .prepare(
-                "SELECT 1 FROM unlike_items i JOIN unlike_tasks t ON t.id=i.taskId WHERE t.accountId=? AND i.workId=? AND i.status IN ('unknown','inflight')"
+                "SELECT 1 FROM unlike_items i JOIN unlike_tasks t ON t.id=i.taskId WHERE t.accountId=? AND i.workId=? AND t.source=? AND i.status IN ('unknown','inflight')"
               )
-              .get(input.accountId, input.workId)
+              .get(input.accountId, input.workId, task.source)
           )
             throw new AppError('UNRESOLVED_WRITE', '历史请求结果未知，未重复发送。')
           this.db
@@ -198,11 +229,14 @@ export class UnlikeStore {
               'UPDATE unlike_items SET status=?,reason=?,errorCode=?,updatedAt=? WHERE taskId=? AND workId=?'
             )
             .run(input.status, input.reason, input.errorCode, Date.now(), input.taskId, input.workId)
-          if (input.status === 'success') this.remove(input.accountId, input.workId)
+          if (input.status === 'success')
+            this.remove(input.accountId, input.workId, this.task(input.accountId, input.taskId)!.source)
           return this.task(input.accountId, input.taskId)
         })
       case 'unlikeResolve':
         return this.transaction(() => {
+          const task = this.task(input.accountId, input.taskId)!
+          const label = task.source === 'favorites' ? '收藏' : '点赞'
           const item = this.item(input.accountId, input.taskId, input.workId)
           if (item.status !== 'unknown') throw new AppError('TASK_CHANGED', '此条目已不处于结果未知状态。')
           this.db
@@ -212,14 +246,14 @@ export class UnlikeStore {
             .run(
               input.liked ? 'failed' : 'success',
               input.liked
-                ? '已核验仍为点赞；如需再次操作，请重新选择并确认。'
-                : '已核验当前未点赞，已同步移除本地条目。',
-              input.liked ? 'VERIFIED_LIKED' : null,
+                ? `已核验仍为${label}；如需再次操作，请重新选择并确认。`
+                : `已核验当前未${label}，已同步移除本地条目。`,
+              input.liked ? (task.source === 'favorites' ? 'VERIFIED_COLLECTED' : 'VERIFIED_LIKED') : null,
               Date.now(),
               input.taskId,
               input.workId
             )
-          if (!input.liked) this.remove(input.accountId, input.workId)
+          if (!input.liked) this.remove(input.accountId, input.workId, task.source)
           return this.task(input.accountId, input.taskId)
         })
     }

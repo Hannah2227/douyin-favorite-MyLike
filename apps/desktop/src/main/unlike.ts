@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Account, UnlikeTask } from '../shared/contracts'
 import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
-import { parseLikeState, parseUnlikeResult } from './douyin/parse'
+import { parseFavoriteState, parseLikeState, parseUnlikeResult } from './douyin/parse'
 import { AppError } from './errors'
 
 type Run = <T>(
@@ -27,14 +27,19 @@ export class UnlikeService {
   get running(): boolean {
     return this.loop !== null
   }
-  async start(accountId: string, workIds: string[], mode: 'single' | 'batch'): Promise<UnlikeTask> {
-    if (this.running) throw new AppError('BUSY', '请先停止当前取消点赞任务。')
-    const task = await this.db.call('unlikeCreate', { accountId, workIds, mode, id: randomUUID() })
+  async start(
+    accountId: string,
+    workIds: string[],
+    mode: 'single' | 'batch',
+    source: UnlikeTask['source'] = 'likes'
+  ): Promise<UnlikeTask> {
+    if (this.running) throw new AppError('BUSY', '请先停止当前取消点赞或收藏任务。')
+    const task = await this.db.call('unlikeCreate', { accountId, workIds, mode, source, id: randomUUID() })
     this.launch(task)
     return task
   }
   async resume(accountId: string, taskId: string): Promise<UnlikeTask> {
-    if (this.running) throw new AppError('BUSY', '请先停止当前取消点赞任务。')
+    if (this.running) throw new AppError('BUSY', '请先停止当前取消点赞或收藏任务。')
     const task = await this.db.call('unlikeUpdate', { accountId, taskId, status: 'running', reason: null })
     this.launch(task)
     return task
@@ -57,6 +62,7 @@ export class UnlikeService {
   }
   private async process(task: UnlikeTask): Promise<void> {
     const scope = { accountId: task.accountId, taskId: task.id }
+    const favorite = task.source === 'favorites'
     try {
       while (!this.stopped) {
         const item = await this.db.call('unlikeNext', scope)
@@ -83,7 +89,29 @@ export class UnlikeService {
               if (account.remoteId !== task.remoteId)
                 throw new AppError('IDENTITY_MISMATCH', '当前登录身份与任务不符，未发送请求。')
               if (this.stopped) return
-              if (!item.platformSeen) {
+              let awemeType = '0'
+              if (favorite) {
+                const detail = await this.engine.request(task.accountId, 'detail', { aweme_id: item.workId })
+                check()
+                if (this.stopped) return
+                const state = parseFavoriteState(detail, item.workId)
+                awemeType = state.type
+                if (!state.collected) {
+                  await this.db.call('unlikeReserve', { ...scope, workId: item.workId })
+                  reserved = true
+                  await this.db.call('unlikeFinish', {
+                    ...scope,
+                    workId: item.workId,
+                    status: 'success',
+                    errorCode: null,
+                    reason: '已核验当前未收藏，已同步本地记录，未重复发送取消请求。'
+                  })
+                  reserved = false
+                  this.changed(true)
+                  return
+                }
+              }
+              if (!favorite && !item.platformSeen) {
                 const detail = await this.engine.request(task.accountId, 'detail', { aweme_id: item.workId })
                 check()
                 if (this.stopped) return
@@ -107,14 +135,18 @@ export class UnlikeService {
               // No await between reservation and issuing the write. From here onward,
               // any unconfirmed result is unknown, including a page navigation.
               sent = true
-              const result = await this.engine.request(task.accountId, 'unlike', { aweme_id: item.workId })
+              const result = await this.engine.request(
+                task.accountId,
+                favorite ? 'favoriteRemove' : 'unlike',
+                { aweme_id: item.workId, ...(favorite ? { aweme_type: awemeType } : {}) }
+              )
               parseUnlikeResult(result)
               await this.db.call('unlikeFinish', {
                 ...scope,
                 workId: item.workId,
                 status: 'success',
                 errorCode: null,
-                reason: '平台已确认取消点赞。'
+                reason: favorite ? '平台已确认取消收藏。' : '平台已确认取消点赞。'
               })
               reserved = false
               this.changed(true)
@@ -180,7 +212,7 @@ export class UnlikeService {
     }
   }
   async verify(accountId: string, taskId: string, workId: string): Promise<UnlikeTask> {
-    if (this.running) throw new AppError('BUSY', '请先停止正在运行的取消点赞任务。')
+    if (this.running) throw new AppError('BUSY', '请先停止正在运行的取消点赞或收藏任务。')
     const task = await this.db.call('unlikeTask', { accountId, taskId })
     if (!task) throw new AppError('TASK_CHANGED', '任务不存在。')
     return this.run(accountId, async (check) => {
@@ -193,7 +225,10 @@ export class UnlikeService {
         accountId,
         taskId,
         workId,
-        liked: parseLikeState(detail, workId)
+        liked:
+          task.source === 'favorites'
+            ? parseFavoriteState(detail, workId).collected
+            : parseLikeState(detail, workId)
       })
       this.changed(true)
       return result

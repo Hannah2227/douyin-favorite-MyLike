@@ -1,4 +1,5 @@
 import { FavoritesService } from './favorites'
+import { FavoriteActions } from './favorite-actions'
 import { app, shell, clipboard, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { Account, Command, Diagnostics, Query, Snapshot } from '../shared/contracts'
@@ -43,6 +44,7 @@ export class Application {
   private readonly maintenance: DataMaintenance
   private readonly lane = new RequestLane()
   private readonly favorites: FavoritesService
+  private readonly favoriteActions: FavoriteActions
   private readonly collection: CollectionService
   private readonly unlike: UnlikeService
   private readonly authentication: Authentication
@@ -100,6 +102,16 @@ export class Application {
         changed()
       }
     )
+    this.favoriteActions = new FavoriteActions(
+      database,
+      engine,
+      this.run.bind(this),
+      this.identity.bind(this),
+      () => {
+        this.libraryRevision++
+        changed()
+      }
+    )
     this.files = new FileTransfers(
       database,
       parent,
@@ -118,7 +130,7 @@ export class Application {
       this.quiesce.bind(this),
       changed
     )
-    this.maintenance = new DataMaintenance(engine)
+    this.maintenance = new DataMaintenance()
   }
   private record(accountId: string, event: RuntimeEventInput) {
     if (this.closing || !runtimeEventCategory(event)) return
@@ -198,6 +210,7 @@ export class Application {
     }
     return this.lane.run(background, async () => {
       await this.exclusive(async () => {
+        if (this.closing) throw new AppError('CLOSING', '应用正在退出，未发送新的请求。')
         if (this.accountAction) throw new AppError('BUSY', '账号操作正在收口，请稍候。')
         check()
         await this.active(accountId)
@@ -279,6 +292,7 @@ export class Application {
   }
   private async quiesce(): Promise<void> {
     await this.unlike.stop()
+    await this.favoriteActions.idle(true)
     const paused = Promise.all([this.collection.pause(), this.favorites.pause()])
     this.epoch++
     this.engine.release()
@@ -289,9 +303,17 @@ export class Application {
   async execute(command: Command, input: any): Promise<unknown> {
     if (this.closing) throw new AppError('CLOSING', '应用正在退出。')
     if (
-      ['login', 'probe', 'collectionStart', 'favoritesStart', 'unlikeStart', 'collectPage'].includes(
-        command
-      ) ||
+      [
+        'login',
+        'probe',
+        'collectionStart',
+        'favoritesStart',
+        'unlikeStart',
+        'collectPage',
+        'favoriteEditor',
+        'favoriteSave',
+        'favoriteCreateFolder'
+      ].includes(command) ||
       (['collectionControl', 'favoritesControl', 'unlikeControl'].includes(command) &&
         input.action === 'resume')
     )
@@ -324,10 +346,13 @@ export class Application {
         'collectionStart',
         'importCommit',
         'deleteLocal',
+        'favoriteEditor',
+        'favoriteSave',
+        'favoriteCreateFolder',
         'unlikeVerify'
       ].includes(command)
     )
-      throw new AppError('BUSY', '请先停止取消点赞任务，等待当前请求结果保存。')
+      throw new AppError('BUSY', '请先停止取消点赞或收藏任务，等待当前请求结果保存。')
     switch (command) {
       case 'appPreferences': {
         const value = await this.database.call('appPreferences', input)
@@ -432,6 +457,7 @@ export class Application {
         })
       case 'releaseEngine': {
         await this.unlike.stop()
+        await this.favoriteActions.idle(true)
         const paused = Promise.all([this.collection.pause(), this.favorites.pause()])
         this.epoch++
         this.engine.release()
@@ -442,6 +468,7 @@ export class Application {
         const accountId = this.engine.snapshot().accountId
         if (accountId) this.engine.dismissAttention(accountId)
         await this.unlike.stop()
+        await this.favoriteActions.idle(true)
         const paused = Promise.all([this.collection.pause(), this.favorites.pause()])
         this.epoch++
         this.engine.cancel()
@@ -489,17 +516,30 @@ export class Application {
       case 'favoriteFolders':
         await this.active(input.accountId)
         return this.database.call('favoriteFolders', input)
+      case 'favoriteStatus':
+        await this.active(input.accountId)
+        return this.database.call('favoriteStatus', input)
+      case 'favoriteEditor':
+        return this.favoriteActions.open(input)
+      case 'favoriteSave':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.favoriteActions.save(input.accountId, input.token, input.folderIds)
+      case 'favoriteCreateFolder':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.favoriteActions.createFolder(input.accountId, input.token, input.name, input.private)
       case 'favoritesStart':
         return this.exclusive(async () => {
           await this.active(input.accountId)
           if (this.collection.running || this.unlike.running)
-            throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞任务。')
+            throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞 / 收藏任务。')
           return this.favorites.start(input.accountId)
         })
       case 'favoritesControl':
         await this.active(input.accountId)
         if (input.action === 'resume' && (this.collection.running || this.unlike.running))
-          throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞任务。')
+          throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞 / 收藏任务。')
         return input.action === 'resume'
           ? this.exclusive(() => {
               if (this.collection.running || this.unlike.running)
@@ -510,35 +550,37 @@ export class Application {
       case 'collectionStart':
         return this.exclusive(async () => {
           if (this.unlike.running || this.favorites.running)
-            throw new AppError('BUSY', '请先停止其他采集或取消点赞任务。')
+            throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务。')
           await this.active(input.accountId)
           return this.collection.start(input.accountId, input.mode)
         })
       case 'collectionControl':
         await this.active(input.accountId)
         if (input.action === 'resume' && (this.unlike.running || this.favorites.running))
-          throw new AppError('BUSY', '请先停止取消点赞任务。')
+          throw new AppError('BUSY', '请先停止取消点赞 / 收藏任务。')
         if (input.action === 'resume')
           return this.exclusive(() => {
             if (this.unlike.running || this.favorites.running)
-              throw new AppError('BUSY', '请先停止收藏同步或取消点赞任务。')
+              throw new AppError('BUSY', '请先停止收藏同步或取消点赞 / 收藏任务。')
             return this.collection.control(input.accountId, input.taskId, input.action)
           })
         return this.collection.control(input.accountId, input.taskId, input.action)
       case 'unlikeStart':
         await this.active(input.accountId)
         await Promise.all([this.collection.pause(), this.favorites.pause()])
+        await this.favoriteActions.idle()
         await this.lane.idle()
         return this.exclusive(async () => {
           await this.active(input.accountId)
           if (this.lane.pending || this.collection.running || this.favorites.running)
             throw new AppError('BUSY', '请等待当前页面请求结束。')
-          return this.unlike.start(input.accountId, input.workIds, input.mode)
+          return this.unlike.start(input.accountId, input.workIds, input.mode, input.source)
         })
       case 'unlikeControl': {
         await this.active(input.accountId)
         if (input.action === 'resume') {
           await Promise.all([this.collection.pause(), this.favorites.pause()])
+          await this.favoriteActions.idle()
           await this.lane.idle()
           return this.exclusive(async () => {
             await this.active(input.accountId)
@@ -645,7 +687,7 @@ export class Application {
         return this.database.call('backup', { reason: 'manual' })
       case 'dataInfo':
         if (input.accountId) await this.active(input.accountId)
-        return this.maintenance.info(input.accountId)
+        return this.maintenance.info()
       case 'openDataFolder':
         return this.maintenance.open(input.target)
       case 'clearCache':
@@ -769,6 +811,7 @@ export class Application {
     this.authentication.stop()
     await this.accountAction?.catch(() => {})
     await this.unlike.stop()
+    await this.favoriteActions.idle(true)
     const paused = Promise.all([this.collection.pause(), this.favorites.pause()])
     this.epoch++
     this.engine.release()

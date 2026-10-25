@@ -70,7 +70,7 @@ it('adds clean screen to the focused shortcuts, upgrades defaults and preserves 
       sidebar: 'KeyB'
     }
   })
-  expect(Object.keys(value.shortcuts)).toHaveLength(13)
+  expect(Object.keys(value.shortcuts)).toHaveLength(14)
   expect(value.shortcuts).toMatchObject({
     previous: 'ArrowUp',
     next: 'ArrowDown',
@@ -79,7 +79,8 @@ it('adds clean screen to the focused shortcuts, upgrades defaults and preserves 
     original: 'None',
     unlike: 'KeyZ',
     rateCycle: 'None',
-    clean: 'KeyH'
+    clean: 'KeyH',
+    favorite: 'KeyS'
   })
   expect(value.shortcuts).not.toHaveProperty('copyLink')
   const customized = {
@@ -93,6 +94,9 @@ it('adds clean screen to the focused shortcuts, upgrades defaults and preserves 
   expect(
     readPlaybackPreferences({ shortcuts: { playPause: 'KeyQ', copyLink: 'KeyN' } }).shortcuts
   ).toMatchObject({ playPause: 'KeyQ', queue: 'None', mute: 'KeyN' })
+  expect(
+    readPlaybackPreferences({ shortcutVersion: 2, shortcuts: { playPause: 'KeyS' } }).shortcuts
+  ).toMatchObject({ playPause: 'KeyS', favorite: 'None' })
 })
 it('persists application and playback preferences across restart without changing account data', () => {
   const { store, file } = setup()

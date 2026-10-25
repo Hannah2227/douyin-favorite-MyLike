@@ -11,6 +11,23 @@ import { testTimeout } from '../helpers/test-timeout'
 
 const roots: string[] = [],
   stores: Store[] = []
+it('labels collection terminal responses with absent arrays without weakening unrelated or ambiguous responses', () => {
+  for (const operation of ['favorites', 'folders', 'folderItems']) {
+    for (const data of [
+      { status_code: 0, has_more: 0 },
+      { status_code: 0, has_more: false, aweme_list: null }
+    ])
+      expect(responseSummary(JSON.stringify(data), 200, operation)).toEqual({
+        responseType: 'terminal-list',
+        count: 0
+      })
+  }
+  expect(responseSummary('{"status_code":0,"has_more":0}', 200, 'detail')).toEqual({ responseType: 'json' })
+  expect(responseSummary('{"status_code":0,"has_more":1}', 200, 'folderItems')).toEqual({
+    responseType: 'json'
+  })
+  expect(responseSummary('{"has_more":0}', 200, 'favorites')).toEqual({ responseType: 'json' })
+})
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'mylike-runtime-')),
     file = join(root, 'db.sqlite'),

@@ -8,6 +8,23 @@ import { CHANNEL } from '../../src/shared/channels'
 import { terminateApp } from '../helpers/terminate-app'
 import { testTimeout } from '../helpers/test-timeout'
 
+// Use the image decoder already bundled with Playwright; no application dependency.
+const { PNG } = require(
+  require.resolve('playwright-core/lib/utilsBundle', {
+    paths: [require.resolve('playwright', { paths: [require.resolve('@playwright/test')] })]
+  })
+) as { PNG: { sync: { read(value: Buffer): { width: number; height: number; data: Buffer } } } }
+function changedPixels(before: Buffer, after: Buffer): number {
+  const a = PNG.sync.read(before),
+    b = PNG.sync.read(after)
+  expect({ width: b.width, height: b.height }).toEqual({ width: a.width, height: a.height })
+  let changed = 0
+  for (let i = 0; i < a.data.length; i += 4)
+    if (a.data.subarray(i, i + 4).some((value, channel) => Math.abs(value - b.data[i + channel]!) > 4))
+      changed++
+  return changed / (a.width * a.height)
+}
+
 let app: ElectronApplication, page: Page, profile: string
 // flower.mp4: MDN CC0 media sample; https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4
 // portrait.webm: project-generated Canvas/MediaRecorder geometry sample. Fixtures are not distributed.
@@ -267,7 +284,41 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               cursor: first && cursor === '0' ? '9007199254740993977' : '0',
               has_more: first && cursor === '0' ? 1 : 0
             }
-          } else
+            if (globals.__favoriteNullTerminals && !first)
+              body = {
+                status_code: 0,
+                cursor: '0',
+                has_more: 0,
+                ...(parameters.get('collects_id') === '8' ? { aweme_list: null } : {})
+              }
+          } else if (globals.__favoriteNullTerminals)
+            body = {
+              status_code: 0,
+              collects_list: [
+                { collects_id: '9007199254740993999', collects_name: '旅行', aweme_count: 2 },
+                { collects_id: '8', collects_name: '空收藏夹', aweme_count: 0 },
+                { collects_id: '9', collects_name: '另一个空收藏夹', aweme_count: 0 }
+              ],
+              cursor: '0',
+              has_more: 0
+            }
+          else if (globals.__favoriteWriteFixture)
+            body = {
+              status_code: 0,
+              collects_list: [
+                {
+                  collects_id_str: '9007199254740993999',
+                  collects_name: '旅行',
+                  total_number: 12,
+                  status: 0
+                },
+                { collects_id_str: '8', collects_name: '音乐', total_number: 0, status: 1 },
+                ...(globals.__favoriteCreatedFolders ?? [])
+              ],
+              cursor: '0',
+              has_more: 0
+            }
+          else
             body = {
               status_code: 0,
               collects_list:
@@ -293,6 +344,7 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
             status_code: 0,
             aweme_detail: {
               aweme_id: detailId,
+              collect_stat: (globalThis as any).__favoriteCollectedWorks?.includes(detailId) ? 1 : 0,
               desc: '测试视频：喜欢的日常',
               create_time: 1_700_000_000,
               author: { nickname: '测试作者' },
@@ -316,6 +368,48 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
                   }
                 : {})
             }
+          }
+        } else if (
+          ['/aweme/collect/', '/collects/video/move/', '/collects/maintain/'].some((path) =>
+            url.pathname.includes(path)
+          )
+        ) {
+          const globals = globalThis as any
+          const form = new URLSearchParams(await request.text())
+          const operation = url.pathname.includes('/aweme/collect/')
+            ? form.get('action') === '0'
+              ? 'favoriteRemove'
+              : 'favoriteAdd'
+            : url.pathname.includes('/video/move/')
+              ? 'favoriteFolderAdd'
+              : 'favoriteFolderCreate'
+          ;(globals.__favoriteWrites ??= []).push({
+            operation,
+            method: request.method,
+            params: Object.fromEntries(url.searchParams),
+            body: Object.fromEntries(form)
+          })
+          if (globals.__favoriteWriteFailure === operation) return new Response('')
+          if (globals.__favoriteWriteHold === operation)
+            await new Promise<void>((resolve) => {
+              globals.__releaseFavoriteWrite = resolve
+            })
+          if (operation === 'favoriteAdd')
+            (globals.__favoriteCollectedWorks ??= []).push(form.get('aweme_id'))
+          if (operation === 'favoriteRemove')
+            globals.__favoriteCollectedWorks = (globals.__favoriteCollectedWorks ?? []).filter(
+              (id: string) => id !== form.get('aweme_id')
+            )
+          body = { status_code: 0 }
+          if (operation === 'favoriteFolderCreate') {
+            const folder = {
+              collects_id_str: '9',
+              collects_name: url.searchParams.get('collects_name'),
+              total_number: 0,
+              status: url.searchParams.get('secret') === '1' ? 0 : 1
+            }
+            ;(globals.__favoriteCreatedFolders ??= []).push(folder)
+            body = { status_code: 0, collects_info: folder }
           }
         } else if (url.pathname.includes('/commit/item/digg/')) {
           ;(globalThis as any).__mylikeUnlikeCount = ((globalThis as any).__mylikeUnlikeCount ?? 0) + 1
@@ -1321,7 +1415,9 @@ test('reuses the decoded next video without a second CDN request and releases de
 test('keeps clean screen across tracks and restores the queue, layout and fullscreen without resizing controls', async ({}, info) => {
   await prepareQueue(3)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
-  await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
+  await invoke('playbackPreferences', {
+    preferences: { ...preferences, continuous: false, shortcuts: { ...preferences.shortcuts, clean: 'KeyB' } }
+  })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo(0)
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
@@ -1340,28 +1436,28 @@ test('keeps clean screen across tracks and restores the queue, layout and fullsc
   await page.getByRole('checkbox', { name: '清屏', exact: true }).check()
   for (const selector of ['.player-footer', '.player-heading', '.media-caption', '.queue-panel'])
     await expect(page.locator(selector)).toBeHidden()
-  await expect(page.getByRole('button', { name: '退出清屏', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(0)
   await page.keyboard.press('ArrowDown')
   await readyVideo(1)
-  await expect(page.getByRole('button', { name: '退出清屏', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(0)
   await expect(page.locator('.player-footer')).toBeHidden()
   await screenshot(info.outputPath('clean-screen.png'))
-  await page.getByRole('button', { name: '退出清屏', exact: true }).click()
+  await page.keyboard.press('Escape')
   await expect(page.getByRole('complementary', { name: '播放队列' })).toBeVisible()
   expect(await page.locator('.player-footer').evaluate((node) => node.getBoundingClientRect().height)).toBe(
     original.height
   )
   await page.keyboard.press('f')
   await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
-  await page.keyboard.press('h')
+  await page.keyboard.press('b')
   await expect(page.locator('.player-footer')).toBeHidden()
   await page.keyboard.press('Escape')
   await expect(page.locator('.player-footer')).toBeVisible()
   expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
   await page.keyboard.press('Escape')
   await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false)
-  await page.keyboard.press('h')
-  await page.keyboard.press('h')
+  await page.keyboard.press('b')
+  await page.keyboard.press('b')
   await expect(page.locator('.player-footer')).toBeVisible()
 })
 
@@ -2646,7 +2742,7 @@ test('pauses favorite sync on rate limits without changing likes or blindly retr
   expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(0)
 })
 
-test('persists general and playback settings, restores a visible window, and provides data checks and redacted diagnostics', async ({}, info) => {
+test('persists general and playback settings, restores a visible window, and provides simplified storage and redacted diagnostics', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   await addAccount()
   await app.evaluate(({ clipboard, shell }) => {
@@ -2703,8 +2799,16 @@ test('persists general and playback settings, restores a visible window, and pro
   await page.getByLabel('滚轮切换作品', { exact: true }).uncheck()
   await page.getByLabel('失焦时暂停', { exact: true }).check()
   await chooseOption('快进后退步长', '30 秒')
-  await page.getByRole('button', { name: '检查数据库完整性', exact: true }).click()
-  await expect(page.getByRole('status').filter({ hasText: '检查通过' })).toBeVisible()
+  await page.getByRole('button', { name: '数据与存储', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '数据与备份', exact: true })).toBeVisible()
+  for (const name of ['立即备份数据库', '检查数据库完整性', '清理页面缓存'])
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+  await expect(page.getByText('当前页面缓存', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '导入元数据', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '导出全部本地内容', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开备份目录', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '刷新占用', exact: true }).click()
+  await page.getByRole('button', { name: '关于', exact: true }).click()
   await page.getByRole('button', { name: '复制诊断信息', exact: true }).click()
   const diagnostics = JSON.parse(await app.evaluate(() => (globalThis as any).__copied.at(-1)))
   expect(diagnostics).toMatchObject({ application: 'MyLike', version })
@@ -2836,7 +2940,7 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByLabel('失焦时暂停', { exact: true }).check()
   await page.getByRole('button', { name: '快捷键', exact: true }).click()
-  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(13)
+  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(14)
   await screenshot(info.outputPath('settings-shortcuts.png'))
   await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
   await page.getByRole('button', { name: '继续回看', exact: true }).click()
@@ -4310,4 +4414,475 @@ test('keeps an already-sent unlike alive through a visible slider and preserves 
   await remoteChallenge(accountId, 'none')
   await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
   expect((await invoke('snapshot')).data.unlike).toMatchObject({ status: 'paused', success: 1, unknown: 0 })
+})
+
+test('adds liked work to multiple favorite folders through the page SDK and preserves fullscreen', async ({}, info) => {
+  const { accountId } = await prepareQueue(3)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const current = (await invoke('snapshot')).data.playback as QueueState
+  await page.keyboard.press('f')
+  await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  const star = page.getByRole('button', { name: '收藏当前作品', exact: true })
+  await star.click()
+  const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
+  await expect(dialog.getByRole('checkbox', { name: '默认收藏列表', exact: true })).toBeChecked()
+  await expect(dialog.getByRole('checkbox', { name: '默认收藏列表', exact: true })).toBeDisabled()
+  await dialog.getByRole('checkbox', { name: '旅行', exact: true }).check()
+  await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites ?? [])).toEqual([])
+  await page.keyboard.press('ArrowDown')
+  expect((await invoke('snapshot')).data.playback.work.id).toBe(current.work.id)
+  await screenshot(info.outputPath('favorite-picker-fullscreen.png'))
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(star).toHaveAttribute('aria-pressed', 'true')
+  expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
+  expect(writes.map((write: any) => write.operation)).toEqual([
+    'favoriteAdd',
+    'favoriteFolderAdd',
+    'favoriteFolderAdd'
+  ])
+  expect(
+    writes.every((write: any) => write.method === 'POST' && write.params._fixture_sdk === 'page-main-world')
+  ).toBe(true)
+  expect(writes[0].body).toMatchObject({ action: '1', aweme_id: current.work.id })
+  for (const folderId of ['8', '9007199254740993999']) {
+    const result = await invoke('query', { accountId, source: 'favorites', folderId })
+    expect(result.data.items.map((item: any) => item.id)).toEqual([current.work.id])
+  }
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(3)
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  await chooseOption('收藏夹筛选', '旅行 · 1')
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  await expect(page.getByRole('button', { name: '收藏当前作品', exact: true })).toHaveCount(0)
+})
+
+test('creates private favorite folders, protects modal inputs and persists a custom favorite shortcut', async ({}, info) => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+  })
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', {
+    preferences: { ...preferences, shortcuts: { ...preferences.shortcuts, favorite: 'KeyB' } }
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const work = (await invoke('snapshot')).data.playback.work
+  await expect(page.getByRole('button', { name: '收藏当前作品', exact: true })).toHaveAttribute('title', /B/)
+  await page.keyboard.press('b')
+  const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
+  await dialog.getByRole('button', { name: '新建', exact: true }).click()
+  await dialog.getByRole('textbox', { name: '收藏夹名称', exact: true }).fill('新收藏夹')
+  await page.keyboard.type('sq')
+  expect((await invoke('snapshot')).data.playback.work.id).toBe(work.id)
+  await expect(dialog.getByRole('checkbox', { name: '设为私密', exact: true })).toBeChecked()
+  await screenshot(info.outputPath('favorite-create-folder.png'))
+  await dialog.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(dialog.getByRole('checkbox', { name: '新收藏夹sq', exact: true })).toBeChecked()
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(false)
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  expect((await invoke('query', { accountId, source: 'favorites', folderId: '9' })).data.total).toBe(1)
+  const create = await app.evaluate(() => (globalThis as any).__favoriteWrites[0])
+  expect(create).toMatchObject({
+    operation: 'favoriteFolderCreate',
+    params: { secret: '1', action: '1', version_code: '230000', collects_name: '新收藏夹sq' }
+  })
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('button', { name: '快捷键', exact: true }).click()
+  await expect(
+    page.getByRole('combobox', { name: '收藏 / 取消收藏（当前作品）快捷键', exact: true })
+  ).toHaveText('B')
+  await app.close()
+  await launch()
+  expect((await invoke('snapshot')).data.playbackPreferences.shortcuts.favorite).toBe('KeyB')
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
+})
+
+test('keeps confirmed favorite progress after an empty write response and requires fresh reads instead of automatic retries', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+    ;(globalThis as any).__favoriteWriteFailure = 'favoriteFolderAdd'
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const work = (await invoke('snapshot')).data.playback.work
+  await page.keyboard.press('s')
+  const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
+  await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('未自动重发')
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
+  expect((await invoke('query', { accountId, source: 'favorites', folderId: '8' })).data.total).toBe(0)
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFailure = ''
+  })
+  await dialog.getByRole('button', { name: '重新读取', exact: true }).click()
+  await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  expect((await invoke('query', { accountId, source: 'favorites', folderId: '8' })).data.total).toBe(1)
+  expect(
+    await app.evaluate(() => (globalThis as any).__favoriteWrites.map((write: any) => write.operation))
+  ).toEqual(['favoriteAdd', 'favoriteFolderAdd', 'favoriteFolderAdd'])
+})
+
+test('preserves an already sent favorite when a slider appears and never uses writes as recovery probes', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+    ;(globalThis as any).__favoriteWriteHold = 'favoriteAdd'
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const work = (await invoke('snapshot')).data.playback.work
+  await page.keyboard.press('s')
+  const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect
+    .poll(() => app.evaluate(() => typeof (globalThis as any).__releaseFavoriteWrite))
+    .toBe('function')
+  await remoteChallenge(accountId, 'visible')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication?.kind).toBe('verification')
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteHold = ''
+    ;(globalThis as any).__releaseFavoriteWrite()
+  })
+  await expect(dialog).toHaveCount(0)
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(1)
+  await remoteChallenge(accountId, 'none')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(1)
+})
+
+test('waits for the current favorite write on close, skips remaining folders and keeps the confirmed result after restart', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+    ;(globalThis as any).__favoriteWriteHold = 'favoriteAdd'
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  const work = (await invoke('snapshot')).data.playback.work
+  await page.keyboard.press('s')
+  const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
+  await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
+  await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect
+    .poll(() => app.evaluate(() => typeof (globalThis as any).__releaseFavoriteWrite))
+    .toBe('function')
+  await app.evaluate(() => {
+    setTimeout(() => {
+      ;(globalThis as any).__favoriteWriteHold = ''
+      ;(globalThis as any).__releaseFavoriteWrite()
+    }, 1000)
+  })
+  await app.close()
+  await launch()
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
+  expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
+})
+
+test('finishes empty favorite folders with null or omitted terminal arrays after repeated end confirmation', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(3)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteNullTerminals = true
+  })
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await page.getByRole('button', { name: '同步收藏', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 60000 })
+    .toMatchObject({ status: 'completed', foldersDone: 3, foldersTotal: 3 })
+  const requests = await app.evaluate(() => (globalThis as any).__favoriteRequests)
+  for (const id of ['8', '9']) {
+    expect(requests.filter((request: any) => request.folderId === id)).toHaveLength(2)
+    expect((await invoke('query', { accountId, source: 'favorites', folderId: id })).data.total).toBe(0)
+  }
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events.some((event: any) => event.code === 'INVALID_RESPONSE')).toBe(false)
+  expect(events.filter((event: any) => event.code === 'END_CONFIRMED').length).toBeGreaterThanOrEqual(5)
+})
+
+for (const kind of ['video', 'live'] as const) {
+  test(`keeps ${kind} clean screen free of controls and restores the same frame by keyboard across zoom and prepared playback`, async ({}, info) => {
+    test.setTimeout(testTimeout(120000))
+    await prepareQueue(3, kind === 'live')
+    const preferences = (await invoke('snapshot')).data.playbackPreferences
+    await invoke('playbackPreferences', {
+      preferences: { ...preferences, autoplay: false, continuous: false }
+    })
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find((win) =>
+        win.webContents.getURL().startsWith('mylike://ui/')
+      )!
+      win.setSize(1340, 900)
+      win.showInactive()
+    })
+    await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+    await readyVideo(0)
+    const media = page.locator('video')
+    const bounds = () =>
+      page.evaluate(() => {
+        const video = document.querySelector('video')!.getBoundingClientRect()
+        const stage = document.querySelector('.stage')!.getBoundingClientRect()
+        return {
+          x: video.x,
+          y: video.y,
+          width: video.width,
+          height: video.height,
+          stage: { x: stage.x, y: stage.y, width: stage.width, height: stage.height }
+        }
+      })
+    for (const zoom of [1, 1.25, 1.5]) {
+      await app.evaluate(
+        ({ BrowserWindow }, zoom) =>
+          BrowserWindow.getAllWindows()
+            .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+            .webContents.setZoomFactor(zoom),
+        zoom
+      )
+      await seekVideo(0.8)
+      await expect.poll(() => media.evaluate((video) => (video as HTMLVideoElement).seeking)).toBe(false)
+      const original = await bounds()
+      const element = await media.elementHandle()
+      await page.mouse.move(0, 0)
+      await page.evaluate(() => (document.activeElement as HTMLElement)?.blur())
+      const before = await page
+        .locator('.stage')
+        .screenshot({ path: info.outputPath(`${kind}-${zoom}-before.png`) })
+      await page.keyboard.press('h')
+      await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(
+        0
+      )
+      await expect(page.locator('[popover]:popover-open')).toHaveCount(0)
+      await page.keyboard.press('Escape')
+      await expect.poll(bounds).toEqual(original)
+      expect(
+        await element!.evaluate((video) => video.isConnected && video === document.querySelector('video'))
+      ).toBe(true)
+      await page.mouse.move(0, 0)
+      await page.evaluate(() => (document.activeElement as HTMLElement)?.blur())
+      const after = await page
+        .locator('.stage')
+        .screenshot({ path: info.outputPath(`${kind}-${zoom}-after.png`) })
+      expect(
+        changedPixels(before, after),
+        'Paused media must retain its painted geometry, allowing tiny compositor rounding differences'
+      ).toBeLessThan(0.001)
+      await element?.dispose()
+    }
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+        .webContents.setZoomFactor(1)
+    )
+    await page.getByRole('button', { name: '开始播放', exact: true }).click()
+    await page.keyboard.press('f')
+    await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+    await expect
+      .poll(async () => {
+        const box = await bounds()
+        return Math.abs(box.width - box.stage.width) < 1 && Math.abs(box.height - box.stage.height) < 1
+      })
+      .toBe(true)
+    const fullscreenBounds = await bounds()
+    await page.keyboard.press('h')
+    await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(0)
+    await page.keyboard.press('f')
+    await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false)
+    await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(0)
+    await page.keyboard.press('f')
+    await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+    await expect(page.getByRole('region', { name: '播放器', exact: true }).getByRole('button')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect.poll(bounds).toEqual(fullscreenBounds)
+    await expect.poll(() => media.evaluate((video) => (video as HTMLVideoElement).paused)).toBe(false)
+    await page.getByRole('button', { name: '暂停播放', exact: true }).click()
+    await page.keyboard.press('Escape')
+    await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false)
+    if (kind === 'video') {
+      await expect
+        .poll(() => app.evaluate(() => (globalThis as any).__mediaRequests?.length ?? 0))
+        .toBeGreaterThan(1)
+      await page.getByRole('button', { name: '下一条', exact: true }).click()
+      await readyVideo(1)
+      await expect(page.locator('.prepared-video')).toBeVisible()
+      const original = await bounds()
+      await page.keyboard.press('h')
+      await page.keyboard.press('Escape')
+      await expect.poll(bounds).toEqual(original)
+    }
+  })
+}
+
+async function prepareCollectedQueue(count = 3) {
+  const fixture = await prepareQueue(count)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFixture = true
+  })
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  for (let index = 0; index < count; index++) {
+    await readyVideo(index)
+    const queue = (await invoke('snapshot')).data.playback as QueueState
+    const editor = await invoke('favoriteEditor', {
+      accountId: fixture.accountId,
+      queueId: queue.queueId,
+      revision: queue.revision,
+      workId: queue.work.id
+    })
+    expect(editor.ok).toBe(true)
+    expect(
+      (
+        await invoke('favoriteSave', {
+          accountId: fixture.accountId,
+          token: editor.data.token,
+          folderIds: ['8', '9007199254740993999']
+        })
+      ).ok
+    ).toBe(true)
+    if (index + 1 < count) await page.getByRole('button', { name: '下一条', exact: true }).click()
+  }
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await expect(page.locator('.list-caption')).toContainText(`${count} 条内容`)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWrites = []
+  })
+  return fixture
+}
+
+test('uncollects current favorite with star and shortcut in fullscreen, synchronizes every folder and preserves likes', async ({}, info) => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareCollectedQueue(2)
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo(0)
+  const current = (await invoke('snapshot')).data.playback as QueueState
+  await page.keyboard.press('f')
+  await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  const star = page.getByRole('button', { name: '取消当前收藏', exact: true })
+  await expect(star).toHaveAttribute('aria-pressed', 'true')
+  await star.click()
+  const confirm = page.getByRole('dialog', { name: '取消抖音收藏', exact: true })
+  await expect(confirm).toContainText('所有收藏夹')
+  await confirm.getByRole('button', { name: '取消', exact: true }).click()
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites)).toEqual([])
+  await page.keyboard.press('s')
+  await expect(confirm).toBeVisible()
+  await screenshot(info.outputPath('uncollect-fullscreen-confirm.png'))
+  await confirm.getByRole('button', { name: '确认取消抖音收藏', exact: true }).click()
+  await expect(confirm).toHaveCount(0)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike)
+    .toMatchObject({ source: 'favorites', success: 1, unknown: 0, status: 'completed' })
+  await expect(star).toBeDisabled()
+  await expect(star).toHaveAttribute('aria-pressed', 'false')
+  expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
+  expect((await invoke('snapshot')).data.playback.work.id).toBe(current.work.id)
+  const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
+  expect(writes).toHaveLength(1)
+  expect(writes[0]).toMatchObject({
+    operation: 'favoriteRemove',
+    method: 'POST',
+    body: { action: '0', aweme_id: current.work.id },
+    params: { _fixture_sdk: 'page-main-world' }
+  })
+  for (const folderId of ['8', '9007199254740993999'])
+    expect((await invoke('query', { accountId, source: 'favorites', folderId })).data.total).toBe(1)
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(2)
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+})
+
+test('bulk uncollects the fixed favorites selection from a folder and persists results across restart', async ({}, info) => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareCollectedQueue(3)
+  await chooseOption('收藏夹筛选', '旅行 · 3')
+  await page.getByRole('button', { name: '批量选择', exact: true }).click()
+  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
+  await expect(page.getByLabel('批量操作')).toContainText('已选 3 条')
+  await expect(page.getByRole('button', { name: '删除本地条目', exact: true })).toHaveCount(0)
+  // A selected favorites queue must retain its source, rather than become a likes queue.
+  await page.getByRole('button', { name: '播放所选', exact: true }).click()
+  await readyVideo(0)
+  expect((await invoke('snapshot')).data.playback.source).toBe('favorites')
+  await expect(page.getByRole('button', { name: '取消当前收藏', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '取消抖音收藏', exact: true }).click()
+  const confirm = page.getByRole('dialog', { name: '取消抖音收藏', exact: true })
+  await expect(confirm).toContainText('3 条作品')
+  await confirm.getByRole('button', { name: '确认取消抖音收藏', exact: true }).click()
+  await expect(page.getByRole('region', { name: '取消收藏任务', exact: true })).toBeVisible()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike, { timeout: 15000 })
+    .toMatchObject({ source: 'favorites', success: 3, status: 'completed' })
+  await screenshot(info.outputPath('bulk-uncollect-complete.png'))
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(0)
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(3)
+  expect(
+    (await invoke('favoriteFolders', { accountId })).data.every((folder: any) => folder.localCount === 0)
+  ).toBe(true)
+  const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
+  expect(writes).toHaveLength(3)
+  expect(
+    writes.every((write: any) => write.operation === 'favoriteRemove' && write.body.action === '0')
+  ).toBe(true)
+  await terminateApp(app, profile)
+  await launch()
+  expect((await invoke('snapshot')).data.unlike).toMatchObject({
+    source: 'favorites',
+    success: 3,
+    status: 'completed'
+  })
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(0)
+})
+
+test('pauses bulk uncollect on an unknown response and verifies read-only before continuing only unsent items', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareCollectedQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFailure = 'favoriteRemove'
+  })
+  await page.getByRole('button', { name: '批量选择', exact: true }).click()
+  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
+  await page.getByRole('button', { name: '取消抖音收藏', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消抖音收藏', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike)
+    .toMatchObject({ status: 'paused', unknown: 1, pending: 1 })
+  const task = page.getByRole('region', { name: '取消收藏任务', exact: true })
+  await expect(task).toContainText('结果未知 1')
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(2)
+  await task.getByRole('button', { name: '重新核验', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike)
+    .toMatchObject({ unknown: 0, failed: 1, pending: 1 })
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(1)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteWriteFailure = ''
+  })
+  await task.getByRole('button', { name: '继续未发送项', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike)
+    .toMatchObject({ status: 'completed', success: 1, failed: 1, unknown: 0 })
+  expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(2)
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(1)
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(2)
 })

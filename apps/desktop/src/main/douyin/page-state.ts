@@ -1,6 +1,12 @@
 import type { Operation } from './page-request'
 
-export type AccessTarget = { operation: Exclude<Operation, 'unlike'>; parameters: Record<string, string> }
+export type AccessTarget = {
+  operation: Exclude<
+    Operation,
+    'unlike' | 'favoriteRemove' | 'favoriteAdd' | 'favoriteFolderAdd' | 'favoriteFolderCreate'
+  >
+  parameters: Record<string, string>
+}
 export type AccessEvent =
   | { type: 'changed'; accountId: string }
   | { type: 'required'; accountId: string; kind: 'login' | 'verification'; target: AccessTarget }

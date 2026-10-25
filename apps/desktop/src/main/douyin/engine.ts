@@ -2,7 +2,7 @@ import { BrowserWindow, session } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { EngineStatus } from '../../shared/contracts'
 import { AppError } from '../errors'
-import { buildPageScript, serializeForScript, type Operation } from './page-request'
+import { buildPageScript, serializeForScript, isWriteOperation, type Operation } from './page-request'
 import { parseResponse, parseIdentity } from './parse'
 import { quietMediaScript } from './page-media'
 import { pageStateScript, type AccessEvent, type AccessTarget, type PageState } from './page-state'
@@ -117,7 +117,7 @@ export class DouyinEngine {
       if (state.ready && state.captcha && !this.challengeSeen) {
         this.challengeSeen = true
         // Never interrupt a write whose remote result may still arrive.
-        if (this.operation && this.operation !== 'unlike')
+        if (this.operation && !isWriteOperation(this.operation))
           this.cancelRequest?.(
             new AppError('VERIFICATION_REQUIRED', '检测到安全验证，已保留进度；请在抖音窗口完成验证。')
           )
@@ -353,9 +353,11 @@ export class DouyinEngine {
     try {
       win = await Promise.race([ready, cancelled])
       const target: AccessTarget =
-        operation === 'unlike'
-          ? { operation: 'detail', parameters: { aweme_id: parameters.aweme_id ?? '' } }
-          : { operation, parameters: { ...parameters } }
+        operation === 'favoriteFolderCreate'
+          ? { operation: 'folders', parameters: { cursor: '0', count: '18' } }
+          : isWriteOperation(operation)
+            ? { operation: 'detail', parameters: { aweme_id: parameters.aweme_id ?? '' } }
+            : { operation, parameters: { ...parameters } }
       if (!options.recovery) this.target = target
       if (!options.recovery && this.interaction) {
         this.requireAttention(accountId, this.interaction, target)
@@ -397,12 +399,12 @@ export class DouyinEngine {
       if (typeof reply.body !== 'string' || typeof reply.status !== 'number')
         throw new AppError('INVALID_RESPONSE', '接口响应格式不正确。')
       status = reply.status
-      summary = responseSummary(reply.body, reply.status)
+      summary = responseSummary(reply.body, reply.status, operation)
       const data = parseResponse(reply.body, reply.status)
       if (operation === 'self') parseIdentity(data)
       // Preserve a confirmed write promptly. A challenge detected afterward
       // affects subsequent operations, not this response's known outcome.
-      if (operation === 'unlike') return data
+      if (isWriteOperation(operation)) return data
       const after = await this.pageState(accountId)
       if (this.window !== win || this.accountId !== accountId)
         throw new AppError('CANCELLED', '账号已变化，旧响应已丢弃。')
@@ -533,9 +535,5 @@ export class DouyinEngine {
     } catch {
       throw new AppError('CACHE_CLEAR_FAILED', '缓存未能完整清理，请稍后重试；本地数据和登录凭据未主动清理。')
     }
-  }
-  async cacheSize(accountId: string | null): Promise<number> {
-    const ui = await session.fromPartition('persist:mylike-ui').getCacheSize()
-    return ui + (accountId ? await this.partition(accountId).getCacheSize() : 0)
   }
 }

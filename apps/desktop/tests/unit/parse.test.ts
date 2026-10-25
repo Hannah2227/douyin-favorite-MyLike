@@ -6,12 +6,45 @@ import {
   parseFavoritesPage,
   parseLikedPage,
   parseMedia,
+  parseFavoriteState,
   parseResponse,
   safeMediaUrl
 } from '../../src/main/douyin/parse'
 import { buildPageScript } from '../../src/main/douyin/page-request'
 
 describe('platform responses', () => {
+  it('accepts null and omitted collection arrays only with explicit business success and an explicit terminal marker', () => {
+    for (const value of [null, undefined]) {
+      const data = { status_code: 0, has_more: 0, aweme_list: value, collects_list: value }
+      expect(parseFavoritesPage(data)).toEqual({ items: [], cursor: '0', hasMore: false })
+      expect(parseFavoriteFolders(data)).toEqual({ folders: [], cursor: '0', hasMore: false })
+      for (const bad of [
+        { ...data, status_code: undefined },
+        { ...data, status_code: 8 },
+        { ...data, has_more: undefined },
+        { ...data, has_more: 1, cursor: '123' },
+        { ...data, aweme_list: {}, collects_list: {} }
+      ]) {
+        expect(() => parseFavoritesPage(bad)).toThrow()
+        expect(() => parseFavoriteFolders(bad)).toThrow()
+      }
+      expect(() => parseLikedPage(data)).toThrow()
+    }
+  })
+  it('requires an explicit favorite state for the exact work and preserves string folder IDs from official responses', () => {
+    expect(
+      parseFavoriteState({ aweme_detail: { aweme_id: '123', collect_stat: '1', aweme_type: 68 } }, '123')
+    ).toMatchObject({ collected: true, type: '68', work: { id: '123' } })
+    expect(() => parseFavoriteState({ aweme_detail: { aweme_id: '123' } }, '123')).toThrow(/明确的收藏状态/)
+    expect(() => parseFavoriteState({ aweme_detail: { aweme_id: '124', collect_stat: 1 } }, '123')).toThrow(
+      /目标作品/
+    )
+    const data = parseResponse(
+      '{"status_code":0,"has_more":0,"collects_list":[{"collects_id":9007199254740993999,"collects_id_str":"9007199254740993999","collects_name":"旅行","status":0}]}',
+      200
+    )
+    expect(parseFavoriteFolders(data).folders[0]).toMatchObject({ id: '9007199254740993999', private: true })
+  })
   it('rejects missing or zero cursors on nonterminal pages without rewinding a deep checkpoint', () => {
     for (const cursor of [undefined, null, '0', '00']) {
       expect(() =>
@@ -152,6 +185,55 @@ describe('main-world page request', () => {
     expect(result.id).toBe('r1')
     expect(new URL(requested).searchParams.get('aweme_id')).toBe(value)
     expect(context.injected).toBe(false)
+  })
+  it('matches official favorite POST query and form contracts without exposing tokens or inventing signatures', async () => {
+    const requests: { url: URL; options: RequestInit }[] = []
+    const context = {
+      URLSearchParams,
+      AbortController,
+      Map,
+      setTimeout,
+      clearTimeout,
+      fetch: async (url: string, options: RequestInit) => {
+        requests.push({ url: new URL(url), options })
+        return { status: 200, headers: new Headers(), text: async () => '{"status_code":0}' }
+      }
+    }
+    for (const [operation, parameters] of [
+      ['favoriteAdd', { aweme_id: '123', aweme_type: '68' }],
+      [
+        'favoriteFolderAdd',
+        {
+          aweme_id: '123',
+          item_ids: '123',
+          item_type: '2',
+          to_collects_id: '9007199254740993999',
+          collects_name: '旅行 & 生活'
+        }
+      ],
+      ['favoriteFolderCreate', { action: '1', collects_name: '新收藏夹', secret: '1' }],
+      ['favoriteRemove', { aweme_id: '123', aweme_type: '68', action: '1' }]
+    ] as const) {
+      await runInNewContext(buildPageScript({ id: operation, operation, parameters, timeout: 1000 }), context)
+    }
+    expect(requests.map((request) => request.options.method)).toEqual(['POST', 'POST', 'POST', 'POST'])
+    expect(new URLSearchParams(String(requests[0]!.options.body)).get('aweme_type')).toBe('68')
+    expect(requests[0]!.url.searchParams.has('aweme_id')).toBe(false)
+    expect(requests[1]!.url.pathname).toBe('/aweme/v1/web/collects/video/move/')
+    expect(requests[1]!.url.searchParams.get('item_ids')).toBe('123')
+    expect(requests[1]!.url.searchParams.get('to_collects_id')).toBe('9007199254740993999')
+    expect(requests[1]!.url.searchParams.get('collects_name')).toBe('旅行 & 生活')
+    expect(requests[1]!.url.searchParams.has('move_collects_list')).toBe(false)
+    expect(requests[2]!.url.searchParams.get('version_code')).toBe('230000')
+    expect(requests[2]!.url.searchParams.get('secret')).toBe('1')
+    expect(requests[3]!.url.pathname).toBe('/aweme/v1/web/aweme/collect/')
+    expect(Object.fromEntries(new URLSearchParams(String(requests[3]!.options.body)))).toEqual({
+      aweme_id: '123',
+      aweme_type: '68',
+      action: '0'
+    })
+    expect(requests[3]!.url.searchParams.has('action')).toBe(false)
+    expect(requests.every((request) => request.options.credentials === 'include')).toBe(true)
   })
   it('actually aborts fetch when the page-side deadline expires', async () => {
     let aborted = false

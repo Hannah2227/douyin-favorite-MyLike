@@ -33,6 +33,7 @@ const queueSourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('filter'), filter: filterSchema.omit({ accountId: true }) }),
   z.object({
     type: z.literal('ids'),
+    source: z.enum(['likes', 'favorites']).optional(),
     ids: z.array(workIdSchema).min(1).max(100000),
     sort: z.enum(['published', 'collected']).default('published')
   })
@@ -58,6 +59,22 @@ export const commands = {
     action: z.enum(['pause', 'resume', 'stop'])
   }),
   favoriteFolders: z.object({ accountId: idSchema }),
+  favoriteStatus: z.object({ accountId: idSchema, workId: workIdSchema }),
+  favoriteEditor: playbackScopeSchema.extend({ workId: workIdSchema }),
+  favoriteSave: z.object({
+    accountId: idSchema,
+    token: idSchema,
+    folderIds: z
+      .array(workIdSchema)
+      .max(100)
+      .refine((ids) => new Set(ids).size === ids.length)
+  }),
+  favoriteCreateFolder: z.object({
+    accountId: idSchema,
+    token: idSchema,
+    name: z.string().trim().min(1).max(30),
+    private: z.boolean()
+  }),
   collectionControl: z.object({
     accountId: idSchema,
     taskId: idSchema,
@@ -71,6 +88,7 @@ export const commands = {
   unlikeStart: z.object({
     accountId: idSchema,
     workIds: z.array(workIdSchema).min(1).max(1000),
+    source: z.enum(['likes', 'favorites']).default('likes'),
     mode: z.enum(['single', 'batch'])
   }),
   unlikeControl: z.object({ accountId: idSchema, taskId: idSchema, action: z.enum(['resume', 'stop']) }),
@@ -236,6 +254,7 @@ export interface CollectionTask {
 export interface UnlikeTask {
   id: string
   accountId: string
+  source: 'likes' | 'favorites'
   mode: 'single' | 'batch'
   remoteId: string
   status: 'running' | 'paused' | 'stopped' | 'completed'
@@ -300,13 +319,22 @@ export interface DataInfo {
   metadataBytes: number
   backupsBytes: number
   backupsCount: number
-  cacheBytes: number
 }
 export interface FavoriteFolder {
   id: string
   title: string
   remoteCount: number
   localCount: number
+  private?: boolean
+  coverUrl?: string | null
+}
+export interface FavoriteEditor {
+  token: string
+  accountId: string
+  workId: string
+  collected: boolean
+  localCount: number
+  folders: FavoriteFolder[]
 }
 export interface FavoritesTask {
   id: string
@@ -332,6 +360,10 @@ export interface Outputs {
   favoritesStart: FavoritesTask
   favoritesControl: FavoritesTask
   favoriteFolders: FavoriteFolder[]
+  favoriteStatus: { collected: boolean }
+  favoriteEditor: FavoriteEditor
+  favoriteSave: { collected: true; foldersAdded: number }
+  favoriteCreateFolder: FavoriteFolder
   snapshot: Snapshot
   createAccount: Account
   switchAccount: null

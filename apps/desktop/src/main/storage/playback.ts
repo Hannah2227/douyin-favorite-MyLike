@@ -106,8 +106,9 @@ export class PlaybackStore {
             .all(...params)
             .map((row) => String(row.id))
         } else {
+          const table = input.source.source === 'favorites' ? 'saved_items' : 'account_items'
           const find = this.db.prepare(
-            'SELECT w.id,w.publishedAt,a.firstSeen FROM works w JOIN account_items a ON a.workId=w.id WHERE a.accountId=? AND w.id=?'
+            `SELECT w.id,w.publishedAt,a.firstSeen FROM works w JOIN ${table} a ON a.workId=w.id WHERE a.accountId=? AND w.id=?`
           )
           const rows = [...new Set<string>(input.source.ids)].map((id) => {
             const row = find.get(input.accountId, id)
@@ -151,7 +152,9 @@ export class PlaybackStore {
             index,
             ids.length,
             Date.now(),
-            input.source.type === 'filter' ? (input.source.filter.source ?? 'likes') : 'likes'
+            input.source.type === 'filter'
+              ? (input.source.filter.source ?? 'likes')
+              : (input.source.source ?? 'likes')
           )
         const insert = this.db.prepare('INSERT INTO playback_items VALUES(?,?,?)')
         ids.forEach((workId, index) => insert.run(id, index, workId))

@@ -42,6 +42,10 @@ export interface Inputs {
   }
   favoritesSave: FavoritesPage
   favoriteFolders: { accountId: string }
+  favoriteStatus: { accountId: string; workId: string }
+  favoriteWriteGuard: { accountId: string; workId: string }
+  favoriteRememberFolder: { accountId: string; remoteId: string; folder: FavoriteFolder }
+  favoriteConfirm: { accountId: string; remoteId: string; work: Work; folder?: FavoriteFolder }
   accounts: undefined
   createAccount: { id: string; name: string }
   bindAccount: { accountId: string; remoteId: string; nickname: string; avatarUrl: string | null }
@@ -86,7 +90,13 @@ export interface Inputs {
   unlikeTask: { accountId: string; taskId?: string }
   unlikeHistory: { accountId: string }
   unlikeItems: { accountId: string; taskId: string; offset: number; limit: number }
-  unlikeCreate: { accountId: string; id: string; workIds: string[]; mode: 'single' | 'batch' }
+  unlikeCreate: {
+    accountId: string
+    id: string
+    workIds: string[]
+    mode: 'single' | 'batch'
+    source?: 'likes' | 'favorites'
+  }
   unlikeUpdate: {
     accountId: string
     taskId: string
@@ -134,6 +144,10 @@ export interface Replies {
   favoritesUpdate: FavoritesTask
   favoritesSave: FavoritesTask
   favoriteFolders: FavoriteFolder[]
+  favoriteStatus: { collected: boolean }
+  favoriteWriteGuard: null
+  favoriteRememberFolder: FavoriteFolder
+  favoriteConfirm: null
   accounts: Account[]
   createAccount: Account
   bindAccount: Account

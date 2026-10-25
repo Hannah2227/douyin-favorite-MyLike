@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DataInfo } from '../../shared/contracts'
 import { call, type Perform } from './api'
-import { ConfirmDialog } from './ConfirmDialog'
 import { formatBytes as size } from './format'
 
 export function DataPanel({
@@ -9,21 +8,16 @@ export function DataPanel({
   busy,
   perform,
   importFile,
-  exportAll,
-  notice
+  exportAll
 }: {
   accountId: string | null
   busy: boolean
   perform: Perform
   importFile: () => void
   exportAll: () => void
-  notice: (message: string) => void
 }) {
   const [info, setInfo] = useState<DataInfo | null>(null),
-    [error, setError] = useState(''),
-    [clear, setClear] = useState(false),
-    [checking, setChecking] = useState(false),
-    [checked, setChecked] = useState<{ ok: boolean; checkedAt: number; issues: number } | null>(null)
+    [error, setError] = useState('')
   const sequence = useRef(0)
   const refresh = async () => {
     const current = ++sequence.current
@@ -57,18 +51,6 @@ export function DataPanel({
         <button disabled={!accountId || busy} onClick={exportAll}>
           导出全部本地内容
         </button>
-        <button
-          disabled={busy}
-          onClick={() =>
-            void perform('创建一致性备份', async () => {
-              const result = await call(window.mylike.invoke('backup', {}))
-              notice(`备份已创建：${result.fileName}`)
-              await refresh()
-            })
-          }
-        >
-          立即备份数据库
-        </button>
       </div>
       {info && (
         <dl className="diagnostics">
@@ -80,8 +62,6 @@ export function DataPanel({
           <dd>
             {info.backupsCount} 份 · {size(info.backupsBytes)}
           </dd>
-          <dt>当前页面缓存</dt>
-          <dd>{size(info.cacheBytes)}</dd>
         </dl>
       )}
       {error && (
@@ -109,68 +89,7 @@ export function DataPanel({
           打开备份目录
         </button>
         <button onClick={() => void refresh()}>刷新占用</button>
-        <button
-          disabled={checking || busy}
-          onClick={() => {
-            setChecking(true)
-            void perform('检查本地数据库', async () => {
-              setChecked(null)
-              const result = await call(window.mylike.invoke('checkDatabase', {}))
-              setChecked(result)
-            }).finally(() => setChecking(false))
-          }}
-        >
-          {checking ? '正在检查…' : '检查数据库完整性'}
-        </button>
-        <button
-          disabled={!accountId || busy}
-          onClick={() => {
-            setError('')
-            setClear(true)
-          }}
-        >
-          清理页面缓存
-        </button>
       </div>
-      {checked && (
-        <p className={checked.ok ? 'check-success' : 'task-error'} role="status">
-          {checked.ok
-            ? '检查通过：数据库结构与引用完整。'
-            : `发现 ${checked.issues} 项问题，请先备份数据并保留诊断。`}{' '}
-          · {new Date(checked.checkedAt).toLocaleTimeString('zh-CN')}
-        </p>
-      )}
-      {clear && (
-        <ConfirmDialog
-          title="清理页面缓存"
-          busy={busy}
-          cancel={() => setClear(false)}
-          confirmLabel="确认清理缓存"
-          confirm={() =>
-            accountId &&
-            void perform('清理页面缓存', async () => {
-              try {
-                await call(window.mylike.invoke('clearCache', { accountId }))
-                setClear(false)
-                notice('页面缓存已清理，本地列表与登录凭据保留。')
-                await refresh()
-              } catch (error) {
-                setError(error instanceof Error ? error.message : '缓存清理未完成。')
-                throw error
-              }
-            })
-          }
-        >
-          <p>
-            将停止页面请求并关闭抖音窗口，清理当前账号及内容界面的网络与代码缓存。本地列表和登录凭据保留。
-          </p>
-          {error && (
-            <p role="alert" className="task-error">
-              {error}
-            </p>
-          )}
-        </ConfirmDialog>
-      )}
     </section>
   )
 }

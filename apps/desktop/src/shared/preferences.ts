@@ -26,6 +26,7 @@ export const shortcutActions = {
   mute: { label: '静音', key: 'KeyN', group: '声音与倍速' },
   continuous: { label: '切换连播', key: 'KeyA', group: '播放' },
   unlike: { label: '取消当前条目点赞', key: 'KeyZ', group: '作品' },
+  favorite: { label: '收藏 / 取消收藏（当前作品）', key: 'KeyS', group: '作品' },
   rateCycle: { label: '倍速循环（0.75x–2x）', key: 'None', group: '声音与倍速' },
   original: { label: '打开原页看评论', key: 'None', group: '作品' },
   queue: { label: '播放列表', key: 'KeyQ', group: '界面' },

@@ -1,0 +1,211 @@
+.favorite-dialog {
+  --text: #f0f0f5;
+  --surface: #26262f;
+  --surface2: #30303b;
+  --line: #ffffff16;
+  --accent: #ff2b58;
+  color: var(--text);
+  position: fixed;
+  inset: auto 18px 65px auto;
+  margin: 0;
+  width: min(380px, calc(100vw - 36px));
+  max-height: calc(100dvh - 110px);
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid #ffffff12;
+  border-radius: 18px;
+  background: #26262f;
+  box-shadow: 0 18px 80px #0008;
+  -webkit-app-region: no-drag;
+}
+.favorite-dialog::backdrop {
+  background: #0005;
+}
+.favorite-dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.favorite-dialog-heading h2 {
+  margin: 0 auto 0 0;
+  color: #b6b6c2;
+  font-size: 15px;
+  font-weight: 500;
+}
+.favorite-dialog-heading button {
+  padding: 3px;
+  border: 0;
+  background: transparent;
+  color: #b6b6c2;
+  font-size: 13px;
+}
+.favorite-dialog-heading .favorite-close {
+  margin-left: 8px;
+}
+.favorite-folder-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(400px, calc(100dvh - 290px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.favorite-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 66px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #202028;
+  cursor: pointer;
+}
+.favorite-folder-row:hover {
+  background: #30303b;
+}
+.favorite-folder-cover {
+  display: flex;
+  flex: 0 0 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 9px;
+  color: #9a9aa8;
+  background: #ffffff0b;
+}
+.favorite-folder-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.favorite-folder-name {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.favorite-folder-name > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.favorite-folder-name small {
+  color: #888894;
+  font-size: 13px;
+  font-weight: 400;
+}
+.favorite-folder-name svg {
+  flex-shrink: 0;
+  color: #888894;
+}
+.favorite-folder-row input[type='checkbox'] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+  border: 1.5px solid #777783;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.favorite-folder-row input[type='checkbox']:checked {
+  background: #ff2b58;
+  border-color: #ff2b58;
+}
+.favorite-folder-row input[type='checkbox']::after {
+  content: '';
+  width: 5px;
+  height: 9px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+  opacity: 0;
+}
+.favorite-folder-row input[type='checkbox']:checked::after {
+  opacity: 1;
+}
+.favorite-default {
+  cursor: default;
+}
+.favorite-default input:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.favorite-dialog .favorite-save {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 20px;
+  border: 0;
+  border-radius: 10px;
+  color: white;
+  background: #ff2b58;
+  font-size: 15px;
+  font-weight: 600;
+}
+.favorite-dialog .favorite-save:hover:not(:disabled) {
+  background: #ff426a;
+}
+.favorite-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 35px 0;
+  color: #b6b6c2;
+  font-size: 13px;
+}
+.favorite-error {
+  margin-top: 14px;
+  color: #ff9eb1;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.favorite-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.favorite-recovery button {
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.favorite-create-form {
+  margin-bottom: 16px;
+}
+.favorite-create-form > input {
+  width: 100%;
+  color: #f0f0f5;
+  background: #202028;
+}
+.favorite-create-form > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.favorite-create-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b6b6c2;
+}
+.favorite-create-form input[type='checkbox'] {
+  accent-color: #ff2b58;
+}
+.favorite-create-form button {
+  padding: 7px 16px;
+  font-size: 12px;
+}

@@ -62,7 +62,7 @@ export function purgeAccountBackups(root: string, accountId: string): void {
         if (source.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok')
           throw new Error('Invalid backup')
         const version = Number(source.prepare('PRAGMA user_version').get()?.user_version)
-        if (version < 1 || version > 6) throw new Error('Unsupported backup version')
+        if (version < 1 || version > 7) throw new Error('Unsupported backup version')
         if (!source.prepare('SELECT 1 FROM accounts WHERE id=?').get(accountId)) continue
         staged.push({ original, temporary })
         source.prepare('VACUUM INTO ?').run(temporary)
