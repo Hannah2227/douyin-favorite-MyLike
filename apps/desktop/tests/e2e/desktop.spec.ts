@@ -994,13 +994,15 @@ test('keeps gallery music while changing slides and releases media when leaving 
   ).toBeGreaterThanOrEqual(2)
   await page.getByRole('button', { name: '返回内容库' }).click()
   await expect(page.locator('video, audio')).toHaveCount(0)
-  expect(
-    await page.evaluate(() =>
-      (window as any).__mediaBeforeExit.every(
-        (node: HTMLMediaElement) => node.paused && !node.hasAttribute('src')
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__mediaBeforeExit.every(
+          (node: HTMLMediaElement) => !node.isConnected && node.paused && !node.hasAttribute('src')
+        )
       )
     )
-  ).toBe(true)
+    .toBe(true)
 })
 
 test('releases and recreates the engine while keeping account cookies across app restart', async () => {
@@ -1404,12 +1406,18 @@ test('reuses the decoded next video without a second CDN request and releases de
   ).toEqual({ muted: false, volume: preferences.volume })
   await screenshot(info.outputPath('prepared-next.png'))
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
-  await expect(page.getByRole('region', { name: '播放器' })).toHaveCount(0)
-  expect(
-    await page.evaluate(() =>
-      (window as any).__createdVideos.every((v: HTMLVideoElement) => v.paused && !v.getAttribute('src'))
+  // Leaving playback hides the accessible region before IPC flush and unmount.
+  // Wait for disposal itself, rather than treating aria-hidden as completion.
+  await expect(page.locator('.player-view')).toHaveCount(0)
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__createdVideos.every(
+          (v: HTMLVideoElement) => !v.isConnected && v.paused && !v.getAttribute('src')
+        )
+      )
     )
-  ).toBe(true)
+    .toBe(true)
 })
 
 test('keeps clean screen across tracks and restores the queue, layout and fullscreen without resizing controls', async ({}, info) => {
