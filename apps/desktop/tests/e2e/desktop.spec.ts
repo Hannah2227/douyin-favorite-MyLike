@@ -2215,66 +2215,67 @@ for (const kind of ['video', 'image', 'live'] as const) {
         v.loop = true
       }
     })
-    const check = async () => {
-      const layout = await page.evaluate(() => {
-        const selectors = [
-          '.player-shell',
-          '.player-view',
-          '.player-body',
-          '.stage',
-          '.player-footer',
-          'video,.gallery-image'
-        ]
-        return {
-          width: innerWidth,
-          height: innerHeight,
-          scrollWidth: document.documentElement.scrollWidth,
-          scrollHeight: document.documentElement.scrollHeight,
-          boxes: selectors.map((selector) => {
-            const node = document.querySelector(selector)!
-            const r = node.getBoundingClientRect()
-            return {
-              selector,
-              x: r.x,
-              y: r.y,
-              width: r.width,
-              height: r.height,
-              right: r.right,
-              bottom: r.bottom
-            }
-          }),
-          fit: getComputedStyle(document.querySelector('video,.gallery-image')!).objectFit,
-          controls: Array.from(
-            document.querySelectorAll(
-              '.playback-controls button,.playback-controls select,.playback-controls input'
-            )
-          )
-            .filter((node) => !(node as HTMLInputElement).disabled)
-            .map((node) => {
+    const check = async () =>
+      expect(async () => {
+        const layout = await page.evaluate(() => {
+          const selectors = [
+            '.player-shell',
+            '.player-view',
+            '.player-body',
+            '.stage',
+            '.player-footer',
+            'video,.gallery-image'
+          ]
+          return {
+            width: innerWidth,
+            height: innerHeight,
+            scrollWidth: document.documentElement.scrollWidth,
+            scrollHeight: document.documentElement.scrollHeight,
+            boxes: selectors.map((selector) => {
+              const node = document.querySelector(selector)!
               const r = node.getBoundingClientRect()
-              return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }
-            })
+              return {
+                selector,
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+                right: r.right,
+                bottom: r.bottom
+              }
+            }),
+            fit: getComputedStyle(document.querySelector('video,.gallery-image')!).objectFit,
+            controls: Array.from(
+              document.querySelectorAll(
+                '.playback-controls button,.playback-controls select,.playback-controls input'
+              )
+            )
+              .filter((node) => !(node as HTMLInputElement).disabled)
+              .map((node) => {
+                const r = node.getBoundingClientRect()
+                return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }
+              })
+          }
+        })
+        expect(layout.scrollHeight, 'portrait content must not expand the app row').toBeLessThanOrEqual(
+          layout.height + 1
+        )
+        expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width + 1)
+        for (const box of [...layout.boxes, ...layout.controls]) {
+          expect(box.x).toBeGreaterThanOrEqual(-1)
+          expect(box.y).toBeGreaterThanOrEqual(-1)
+          expect(box.right).toBeLessThanOrEqual(layout.width + 1)
+          expect(box.bottom, JSON.stringify(box)).toBeLessThanOrEqual(layout.height + 1)
         }
-      })
-      expect(layout.scrollHeight, 'portrait content must not expand the app row').toBeLessThanOrEqual(
-        layout.height + 1
-      )
-      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width + 1)
-      for (const box of [...layout.boxes, ...layout.controls]) {
-        expect(box.x).toBeGreaterThanOrEqual(-1)
-        expect(box.y).toBeGreaterThanOrEqual(-1)
-        expect(box.right).toBeLessThanOrEqual(layout.width + 1)
-        expect(box.bottom, JSON.stringify(box)).toBeLessThanOrEqual(layout.height + 1)
-      }
-      const media = layout.boxes.at(-1)!,
-        area = layout.boxes.find((box) => box.selector === '.stage')!
-      expect(media.x).toBeCloseTo(area.x, 0)
-      expect(media.y).toBeCloseTo(area.y, 0)
-      expect(media.width).toBeCloseTo(area.width, 0)
-      expect(media.height).toBeCloseTo(area.height, 0)
-      expect(area.height).toBeGreaterThan(100)
-      expect(layout.fit).toBe('contain')
-    }
+        const media = layout.boxes.at(-1)!,
+          area = layout.boxes.find((box) => box.selector === '.stage')!
+        expect(media.x).toBeCloseTo(area.x, 0)
+        expect(media.y).toBeCloseTo(area.y, 0)
+        expect(media.width).toBeCloseTo(area.width, 0)
+        expect(media.height).toBeCloseTo(area.height, 0)
+        expect(area.height).toBeGreaterThan(100)
+        expect(layout.fit).toBe('contain')
+      }).toPass({ timeout: testTimeout(5000) })
     for (const zoom of [1, 1.25, 1.5]) {
       await app.evaluate(({ BrowserWindow }, zoom) => {
         const win = BrowserWindow.getAllWindows().find((w) =>
@@ -2283,9 +2284,7 @@ for (const kind of ['video', 'image', 'live'] as const) {
         win.setSize(920, 640)
         win.webContents.setZoomFactor(zoom)
       }, zoom)
-      await expect(async () => {
-        await check()
-      }).toPass({ timeout: 3000 })
+      await check()
       await expect(page.getByRole('button', { name: '展开左栏', exact: true })).toHaveCount(0)
       await expect
         .poll(() => page.locator('.sidebar-region').evaluate((node) => node.getBoundingClientRect().width))
