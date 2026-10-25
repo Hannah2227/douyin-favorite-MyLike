@@ -4633,7 +4633,7 @@ for (const kind of ['video', 'live'] as const) {
     await prepareQueue(3, kind === 'live')
     const preferences = (await invoke('snapshot')).data.playbackPreferences
     await invoke('playbackPreferences', {
-      preferences: { ...preferences, autoplay: false, continuous: false }
+      preferences: { ...preferences, continuous: false }
     })
     await app.evaluate(({ BrowserWindow }) => {
       const win = BrowserWindow.getAllWindows().find((win) =>
@@ -4645,6 +4645,12 @@ for (const kind of ['video', 'live'] as const) {
     await page.getByRole('button', { name: '顺序播放', exact: true }).click()
     await readyVideo(0)
     const media = page.locator('video')
+    // RPC preference changes reach the renderer asynchronously. Pause through
+    // the actual player before comparing pixels from a supposedly fixed frame.
+    const pause = page.getByRole('button', { name: '暂停播放', exact: true })
+    if (await pause.isVisible()) await pause.click()
+    await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
+    await expect.poll(() => media.evaluate((node) => (node as HTMLVideoElement).paused)).toBe(true)
     const bounds = () =>
       page.evaluate(() => {
         const video = document.querySelector('video')!.getBoundingClientRect()
@@ -4667,6 +4673,8 @@ for (const kind of ['video', 'live'] as const) {
       )
       await seekVideo(0.8)
       await expect.poll(() => media.evaluate((video) => (video as HTMLVideoElement).seeking)).toBe(false)
+      expect(await media.evaluate((node) => (node as HTMLVideoElement).paused)).toBe(true)
+      const pausedTime = await media.evaluate((node) => (node as HTMLVideoElement).currentTime)
       const original = await bounds()
       const element = await media.elementHandle()
       await page.mouse.move(0, 0)
@@ -4681,6 +4689,11 @@ for (const kind of ['video', 'live'] as const) {
       await expect(page.locator('[popover]:popover-open')).toHaveCount(0)
       await page.keyboard.press('Escape')
       await expect.poll(bounds).toEqual(original)
+      expect(await media.evaluate((node) => (node as HTMLVideoElement).paused)).toBe(true)
+      expect(await media.evaluate((node) => (node as HTMLVideoElement).currentTime)).toBeCloseTo(
+        pausedTime,
+        3
+      )
       expect(
         await element!.evaluate((video) => video.isConnected && video === document.querySelector('video'))
       ).toBe(true)
