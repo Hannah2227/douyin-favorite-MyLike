@@ -1,6 +1,5 @@
 appId: io.mylike.desktop
 productName: MyLike
-electronDist: node_modules/electron/dist
 directories:
   output: dist
 files:
@@ -18,6 +17,17 @@ win:
     - portable
     - zip
   signExecutable: false
+mac:
+  icon: assets/icon.icns
+  category: public.app-category.entertainment
+  target:
+    - dmg
+    - zip
+  artifactName: MyLike-${version}-mac-${arch}.${ext}
+  hardenedRuntime: true
+  notarize: true
+dmg:
+  artifactName: MyLike-${version}-mac-${arch}.${ext}
 portable:
   artifactName: MyLike-${version}-win-${arch}-portable.exe
 artifactName: MyLike-${version}-win-${arch}.${ext}

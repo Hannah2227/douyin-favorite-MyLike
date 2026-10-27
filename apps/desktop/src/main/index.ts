@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, screen } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, screen } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { resolve, join, sep, isAbsolute } from 'node:path'
@@ -11,6 +11,7 @@ import { safeMediaUrl } from './douyin/parse'
 import { Application } from './application'
 import { AppError, publicError } from './errors'
 import { restoreWindowState } from './window-state'
+import { trackMacFullscreen } from './fullscreen'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'mylike', privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -22,6 +23,31 @@ else app.setPath('userData', join(app.getPath('appData'), 'MyLikeElectron'))
 let mainWindow: BrowserWindow | null = null
 let service: Application | null = null
 let quitting = false
+function showMainWindow(): void {
+  if (quitting || !mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function installMacMenu(): void {
+  if (process.platform !== 'darwin') return
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      {
+        label: '文件',
+        submenu: [
+          { id: 'show-main-window', label: '显示主窗口', accelerator: 'Cmd+1', click: showMainWindow },
+          { type: 'separator' },
+          { role: 'close' }
+        ]
+      },
+      { role: 'editMenu' },
+      { role: 'windowMenu' }
+    ])
+  )
+}
 function isUiUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -138,12 +164,15 @@ async function bootstrap(): Promise<void> {
     }
   })
   const win = mainWindow
+  const fullscreenReady = process.platform === 'darwin' ? trackMacFullscreen(win) : async () => {}
   win.webContents.setZoomFactor(preferences.zoom)
   if (remembered?.maximized) win.maximize()
   win.on('close', (event) => {
     if (!quitting) {
       event.preventDefault()
-      app.quit()
+      // Keep the renderer, task state and IPC handlers alive until an explicit quit.
+      if (process.platform === 'darwin') win.hide()
+      else app.quit()
     }
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -162,6 +191,10 @@ async function bootstrap(): Promise<void> {
         throw new AppError('INVALID_COMMAND', '不支持的操作。')
       const parsed = commands[command as Command].safeParse(input)
       if (!parsed.success) throw new AppError('INVALID_INPUT', '操作参数无效。')
+      if (command === 'fullscreenReady') {
+        await fullscreenReady()
+        return { ok: true, data: null }
+      }
       return { ok: true, data: await service!.execute(command as Command, parsed.data) }
     } catch (error) {
       return { ok: false, error: publicError(error) }
@@ -177,13 +210,12 @@ async function bootstrap(): Promise<void> {
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
-  app.on('second-instance', () => {
-    mainWindow?.show()
-    mainWindow?.focus()
-  })
+  app.on('second-instance', showMainWindow)
+  app.on('activate', showMainWindow)
   void app
     .whenReady()
     .then(() => {
+      installMacMenu()
       mkdirSync(app.getPath('userData'), { recursive: true })
       return bootstrap()
     })
@@ -199,7 +231,9 @@ else {
       )
       app.exit(1)
     })
-  app.on('window-all-closed', () => app.quit())
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
   app.on('before-quit', (event) => {
     if (quitting) return
     event.preventDefault()

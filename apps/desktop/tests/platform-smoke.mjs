@@ -9,7 +9,12 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 let application
 try {
   application = await electron.launch({
-    executablePath: resolve(process.argv[2] ?? 'dist/win-unpacked/MyLike.exe'),
+    executablePath: resolve(
+      process.argv[2] ??
+        (process.platform === 'darwin'
+          ? `dist/${process.arch === 'arm64' ? 'mac-arm64' : 'mac'}/MyLike.app/Contents/MacOS/MyLike`
+          : 'dist/win-unpacked/MyLike.exe')
+    ),
     args: [],
     env: { ...process.env, MYLIKE_HEADLESS: '1', MYLIKE_USER_DATA: profile },
     timeout: 30_000

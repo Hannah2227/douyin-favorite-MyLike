@@ -18,6 +18,7 @@ try {
     }
   )
   if (result.error) throw result.error
+  if (result.signal) throw Error(`Icon build terminated by ${result.signal}`)
   if (result.status) throw Error(`Icon build exited with ${result.status}`)
 } finally {
   if (dirname(resolve(root)) !== resolve(tmpdir()) || !basename(root).startsWith('mylike-icon-builder-'))

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import type { PlaybackPreferences } from '../../shared/contracts'
 import type { ShortcutAction } from '../../shared/preferences'
+import { exitPlayerFullscreen } from './fullscreen'
 
 export function usePlayerShortcuts(
   shortcuts: PlaybackPreferences['shortcuts'],
@@ -36,7 +37,7 @@ export function usePlayerShortcuts(
       if (event.code === 'Escape') {
         event.preventDefault()
         if (leave.current?.()) return
-        if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+        if (document.fullscreenElement) void exitPlayerFullscreen().catch(() => {})
         else exit.current()
         return
       }

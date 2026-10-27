@@ -30,6 +30,7 @@ import { usePlayerShortcuts } from './usePlayerShortcuts'
 import { keyLabel, type ShortcutAction } from '../../shared/preferences'
 import { FavoriteDialog } from './FavoriteDialog'
 import { call } from './api'
+import { togglePlayerFullscreen } from './fullscreen'
 
 type Props = {
   playback: Playback
@@ -297,8 +298,7 @@ export function Player({
       element.currentTime = Math.max(0, Math.min(element.duration, element.currentTime + amount))
   }
   const fullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
-    else void fullscreenRoot.current?.requestFullscreen().catch(() => {})
+    void togglePlayerFullscreen(fullscreenRoot.current).catch(() => {})
   }
   const back = () => {
     pause()

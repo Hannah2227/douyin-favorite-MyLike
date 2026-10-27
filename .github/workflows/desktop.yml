@@ -7,6 +7,15 @@ on:
     branches: [main]
     paths: ["apps/desktop/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to build and append signed Mac assets to (leave empty to only build)"
+        type: string
+        default: ""
+      sign_mac:
+        description: "Sign and notarize Mac builds using repository secrets"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,6 +35,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11.22.0
@@ -35,6 +46,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec install-electron
       - run: pnpm exec electron --version
       - run: pnpm format:check
       - run: pnpm test
@@ -68,3 +80,117 @@ jobs:
           name: MyLike-Windows-test-results-${{ matrix.shard }}
           path: apps/desktop/test-results
           if-no-files-found: ignore
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            app_dir: mac-arm64
+          - os: macos-15-intel
+            arch: x64
+            app_dir: mac
+    defaults:
+      run:
+        working-directory: apps/desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.12.0
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Validate architecture and release version
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            if (process.arch !== process.env.TARGET_ARCH) throw Error("Runner architecture mismatch");
+            const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+            const tag = process.env.RELEASE_TAG;
+            if (tag && tag !== version && tag !== `v${version}`) throw Error("Release tag must match package.json version");
+          '
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec install-electron
+      - run: pnpm exec electron --version
+      - run: pnpm format:check
+      - run: pnpm test
+      - name: Build ad-hoc signed test packages
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.sign_mac }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm package:mac --${{ matrix.arch }}
+      - name: Build Developer ID signed and notarized packages
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_mac }}
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${CSC_LINK:?Missing MAC_CSC_LINK}"
+          : "${APPLE_ID:?Missing APPLE_ID}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD}"
+          : "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID}"
+          pnpm package:mac:signed --${{ matrix.arch }}
+          codesign --verify --deep --strict "dist/${{ matrix.app_dir }}/MyLike.app"
+          spctl --assess --type execute --verbose "dist/${{ matrix.app_dir }}/MyLike.app"
+      - name: Test packaged application
+        env:
+          MYLIKE_EXECUTABLE: ${{ github.workspace }}/apps/desktop/dist/${{ matrix.app_dir }}/MyLike.app/Contents/MacOS/MyLike
+        run: pnpm test:e2e
+      - name: Create checksums
+        run: shasum -a 256 dist/*.dmg dist/*.zip | sed 's|  dist/|  |' > "dist/SHA256SUMS-mac-${{ matrix.arch }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyLike-macOS-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/SHA256SUMS-mac-${{ matrix.arch }}.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MyLike-macOS-test-results-${{ matrix.arch }}
+          path: apps/desktop/test-results
+          if-no-files-found: ignore
+
+  append-mac-release:
+    name: Append Mac packages to existing release
+    needs: [windows, macos]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.sign_mac }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MyLike-macOS-arm64
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: MyLike-macOS-x64
+          path: release
+      - name: Upload without replacing existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release view "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" release/*.dmg release/*.zip release/SHA256SUMS-mac-*.txt

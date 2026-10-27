@@ -35,7 +35,12 @@ async function launch(heading = '喜欢的内容') {
     ...(process.env.MYLIKE_EXECUTABLE
       ? { executablePath: process.env.MYLIKE_EXECUTABLE, args: [] }
       : { args: [process.cwd()] }),
-    env: { ...process.env, MYLIKE_HEADLESS: '1', MYLIKE_USER_DATA: profile },
+    // macOS needs an on-screen native window to complete HTML fullscreen transitions.
+    env: {
+      ...process.env,
+      MYLIKE_HEADLESS: process.platform === 'darwin' ? '0' : '1',
+      MYLIKE_USER_DATA: profile
+    },
     timeout: testTimeout(30_000)
   })
   page = await app.firstWindow()
@@ -56,10 +61,12 @@ async function invoke(command: Command, input: unknown = {}): Promise<any> {
 }
 async function screenshot(path: string) {
   // A never-shown Windows window may have no compositor frame, or return an old one.
-  const windowId = await app.evaluate(
-    ({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!.id
-  )
+  const { windowId, wasVisible } = await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((win) =>
+      win.webContents.getURL().startsWith('mylike://ui/')
+    )!
+    return { windowId: win.id, wasVisible: win.isVisible() }
+  })
   await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.showInactive(), windowId)
   try {
     await page.screenshot({ path, animations: 'disabled', timeout: 10_000 })
@@ -71,7 +78,7 @@ async function screenshot(path: string) {
     }, windowId)
     if (native) writeFileSync(path, Buffer.from(native, 'base64'))
   } finally {
-    await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.hide(), windowId)
+    if (!wasVisible) await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.hide(), windowId)
   }
 }
 async function chooseOption(label: string, option: string) {

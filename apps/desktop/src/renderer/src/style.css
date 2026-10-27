@@ -1,5 +1,11 @@
 :root {
-  font-family: Inter, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'Microsoft YaHei UI',
+    sans-serif;
   color: #ececf2;
   background: #0d1018;
   font-synthesis: none;

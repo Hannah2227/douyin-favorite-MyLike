@@ -40,6 +40,7 @@ const queueSourceSchema = z.discriminatedUnion('type', [
 ])
 
 export const commands = {
+  fullscreenReady: z.object({}),
   snapshot: z.object({}),
   createAccount: z.object({ name: z.string().trim().min(1).max(40) }),
   switchAccount: z.object({ accountId: idSchema }),
@@ -353,6 +354,7 @@ export interface FavoritesTask {
   updatedAt: number
 }
 export interface Outputs {
+  fullscreenReady: null
   appPreferences: AppPreferences
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }
   copyDiagnostics: null

@@ -1,0 +1,7 @@
+extends: ./electron-builder.yml
+# Ad-hoc signing lets Apple Silicon run local test builds without a developer certificate.
+# Public distribution should use package:mac:signed with Developer ID and notarization credentials.
+mac:
+  identity: '-'
+  hardenedRuntime: false
+  notarize: false

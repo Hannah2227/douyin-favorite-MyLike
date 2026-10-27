@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Playback } from './usePlayback'
+import { exitPlayerFullscreen } from './fullscreen'
 
 /** The fullscreen node outlives individual tracks; only opacity/transform animate. */
 export function usePlayerPresentation(playback: Playback) {
@@ -21,7 +22,7 @@ export function usePlayerPresentation(playback: Playback) {
   }, [])
   useEffect(() => {
     if (!playback.view && document.fullscreenElement === frame.current)
-      void document.exitFullscreen().catch(() => {})
+      void exitPlayerFullscreen().catch(() => {})
   }, [!!playback.view])
   const exit = (): Promise<void> => {
     if (pending.current) return pending.current
@@ -29,7 +30,7 @@ export function usePlayerPresentation(playback: Playback) {
     const scope = latest.current.key
     latest.current.suspend()
     const request = (async () => {
-      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {})
+      if (document.fullscreenElement) await exitPlayerFullscreen().catch(() => {})
       setLeaving(true)
       if (
         document.documentElement.dataset.motion !== 'reduce' &&

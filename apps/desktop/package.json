@@ -21,7 +21,10 @@
     "licenses:build": "node tools/licenses.mjs",
     "build": "pnpm typecheck && electron-vite build && pnpm licenses:build",
     "package:dir": "pnpm build && electron-builder --dir --win --x64 --publish never",
-    "package:win": "pnpm build && electron-builder --win portable zip --x64 --publish never"
+    "package:win": "pnpm build && electron-builder --win portable zip --x64 --publish never",
+    "package:mac": "pnpm build && electron-builder --config electron-builder.mac-unsigned.yml --mac dmg zip --publish never",
+    "package:mac:dir": "pnpm build && electron-builder --config electron-builder.mac-unsigned.yml --mac --dir --publish never",
+    "package:mac:signed": "pnpm build && electron-builder --mac dmg zip --config.forceCodeSigning=true --publish never"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.21",
