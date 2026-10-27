@@ -5,24 +5,20 @@ updates:
     directory: "/apps/desktop"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
     groups:
-      minor-and-patch:
+      npm-security:
+        applies-to: "security-updates"
         patterns:
           - "*"
-        exclude-patterns:
-          - "electron"
-        update-types:
-          - "minor"
-          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 1
+      interval: "monthly"
+    open-pull-requests-limit: 0
     groups:
-      actions:
+      actions-security:
+        applies-to: "security-updates"
         patterns:
           - "*"
