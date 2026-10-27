@@ -2429,6 +2429,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   test.setTimeout(testTimeout(60000))
   const { accountId } = await prepareQueue(3)
   await app.evaluate(({ BrowserWindow }) => {
+    if (process.platform !== 'win32') return
     const win = BrowserWindow.getAllWindows().find((win) =>
       win.webContents.getURL().startsWith('mylike://ui/')
     )!
@@ -2440,11 +2441,24 @@ test('matches native caption colors to light mode and playback, scopes collectio
     }
   })
   const caption = () => app.evaluate(() => (globalThis as any).__captionStyles.at(-1))
+  const expectAppearance = async (color: string, symbolColor: string) => {
+    await expect
+      .poll(() =>
+        app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()
+            .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+            .getBackgroundColor()
+            .toLowerCase()
+        )
+      )
+      .toBe(color)
+    if (process.platform === 'win32') await expect.poll(caption).toMatchObject({ color, symbolColor })
+  }
   const theme = page.getByRole('button', { name: '切换主题', exact: true })
   expect(await theme.evaluate((node) => !!node.closest('.sidebar-account-area'))).toBe(true)
   await theme.click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await expect.poll(caption).toMatchObject({ color: '#f7f8fb', symbolColor: '#202436' })
+  await expectAppearance('#f7f8fb', '#202436')
   expect(
     await theme.evaluate(
       (node) =>
@@ -2468,7 +2482,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   await screenshot(info.outputPath('library-light.png'))
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
-  await expect.poll(caption).toMatchObject({ color: '#111113', symbolColor: '#ececf2' })
+  await expectAppearance('#111113', '#ececf2')
   await page.mouse.move(400, 150)
   expect(
     await page
@@ -2477,7 +2491,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   ).toBe('rgba(0, 0, 0, 0)')
   await screenshot(info.outputPath('player-plain-controls.png'))
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
-  await expect.poll(caption).toMatchObject({ color: '#f7f8fb', symbolColor: '#202436' })
+  await expectAppearance('#f7f8fb', '#202436')
   await app.close()
   await launch()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
@@ -2967,13 +2981,16 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
 
 test('uses gallery shortcuts to pin and resume slides while disabling wheel navigation and autoplay when configured', async () => {
   await prepareQueue(2, true)
-  const preferences = (await invoke('snapshot')).data.playbackPreferences
-  await invoke('playbackPreferences', {
-    preferences: { ...preferences, autoplay: false, wheelNavigation: false }
-  })
+  // Change through the UI so the player uses the same preferences the user sees.
+  // Reading a direct IPC write back does not wait for the debounced renderer refresh.
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('button', { name: '播放', exact: true }).click()
+  await page.getByLabel('进入作品自动播放', { exact: true }).uncheck()
+  await page.getByLabel('滚轮切换作品', { exact: true }).uncheck()
   await expect
     .poll(async () => page.evaluate(() => window.mylike.invoke('snapshot', {})))
-    .toMatchObject({ ok: true, data: { playbackPreferences: { autoplay: false } } })
+    .toMatchObject({ ok: true, data: { playbackPreferences: { autoplay: false, wheelNavigation: false } } })
+  await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
   await expect(page.locator('.gallery-status')).toContainText('1 / 2')
