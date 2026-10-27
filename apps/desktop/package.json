@@ -24,7 +24,7 @@
     "package:win": "pnpm build && electron-builder --win portable zip --x64 --publish never"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "3.14.21",
+    "@tanstack/react-virtual": "3.14.22",
     "json-bigint": "1.0.0",
     "lucide-react": "1.61.0",
     "react": "19.3.1",
@@ -39,7 +39,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "electron": "44.9.1",
-    "electron-builder": "26.15.3",
+    "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
     "prettier": "3.9.10",
     "typescript": "7.0.2",
