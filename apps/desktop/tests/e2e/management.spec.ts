@@ -182,8 +182,13 @@ test('renames, clears cache without login loss, logs out only one session, and p
     },
     { a, b }
   )
+  await expect(page.getByLabel('当前账号')).toContainText('账号 B')
   expect((await invoke('switchAccount', { accountId: a })).ok).toBe(true)
+  // Direct IPC returns before the debounced account snapshot reaches the UI.
+  // Wait for the selected account and its editor before entering a new name.
+  await expect(page.getByLabel('当前账号')).toContainText('账号 A')
   await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '本地账号名称' })).toHaveValue('账号 A')
   await page.getByRole('textbox', { name: '本地账号名称' }).fill('新的本地名称')
   await page.getByRole('button', { name: '保存名称', exact: true }).click()
   await expect(page.getByLabel('当前账号')).toContainText('新的本地名称')
