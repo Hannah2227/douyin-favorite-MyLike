@@ -37,6 +37,8 @@
 
 在发布页下载文件名以 `portable.exe` 结尾的应用，保存到固定文件夹后双击运行，免安装使用。
 
+macOS（社区版本）：请前往[贡献者维护的仓库](https://github.com/billybobz-design/douyin-favorite-MyLike)下载，相关问题请在该仓库反馈。
+
 升级前请退出旧版，再使用新版 EXE；旧 WPF 版的数据与登录态不迁移，首次使用新版需重新登录和采集。
 
 ## 功能特性
