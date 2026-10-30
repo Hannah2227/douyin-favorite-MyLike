@@ -20,12 +20,51 @@ type Runner = <T>(accountId: string, action: (check: () => void) => Promise<T>) 
 // for the preceding reply. Rejected/limited APIs retain their long backoff.
 const cadence = { initial: 300, page: 500, login: 2000, retry: 3000, rejected: 30_000 }
 
+function interactionMessage(code: string, kind: Session['kind']): string {
+  switch (code) {
+    case 'IDENTITY_MISMATCH':
+      return '登录的抖音账号与当前账号不一致，请切回原账号。'
+    case 'DUPLICATE_ACCOUNT':
+      return '这个抖音账号已经添加，请切换到已有账号。'
+    case 'WORK_UNAVAILABLE':
+    case 'CONTENT_UNAVAILABLE':
+      return '这条内容暂时无法访问，请返回后换一条内容再试。'
+    case 'UPSTREAM_CHANGED':
+      return '当前版本暂时无法读取这部分内容，请查看更新或反馈问题。'
+    case 'RATE_LIMITED':
+    case 'UPSTREAM_RISK_CONTROL':
+    case 'API_REJECTED':
+      return '抖音暂时无法完成检查，请稍后再试。已同步的内容会保留。'
+    case 'INVALID_RESPONSE':
+    case 'EMPTY_RESPONSE':
+    case 'EMPTY_PAGE':
+    case 'NO_AVAILABLE_ITEMS':
+      return '抖音暂时没有返回可用内容，请稍后再试；已同步的内容会保留。'
+    case 'NETWORK_ERROR':
+    case 'TIMEOUT':
+      return '暂时无法连接抖音，正在重新尝试。'
+    case 'BROWSER_NOT_READY':
+    case 'BROWSER_CRASHED':
+    case 'PAGE_CHANGED':
+      return '抖音窗口尚未准备好，请稍候；仍无响应时重新打开窗口。'
+    case 'AUTH_REQUIRED':
+    case 'LOGIN_PENDING':
+      return '请在抖音窗口完成登录，完成后窗口会自动收起。'
+    case 'VERIFICATION_REQUIRED':
+      return '请完成抖音窗口中的验证，完成后窗口会自动收起。'
+    default:
+      return kind === 'login'
+        ? '暂时无法确认登录状态，请稍后再试。'
+        : '暂时无法完成检查，请稍后重试；已同步的内容会保留。'
+  }
+}
+
 /** A bounded, account-scoped interaction. Probes use the same request lane as
  * business operations; completion never resumes a task or repeats a write. */
 export class Authentication {
   private current: Session | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
-  private state: Snapshot['authentication'] = null
+  private state: (NonNullable<Snapshot['authentication']> & { code?: string; retryAt?: number }) | null = null
   private checking = false
   constructor(
     private readonly engine: Pick<DouyinEngine, 'show' | 'hide' | 'setInteraction' | 'pageState'> &
@@ -97,8 +136,8 @@ export class Authentication {
       this.engine.setInteraction(this.current.kind)
       if (!automatic) {
         this.current.expires = Date.now() + 10 * 60_000
-        this.current.retryAfter = 0
-        this.schedule(this.current, cadence.initial)
+        // Reopening a window must not bypass a real platform refusal.
+        this.schedule(this.current, Math.max(cadence.initial, this.current.retryAfter - Date.now()))
         await this.engine.show(accountId)
       }
       return
@@ -124,8 +163,8 @@ export class Authentication {
       session,
       'waiting',
       kind === 'login'
-        ? '请在抖音窗口登录；身份核验成功后窗口会自动收起。'
-        : '请在抖音窗口完成验证；原接口恢复后窗口会自动收起，再手动继续任务。'
+        ? '请在抖音窗口登录，完成后窗口会自动收起。'
+        : '请完成抖音窗口中的验证，完成后窗口会自动收起。'
     )
     try {
       await this.engine.show(accountId)
@@ -141,7 +180,13 @@ export class Authentication {
     } catch (error) {
       if (this.current === session) {
         const detail = publicError(error)
-        this.update(session, 'failed', detail.message)
+        this.update(
+          session,
+          'failed',
+          interactionMessage(detail.code, session.kind),
+          detail.code,
+          detail.retryAt
+        )
         this.report(accountId, { kind: 'auth', message: detail.message, code: detail.code })
         // Navigation can fail while the user completes a redirect or reload.
         // Keep checking the same window within the original time budget.
@@ -158,8 +203,21 @@ export class Authentication {
     this.engine.setInteraction(null)
     this.changed()
   }
-  private update(session: Session, status: 'waiting' | 'checking' | 'failed', message: string) {
-    this.state = { accountId: session.accountId, kind: session.kind, status, message }
+  private update(
+    session: Session,
+    status: 'waiting' | 'checking' | 'failed',
+    message: string,
+    code?: string,
+    retryAt?: number
+  ) {
+    this.state = {
+      accountId: session.accountId,
+      kind: session.kind,
+      status,
+      message,
+      ...(code ? { code } : {}),
+      ...(retryAt === undefined ? {} : { retryAt })
+    }
     this.changed()
   }
   private schedule(session: Session, delay: number) {
@@ -177,12 +235,16 @@ export class Authentication {
       return
     }
     if (Date.now() >= session.expires) {
-      this.update(session, 'failed', '自动检测已暂停，请完成操作后关闭窗口，再点“核验登录”或重新打开窗口。')
+      this.update(session, 'failed', '暂时无法确认登录状态，请重新打开抖音窗口后再试一次。', 'TIMEOUT')
       this.report(session.accountId, {
         kind: 'auth',
         message: '自动检测达到 10 分钟上限，已暂停。',
         code: 'TIMEOUT'
       })
+      return
+    }
+    if (Date.now() < session.retryAfter) {
+      this.schedule(session, session.retryAfter - Date.now())
       return
     }
     this.checking = true
@@ -199,7 +261,7 @@ export class Authentication {
         delay = cadence.page
         return
       }
-      this.update(session, 'checking', '正在核验账号及接口状态，请稍候。')
+      this.update(session, 'checking', '正在检查登录状态，请稍候…')
       await this.run(session.accountId, async (check) => {
         const guard = () => {
           check()
@@ -223,15 +285,19 @@ export class Authentication {
     } catch (error) {
       if (this.current !== session) return
       const detail = publicError(error)
-      if (['RATE_LIMITED', 'API_REJECTED'].includes(detail.code))
-        session.retryAfter = Date.now() + cadence.rejected
+      if (['RATE_LIMITED', 'API_REJECTED', 'UPSTREAM_RISK_CONTROL'].includes(detail.code))
+        session.retryAfter = Math.max(session.retryAfter, detail.retryAt ?? Date.now() + cadence.rejected)
       if (!['AUTH_REQUIRED', 'LOGIN_PENDING', 'CANCELLED'].includes(detail.code))
         this.report(session.accountId, { kind: 'auth', message: detail.message, code: detail.code })
-      const needsDecision = ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT', 'WORK_UNAVAILABLE'].includes(
-        detail.code
-      )
+      const needsDecision = [
+        'IDENTITY_MISMATCH',
+        'DUPLICATE_ACCOUNT',
+        'WORK_UNAVAILABLE',
+        'CONTENT_UNAVAILABLE',
+        'UPSTREAM_CHANGED'
+      ].includes(detail.code)
       delay =
-        needsDecision || ['RATE_LIMITED', 'API_REJECTED'].includes(detail.code)
+        needsDecision || ['RATE_LIMITED', 'API_REJECTED', 'UPSTREAM_RISK_CONTROL'].includes(detail.code)
           ? cadence.rejected
           : ['AUTH_REQUIRED', 'LOGIN_PENDING'].includes(detail.code)
             ? cadence.login
@@ -240,14 +306,13 @@ export class Authentication {
                 )
               ? cadence.page
               : cadence.retry
+      delay = Math.max(delay, session.retryAfter - Date.now())
       this.update(
         session,
         needsDecision ? 'failed' : 'waiting',
-        needsDecision
-          ? detail.message
-          : session.kind === 'login'
-            ? '等待登录完成并核验身份；窗口可手动关闭。'
-            : '验证或原接口尚未恢复，请完成验证或稍候；关闭窗口后任务会保持暂停。'
+        interactionMessage(detail.code, session.kind),
+        detail.code,
+        session.retryAfter > Date.now() ? session.retryAfter : undefined
       )
     } finally {
       this.checking = false

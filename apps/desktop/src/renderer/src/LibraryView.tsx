@@ -13,7 +13,7 @@ import {
   Trash2,
   Shuffle
 } from 'lucide-react'
-import type { Account, Work, QueueState } from '../../shared/contracts'
+import { MAX_BATCH_SIZE, type Account, type Work, type QueueState } from '../../shared/contracts'
 import type { Library } from './useLibrary'
 import { Select } from './Select'
 
@@ -29,7 +29,6 @@ type Props = {
   setAdding: Dispatch<SetStateAction<boolean>>
   selectAll: () => void
   remove: () => void
-  exportFile: () => void
   unlike: () => void
   playRange: (mode: 'sequence' | 'shuffle') => void
   resume: QueueState | null
@@ -48,7 +47,6 @@ export function LibraryView({
   setAdding,
   selectAll,
   remove,
-  exportFile,
   unlike,
   playRange,
   resume,
@@ -143,11 +141,6 @@ export function LibraryView({
               : `${page.total} 条内容`}
         </span>
         <div className="list-actions">
-          {!readOnly && (
-            <button disabled={!page.total || querying || busy} onClick={exportFile}>
-              {selection.ids.size ? '导出所选' : '导出当前范围'}
-            </button>
-          )}
           <button
             disabled={!page.total || busy}
             onClick={selection.enabled ? selection.clear : selection.enable}
@@ -161,7 +154,7 @@ export function LibraryView({
         <div className="batch-bar" aria-label="批量操作">
           <strong aria-live="polite">已选 {selection.ids.size} 条</strong>
           <button disabled={busy || querying} onClick={selectAll}>
-            选择全部筛选结果
+            {page.total > MAX_BATCH_SIZE ? `选择前 ${MAX_BATCH_SIZE} 条` : '选择全部筛选结果'}
           </button>
           <button disabled={!selection.ids.size || busy} onClick={selection.clear}>
             清空选择
@@ -175,12 +168,12 @@ export function LibraryView({
           {pendingChanges && <span>内容有更新，清空选择后刷新。</span>}
           <button
             className="danger-button"
-            disabled={!selection.ids.size || selection.ids.size > 1000 || mutationBusy}
+            disabled={!selection.ids.size || selection.ids.size > MAX_BATCH_SIZE || mutationBusy}
             onClick={unlike}
           >
             {readOnly ? '取消抖音收藏' : '取消抖音点赞'}
           </button>
-          {selection.ids.size > 1000 && <span>一次最多 1000 条，请缩小选择范围。</span>}
+          {selection.ids.size > MAX_BATCH_SIZE && <span>一次最多 {MAX_BATCH_SIZE} 条，请缩小选择范围。</span>}
         </div>
       )}
       <div className="library-scroll" ref={scroll}>
@@ -221,7 +214,7 @@ export function LibraryView({
                   : collection.running
                     ? '作品将陆续出现在这里，采集途中也可以观看已收录的视频。'
                     : connected
-                      ? `${readOnly ? '点击“同步收藏”，收录收藏作品和收藏夹。' : '点击上方“自动采集”，收录喜欢的作品。'}\n采集途中也可以观看已收录的视频。`
+                      ? `${readOnly ? '点击“向下采集”，收录收藏作品和收藏夹。' : '点击上方“向下采集”，收录喜欢的作品。'}\n采集途中也可以观看已收录的视频。`
                       : '登录抖音后开始采集。'
                 : '添加抖音账号后开始采集。'}
             </p>

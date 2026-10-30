@@ -15,9 +15,6 @@ import type {
   PlaybackPosition,
   PlaybackPreferences,
   Outputs,
-  ImportPreview,
-  ImportResult,
-  ExportResult,
   UnlikeTask,
   UnlikeItem
 } from '../../shared/contracts'
@@ -31,14 +28,23 @@ export interface Inputs {
   appPreferences: { preferences?: Partial<AppPreferences> }
   windowState: { state?: WindowState }
   checkDatabase: Record<string, never>
-  favoritesTask: { accountId: string }
-  favoritesStart: { accountId: string; id: string }
+  favoritesTask: { accountId: string; mode?: 'sync' | 'update' }
+  favoritesStart: { accountId: string; id: string; mode?: 'sync' | 'update' }
+  favoritesDefer: {
+    accountId: string
+    taskId: string
+    folderId: string
+    requestCursor: string
+    reason: string
+    errorCode: string
+  }
   favoritesUpdate: {
     accountId: string
     taskId: string
     status: FavoritesTask['status']
     reason: string | null
     errorCode?: string | null
+    mode?: 'sync' | 'update'
   }
   favoritesSave: FavoritesPage
   favoriteFolders: { accountId: string }
@@ -58,6 +64,7 @@ export interface Inputs {
   collection: { accountId: string }
   startCollection: { accountId: string; id: string; mode: CollectionTask['mode'] }
   updateCollection: {
+    mode?: 'update'
     accountId: string
     taskId: string
     status: CollectionTask['status']
@@ -89,7 +96,8 @@ export interface Inputs {
   deleteLocal: { accountId: string; workIds: string[] }
   unlikeTask: { accountId: string; taskId?: string }
   unlikeHistory: { accountId: string }
-  unlikeItems: { accountId: string; taskId: string; offset: number; limit: number }
+  unlikeItems: { accountId: string; taskId: string; offset: number; limit: number; issuesOnly?: boolean }
+  unlikeSkip: { accountId: string; taskId: string; workId: string; reason: string }
   unlikeCreate: {
     accountId: string
     id: string
@@ -125,11 +133,6 @@ export interface Inputs {
   queueDismiss: PlaybackScope
   queueItems: { accountId: string; queueId: string; offset: number; limit: number }
   playbackPreferences: { preferences?: PlaybackPreferences }
-  prepareExport: { accountId: string; source: QueueCreate['source'] }
-  finishExport: { accountId: string; token: string; file: string }
-  prepareImport: { accountId: string; file: string }
-  commitImport: { accountId: string; token: string }
-  discardTransfer: { token: string }
   sqliteVersion: undefined
   close: undefined
 }
@@ -141,6 +144,7 @@ export interface Replies {
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }
   favoritesTask: FavoritesTask | null
   favoritesStart: FavoritesTask
+  favoritesDefer: FavoritesTask
   favoritesUpdate: FavoritesTask
   favoritesSave: FavoritesTask
   favoriteFolders: FavoriteFolder[]
@@ -173,6 +177,7 @@ export interface Replies {
   unlikeUpdate: UnlikeTask
   unlikeNext: (UnlikeItem & { platformSeen: boolean }) | null
   unlikeReserve: null
+  unlikeSkip: UnlikeTask
   unlikeFinish: UnlikeTask
   unlikeResolve: UnlikeTask
   queueState: QueueState | null
@@ -185,11 +190,6 @@ export interface Replies {
   queueDismiss: QueueState
   queueItems: Outputs['queueItems']
   playbackPreferences: PlaybackPreferences
-  prepareExport: { token: string; count: number }
-  finishExport: ExportResult
-  prepareImport: ImportPreview
-  commitImport: ImportResult
-  discardTransfer: null
   sqliteVersion: string
   close: null
 }

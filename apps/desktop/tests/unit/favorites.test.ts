@@ -1,3 +1,4 @@
+import { dropFavoriteExtensions } from '../helpers/legacy-schema'
 import { afterEach, it, expect } from 'vitest'
 import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -219,6 +220,7 @@ it('upgrades a v5 library and playback queue without losing data, keeping a cons
   store.call('close', undefined)
   const old = new DatabaseSync(file)
   try {
+    dropFavoriteExtensions(old)
     old.exec(
       'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;ALTER TABLE unlike_tasks DROP COLUMN source;PRAGMA user_version=5;'
     )
@@ -285,7 +287,8 @@ it('does not clear old folder membership when an unexpectedly empty folder contr
   let task = store.call('favoritesStart', { accountId: 'a', id: 'next' })
   task = save(store, task, { items: [] })
   task = save(store, task, { folders: [{ id: '9007199254740993999', title: '旅行', remoteCount: 1 }] })
-  expect(() => save(store, task, { items: [] })).toThrow(/仍标有作品/)
+  const result = save(store, task, { items: [] })
+  expect(result).toMatchObject({ status: 'partial', foldersDeferred: 1 })
   expect(store.call('query', { ...query, source: 'favorites', folderId: task.folderId }).total).toBe(1)
 })
 it('removes an account from current data and all backup versions without losing another account or shared works', () => {
@@ -302,6 +305,7 @@ it('removes an account from current data and all backup versions without losing 
   const legacy = store.call('backup', { reason: 'manual' })
   const old = new DatabaseSync(join(root, 'backups', legacy.fileName))
   try {
+    dropFavoriteExtensions(old)
     old.exec(
       'DROP TABLE saved_cursors;DROP TABLE saved_jobs;DROP TABLE saved_tasks;DROP TABLE saved_members;DROP TABLE saved_folders;DROP TABLE saved_items;ALTER TABLE playback_queues DROP COLUMN source;ALTER TABLE unlike_tasks DROP COLUMN source;PRAGMA user_version=5;'
     )

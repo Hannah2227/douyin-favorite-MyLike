@@ -16,7 +16,13 @@ describe('platform responses', () => {
   it('accepts null and omitted collection arrays only with explicit business success and an explicit terminal marker', () => {
     for (const value of [null, undefined]) {
       const data = { status_code: 0, has_more: 0, aweme_list: value, collects_list: value }
-      expect(parseFavoritesPage(data)).toEqual({ items: [], cursor: '0', hasMore: false })
+      expect(parseFavoritesPage(data)).toEqual({
+        items: [],
+        cursor: '0',
+        hasMore: false,
+        skipped: [],
+        received: 0
+      })
       expect(parseFavoriteFolders(data)).toEqual({ folders: [], cursor: '0', hasMore: false })
       for (const bad of [
         { ...data, status_code: undefined },
@@ -234,6 +240,80 @@ describe('main-world page request', () => {
     })
     expect(requests[3]!.url.searchParams.has('action')).toBe(false)
     expect(requests.every((request) => request.options.credentials === 'include')).toBe(true)
+  })
+  it('uses the v5 collection read contracts with this browser profile and session token', async () => {
+    const calls: { url: URL; options: RequestInit }[] = []
+    const context = {
+      URLSearchParams,
+      AbortController,
+      Map,
+      setTimeout,
+      clearTimeout,
+      navigator: {
+        language: 'zh-CN',
+        platform: 'Win32',
+        onLine: true,
+        hardwareConcurrency: 8,
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144.0.0.0 Safari/537.36'
+      },
+      screen: { width: 1920, height: 1080 },
+      document: { cookie: 'msToken=this-session' },
+      fetch: async (url: string, options: RequestInit) => {
+        calls.push({ url: new URL(url), options })
+        return { status: 200, headers: new Headers(), text: async () => '{"status_code":0}' }
+      }
+    }
+    for (const operation of ['favorites', 'folders', 'folderItems'] as const)
+      await runInNewContext(
+        buildPageScript({
+          id: operation,
+          operation,
+          parameters: { cursor: '9', ...(operation === 'folderItems' ? { collects_id: '8' } : {}) },
+          timeout: 1000
+        }),
+        context
+      )
+    expect(calls.map((c) => c.options.method)).toEqual(['POST', 'GET', 'GET'])
+    expect(calls.map((c) => c.url.pathname)).toEqual([
+      '/aweme/v1/web/aweme/listcollection/',
+      '/aweme/v1/web/collects/list/',
+      '/aweme/v1/web/collects/video/list/'
+    ])
+    for (const call of calls) {
+      expect(Object.fromEntries(call.url.searchParams)).toMatchObject({
+        version_code: '290100',
+        version_name: '29.1.0',
+        update_version_code: '170400',
+        msToken: 'this-session',
+        browser_language: 'zh-CN',
+        browser_platform: 'Win32',
+        browser_online: 'true',
+        browser_version: '144.0.0.0',
+        engine_name: 'Blink',
+        screen_width: '1920',
+        screen_height: '1080',
+        cpu_core_num: '8',
+        os_name: 'Windows'
+      })
+      expect(call.options).toMatchObject({
+        credentials: 'include',
+        cache: 'no-store',
+        referrer: 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
+      })
+      expect(call.url.searchParams.has('sec_user_id')).toBe(false)
+      expect(call.url.searchParams.has('a_bogus')).toBe(false)
+    }
+    expect(calls[0]!.url.searchParams.get('pc_libra_divert')).toBe('Windows')
+    expect(calls[0]!.url.searchParams.get('publish_video_strategy_type')).toBe('2')
+    expect(calls[0]!.options.headers).toMatchObject({ 'x-secsdk-csrf-token': 'DOWNGRADE' })
+    expect(Object.fromEntries(new URLSearchParams(String(calls[0]!.options.body)))).toEqual({
+      count: '20',
+      cursor: '9'
+    })
+    expect(calls[0]!.url.searchParams.has('cursor')).toBe(false)
+    expect(calls[0]!.url.searchParams.has('count')).toBe(false)
+    for (const call of calls.slice(1)) expect(call.url.searchParams.get('count')).toBe('20')
+    expect(calls[2]!.url.searchParams.get('collects_id')).toBe('8')
   })
   it('actually aborts fetch when the page-side deadline expires', async () => {
     let aborted = false

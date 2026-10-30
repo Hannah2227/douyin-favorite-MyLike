@@ -4,15 +4,9 @@ import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseLikedPage } from './douyin/parse'
 import { AppError, publicError } from './errors'
-import {
-  retryableRead,
-  rebuildReadPage,
-  readRetryDelay,
-  PageProgress,
-  EndConfirmation,
-  EmptyPageTraversal
-} from './read-recovery'
+import { PageProgress, EndConfirmation, EmptyPageTraversal } from './read-recovery'
 import { collectionPolicy as policy } from './collection-policy'
+import { readRecovery } from './recovery'
 import type { RuntimeEventInput } from '../shared/runtime-events'
 
 type Runner = <T>(
@@ -29,7 +23,8 @@ export class CollectionService {
   activity: Snapshot['collectionActivity'] = null
   constructor(
     private readonly db: Pick<Database, 'call'>,
-    private readonly engine: Pick<DouyinEngine, 'request' | 'cancel' | 'release' | 'snapshot'>,
+    private readonly engine: Pick<DouyinEngine, 'request' | 'cancel' | 'release' | 'snapshot'> &
+      Partial<Pick<DouyinEngine, 'assertAvailable'>>,
     private readonly run: Runner,
     private readonly identity: (accountId: string, check: () => void) => Promise<Account>,
     private readonly changed: (committed?: boolean) => void,
@@ -53,6 +48,7 @@ export class CollectionService {
   }
   async start(accountId: string, mode: CollectionTask['mode']): Promise<CollectionTask> {
     if (this.loop) throw new AppError('BUSY', '请先暂停或停止现有采集任务。')
+    this.engine.assertAvailable?.(accountId, 'likes')
     const previous = await this.db.call('collection', { accountId })
     if (mode === 'update' && previous && previous.status !== 'completed')
       return this.control(accountId, previous.id, 'resume')
@@ -69,6 +65,7 @@ export class CollectionService {
   ): Promise<CollectionTask> {
     if (action === 'resume') {
       if (this.loop) throw new AppError('BUSY', '采集任务正在收口，请稍后继续。')
+      this.engine.assertAvailable?.(accountId, 'likes')
       const task = await this.db.call('updateCollection', {
         accountId,
         taskId,
@@ -124,6 +121,7 @@ export class CollectionService {
     }
     while (!signal.aborted && task.status === 'running') {
       try {
+        this.engine.assertAvailable?.(task.accountId, 'likes')
         const recycled =
           segmentPages >= this.timing.pagesPerSegment || Date.now() - segmentStart >= this.timing.segmentMs
         if (recycled) {
@@ -176,15 +174,8 @@ export class CollectionService {
                 page.hasMore
               )
               if (page.hasMore && !page.items.length) {
-                const action = traversal.check(page.cursor)
+                traversal.check(page.cursor)
                 this.activity = 'probing'
-                if (action === 'confirm' && traversal.requests.length === 1)
-                  this.report(task.accountId, {
-                    kind: 'task',
-                    code: 'EMPTY_PAGE_PROBE',
-                    message: '空列表仍有有效下一页，正在复查游标并有限探查后续分页；原断点保留。'
-                  })
-                this.changed()
                 return null
               }
               if (!confirmed) {
@@ -233,10 +224,17 @@ export class CollectionService {
         const detail = publicError(error)
         ending.reset()
         traversal = new EmptyPageTraversal(task.cursor)
-        if (retryableRead(detail.code) && retries < 2) {
-          this.activity = ['EMPTY_PAGE', 'EMPTY_RESPONSE'].includes(detail.code) ? 'cooling' : 'waiting'
+        const recovery = readRecovery({
+          source: 'likes',
+          code: detail.code,
+          retries,
+          baseDelay: this.timing.retry,
+          visible: this.engine.snapshot().status === 'visible'
+        })
+        if (recovery) {
+          this.activity = recovery.activity
           this.changed()
-          if (rebuildReadPage(detail.code, retries, this.engine.snapshot().status === 'visible')) {
+          if (recovery.rebuild) {
             try {
               await this.run(
                 task.accountId,
@@ -251,13 +249,8 @@ export class CollectionService {
               if (signal.aborted) return
             }
           }
-          const delay = readRetryDelay(detail.code, retries++, this.timing.retry)
-          this.report(task.accountId, {
-            kind: 'task',
-            message: `喜欢采集暂缓 ${(delay / 1000).toFixed(0)} 秒后重试同一断点（${retries}/2）：${detail.message}`,
-            code: detail.code
-          })
-          await this.wait(delay, signal)
+          retries++
+          await this.wait(recovery.delay, signal)
           continue
         }
         try {

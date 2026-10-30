@@ -1,9 +1,32 @@
+import { CollectionActions } from './CollectionActions'
 import { useEffect, useState } from 'react'
-import { Pause, Square, RefreshCw } from 'lucide-react'
-import type { FavoriteFolder, FavoritesTask } from '../../shared/contracts'
+import type { FavoriteFolder, FavoritesTask, Snapshot } from '../../shared/contracts'
+import type { RecoveryState } from '../../shared/recovery-state'
+import { taskRecovery } from '../../shared/task-recovery'
 import { call, type Perform } from './api'
 import { Select } from './Select'
 
+export function FavoriteIssues({ task }: { task: FavoritesTask | null }) {
+  return task?.issues?.length ? (
+    <details className="favorite-sync-issues">
+      <summary>未完成的收藏夹（{task.issues.length}）</summary>
+      <ul>
+        {task.issues.map((issue) => (
+          <li key={issue.folderId}>
+            <strong>{issue.title}</strong>
+            <small>
+              {taskRecovery(issue.errorCode)?.message ?? '暂时未能同步这个收藏夹，可以稍后重试。'}
+            </small>
+            <details className="runtime-details">
+              <summary>诊断详情</summary>
+              <small>{'ID ' + issue.folderId + ' · ' + issue.reason}</small>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </details>
+  ) : null
+}
 export function useFavoriteFolders(accountId: string | null, revision: number) {
   const [result, setResult] = useState<{
     accountId: string
@@ -34,13 +57,14 @@ export function FavoritesPanel({
   task,
   busy,
   perform,
-  start,
   folders,
   folderId,
   setFolderId,
   error,
-  compact = false
+  compact = false,
+  snapshot
 }: {
+  snapshot: Snapshot | null
   accountId: string | null
   task: FavoritesTask | null
   busy: boolean
@@ -51,19 +75,14 @@ export function FavoritesPanel({
   setFolderId?: (id: string | null) => void
   error?: string
   compact?: boolean
+  updateTask?: FavoritesTask | null
+  recovery?: readonly RecoveryState[]
+  login?: () => void
+  accessChecks?: readonly { accountId: string; operation: string; at: number }[]
 }) {
-  const running = task?.status === 'running'
-  const control = (action: 'pause' | 'resume' | 'stop') =>
-    task &&
-    void perform('更新收藏同步', () =>
-      call(window.mylike.invoke('favoritesControl', { accountId: task.accountId, taskId: task.id, action }))
-    )
-  const stage =
-    task?.stage === 'all'
-      ? '收藏作品'
-      : task?.stage === 'folders'
-        ? '收藏夹列表'
-        : folders?.find((f) => f.id === task?.folderId)?.title || '收藏夹作品'
+  const latest = snapshot?.favoritesUpdate
+  const progress =
+    latest && (latest.status === 'running' || latest.updatedAt > (task?.updatedAt ?? 0)) ? latest : task
   return (
     <section className={compact ? 'favorites-toolbar' : 'panel'} aria-label="收藏同步">
       {!compact && <h2>收藏与收藏夹</h2>}
@@ -76,50 +95,42 @@ export function FavoritesPanel({
             { value: '', label: '全部收藏' },
             ...(folders ?? []).map((folder) => ({
               value: folder.id,
-              label: `${folder.title} · ${folder.localCount}`
+              label: folder.title + ' · ' + folder.localCount
             }))
           ]}
         />
       )}
-      {task && (
+      {progress && (
         <span className="favorites-progress" role="status">
-          {running
-            ? `正在同步${stage}`
-            : task.status === 'completed'
-              ? '同步完成'
-              : task.status === 'stopped'
-                ? '已停止'
-                : '已暂停'}{' '}
-          · 新增 {task.added} 条 · 收藏夹 {task.foldersDone}/{task.foldersTotal}
+          {(progress.status === 'running'
+            ? '进行中'
+            : progress.status === 'completed'
+              ? '已完成'
+              : '已停止') +
+            ' · 本次新增 ' +
+            progress.added +
+            ' 条' +
+            (progress.mode === 'update'
+              ? ' · 更新顶部'
+              : ' · 收藏夹 ' + progress.foldersDone + '/' + progress.foldersTotal)}
         </span>
       )}
       <div className="panel-actions">
-        {running ? (
-          <button onClick={() => control('pause')}>
-            <Pause size={14} />
-            暂停同步
-          </button>
-        ) : (
-          <button disabled={!accountId || busy} onClick={start}>
-            <RefreshCw size={14} />
-            {task && task.status !== 'completed' ? '继续同步收藏' : '同步收藏'}
-          </button>
-        )}
-        {task && task.status !== 'completed' && task.status !== 'stopped' && (
-          <button disabled={busy && !running} onClick={() => control('stop')}>
-            <Square size={14} />
-            停止同步
-          </button>
-        )}
+        <CollectionActions
+          snapshot={snapshot}
+          accountId={accountId}
+          source="favorites"
+          busy={busy}
+          perform={perform}
+        />
       </div>
-      {(error || (task?.status !== 'completed' && task?.reason)) && (
-        <p
-          role={error || task?.errorCode ? 'alert' : undefined}
-          className={error || task?.errorCode ? 'task-error' : 'muted'}
-        >
-          {error || task?.reason}
+      {error && (
+        <p role="alert" className="task-error">
+          {error}
         </p>
       )}
+
+      <FavoriteIssues task={task} />
     </section>
   )
 }

@@ -3,11 +3,20 @@ import { randomUUID } from 'node:crypto'
 import type { EngineStatus } from '../../shared/contracts'
 import { AppError } from '../errors'
 import { buildPageScript, serializeForScript, isWriteOperation, type Operation } from './page-request'
-import { parseResponse, parseIdentity } from './parse'
+import {
+  parseResponse,
+  parseIdentity,
+  parseLikedPage,
+  parseFavoritesPage,
+  parseFavoriteFolders
+} from './parse'
 import { quietMediaScript } from './page-media'
 import { pageStateScript, type AccessEvent, type AccessTarget, type PageState } from './page-state'
 import type { RuntimeEventInput } from '../../shared/runtime-events'
 import { responseSummary } from './response-summary'
+import { failureResponseType, failureRule } from './response-policy'
+import { RecoveryGate } from '../recovery'
+import type { RecoveryState } from '../../shared/recovery-state'
 
 const allowedPage = (value: string): boolean => {
   try {
@@ -28,13 +37,15 @@ const guardedSessions = new WeakSet<Electron.Session>()
 type PageReply = { id?: unknown; error?: unknown; body?: unknown; status?: unknown }
 
 export class DouyinEngine {
+  private readonly recoveryGate = new RecoveryGate()
   private window: BrowserWindow | null = null
   private accountId: string | null = null
   private status: EngineStatus = 'stopped'
+  private documentCommitted = false
   private generation = 0
   private requestGeneration: number | null = null
   private starting: Promise<BrowserWindow> | null = null
-  private cancelStart: (() => void) | null = null
+  private cancelStart: ((reason?: AppError) => void) | null = null
   private cancelRequest: ((reason?: AppError) => void) | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
   private monitor: ReturnType<typeof setTimeout> | null = null
@@ -53,6 +64,12 @@ export class DouyinEngine {
   ) {}
   snapshot() {
     return { status: this.status, accountId: this.accountId }
+  }
+  assertAvailable(accountId: string, operation: string): void {
+    this.recoveryGate.assertReady(accountId, operation)
+  }
+  recovery(accountId: string): RecoveryState[] {
+    return this.recoveryGate.snapshot(accountId)
   }
   setObserver(observer: ((accountId: string, event: RuntimeEventInput) => void) | null) {
     this.observer = observer
@@ -89,7 +106,13 @@ export class DouyinEngine {
   async pageState(accountId: string): Promise<PageState> {
     const win = this.window,
       generation = this.generation
-    if (!win || win.isDestroyed() || this.accountId !== accountId || !allowedPage(win.webContents.getURL()))
+    if (
+      !win ||
+      win.isDestroyed() ||
+      !this.documentCommitted ||
+      this.accountId !== accountId ||
+      !allowedPage(win.webContents.getURL())
+    )
       return { ready: false, captcha: false }
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
@@ -188,6 +211,20 @@ export class DouyinEngine {
       }
     })
     this.window = win
+    this.documentCommitted = false
+    const fail = (error: AppError) => {
+      if (this.window !== win) return
+      this.documentCommitted = false
+      this.update('failed')
+      this.observer?.(accountId, {
+        kind: 'engine',
+        message: error.message,
+        code: error.code,
+        rule: failureRule(error)
+      })
+      this.cancelStart?.(error)
+      this.cancelRequest?.(error)
+    }
     const credentials = new Map<string, string>()
     const onCookieChanged = (
       _event: Electron.Event,
@@ -214,6 +251,12 @@ export class DouyinEngine {
     })
     win.webContents.setAudioMuted(true)
     win.webContents.on('dom-ready', () => {
+      if (this.window !== win || !this.documentCommitted) return
+      // A manual reload may recover a failed document in the same window.
+      if (this.status === 'failed') {
+        this.update(win.isVisible() ? 'visible' : 'ready')
+        this.watch(win, accountId)
+      }
       void this.executeInPage(win, quietMediaScript).catch(() => {})
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -225,22 +268,47 @@ export class DouyinEngine {
     })
     win.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
       if (isMainFrame && !inPlace) {
+        this.documentCommitted = false
         this.generation++
         if (this.requestGeneration !== null)
           this.cancelRequest?.(new AppError('PAGE_CHANGED', '抖音页面发生导航，本次响应已丢弃。'))
       }
     })
-    win.webContents.on('render-process-gone', () => {
+    win.webContents.on('did-navigate', (_event, url, responseCode) => {
       if (this.window !== win) return
-      this.observer?.(accountId, {
-        kind: 'engine',
-        message: '抖音页面意外停止，已保存的业务进度保留。',
-        code: 'BROWSER_CRASHED'
-      })
-      this.cancelRequest?.(
-        new AppError('BROWSER_CRASHED', '抖音页面意外停止，已保留已提交进度；请重试或手动继续任务。')
+      // A 4xx response can still contain an interactive login or challenge.
+      // Keep its document available to the existing identity/captcha checks.
+      if (responseCode >= 500) {
+        fail(
+          new AppError(
+            'BROWSER_NOT_READY',
+            `抖音页面加载失败（HTTP ${responseCode}），请检查网络后重新打开。`,
+            'http.error'
+          )
+        )
+        return
+      }
+      this.documentCommitted = allowedPage(url)
+    })
+    win.webContents.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
+      // Redirects and intentional navigation replacement report ERR_ABORTED.
+      if (!isMainFrame || code === -3) return
+      const name = /^ERR_[A-Z0-9_]{1,60}$/.test(description) ? description : 'ERR_UNKNOWN'
+      fail(
+        new AppError(
+          'BROWSER_NOT_READY',
+          `抖音页面加载失败（${name}，${code}），请检查网络或代理后重新打开。`,
+          'transport.network'
+        )
       )
-      this.update('failed')
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      fail(
+        new AppError(
+          'BROWSER_CRASHED',
+          `抖音页面进程意外停止（${details.reason}，退出码 ${details.exitCode}），已保存进度保留；请重新打开窗口。`
+        )
+      )
     })
     win.on('close', (event) => {
       event.preventDefault()
@@ -263,11 +331,19 @@ export class DouyinEngine {
       let onLoaded: () => void = () => {}
       try {
         const cancelled = new Promise<never>((_resolve, reject) => {
-          this.cancelStart = () => reject(new AppError('CANCELLED', '抖音窗口初始化已取消。'))
+          this.cancelStart = (reason = new AppError('CANCELLED', '抖音窗口初始化已取消。')) => reject(reason)
         })
         const documentReady = new Promise<void>((resolve) => {
           onLoaded = () => {
-            if (allowedPage(win.webContents.getURL())) resolve()
+            // Chromium's error document also emits dom-ready and can retain
+            // the requested HTTPS URL. Require a successful main-frame commit.
+            if (
+              this.window === win &&
+              !win.isDestroyed() &&
+              this.documentCommitted &&
+              allowedPage(win.webContents.getURL())
+            )
+              resolve()
           }
           // Interactive login can probe as soon as the DOM exists. Hidden
           // collection still waits for page scripts/SDK initialization.
@@ -280,12 +356,15 @@ export class DouyinEngine {
         await Promise.race([
           cancelled,
           documentReady,
-          win.loadURL('https://www.douyin.com/user/self?showTab=like').catch((error) => {
-            // QR login can replace the initial navigation. Its replacement
-            // document, rather than the aborted load, decides readiness.
-            if (error.code === 'ERR_ABORTED' || error.errno === -3) return documentReady
-            throw error
-          }),
+          win
+            .loadURL('https://www.douyin.com/user/self?showTab=like')
+            .then(() => documentReady)
+            .catch((error) => {
+              // QR login can replace the initial navigation. Its replacement
+              // document, rather than the aborted load, decides readiness.
+              if (error.code === 'ERR_ABORTED' || error.errno === -3) return documentReady
+              throw error
+            }),
           new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(
               () => reject(new AppError('BROWSER_NOT_READY', '抖音页面加载超时，请打开窗口检查网络后重试。')),
@@ -299,8 +378,7 @@ export class DouyinEngine {
         this.armIdle()
         return win
       } catch (error) {
-        if (this.window === win && this.status !== 'failed')
-          this.update(win.isVisible() ? 'visible' : 'failed')
+        if (this.window === win) this.update('failed')
         if (error instanceof AppError) throw error
         throw new AppError('BROWSER_NOT_READY', '抖音页面未加载成功，请检查网络后重新打开。')
       } finally {
@@ -330,9 +408,14 @@ export class DouyinEngine {
     parameters: Record<string, string> = {},
     options: { recovery?: boolean; loginCheck?: boolean } = {}
   ): Promise<Record<string, any>> {
+    // Refusing a local early retry does not load a page, observe a new failure,
+    // or extend the original waiting period.
+    this.assertAvailable(accountId, operation)
     const started = Date.now()
-    let summary: Pick<RuntimeEventInput, 'responseType' | 'count'> = { responseType: 'no-response' }
-    let status: number | undefined, code: string | undefined
+    let summary: Pick<RuntimeEventInput, 'responseType' | 'count' | 'shape' | 'rule' | 'platformCode'> = {
+      responseType: 'no-response'
+    }
+    let status: number | undefined, code: string | undefined, failureMessage: string | undefined
     const ready = this.ensure(accountId)
     this.recoveryRequest = options.recovery === true
     const id = randomUUID(),
@@ -354,7 +437,7 @@ export class DouyinEngine {
       win = await Promise.race([ready, cancelled])
       const target: AccessTarget =
         operation === 'favoriteFolderCreate'
-          ? { operation: 'folders', parameters: { cursor: '0', count: '18' } }
+          ? { operation: 'folders', parameters: { cursor: '0', count: '20' } }
           : isWriteOperation(operation)
             ? { operation: 'detail', parameters: { aweme_id: parameters.aweme_id ?? '' } }
             : { operation, parameters: { ...parameters } }
@@ -390,7 +473,10 @@ export class DouyinEngine {
         throw new AppError('CANCELLED', '页面或账号已变化，旧响应已丢弃。')
       if (generation !== this.generation)
         throw new AppError('PAGE_CHANGED', '抖音页面发生导航，本次响应已丢弃。')
-      if (!reply || reply.id !== id) throw new AppError('INVALID_RESPONSE', '请求关联校验失败。')
+      if (!reply || reply.id !== id)
+        throw new AppError('INVALID_RESPONSE', '请求关联校验失败。', 'request.mismatch')
+      if (reply.error === 'TOO_LARGE')
+        throw new AppError('INVALID_RESPONSE', '接口响应过大，已停止处理。', 'body.oversized')
       if (reply.error)
         throw new AppError(
           reply.error === 'TIMEOUT' ? 'TIMEOUT' : 'NETWORK_ERROR',
@@ -400,11 +486,14 @@ export class DouyinEngine {
         throw new AppError('INVALID_RESPONSE', '接口响应格式不正确。')
       status = reply.status
       summary = responseSummary(reply.body, reply.status, operation)
-      const data = parseResponse(reply.body, reply.status)
+      const data = parseResponse(reply.body, reply.status, { operation, workId: parameters.aweme_id })
       if (operation === 'self') parseIdentity(data)
       // Preserve a confirmed write promptly. A challenge detected afterward
       // affects subsequent operations, not this response's known outcome.
-      if (isWriteOperation(operation)) return data
+      if (isWriteOperation(operation)) {
+        if (String(data.status_code) === '0') this.recoveryGate.success(accountId, operation)
+        return data
+      }
       const after = await this.pageState(accountId)
       if (this.window !== win || this.accountId !== accountId)
         throw new AppError('CANCELLED', '账号已变化，旧响应已丢弃。')
@@ -413,17 +502,23 @@ export class DouyinEngine {
         if (!options.recovery) this.requireAttention(accountId, 'verification')
         throw new AppError('VERIFICATION_REQUIRED', '检测到安全验证，当前响应未提交，请完成验证后继续。')
       }
+      // JSON alone is not proof that the original collection endpoint recovered.
+      if (operation === 'likes') parseLikedPage(data, { allowEmpty: true })
+      if (operation === 'favorites' || operation === 'folderItems')
+        parseFavoritesPage(data, { allowEmpty: true })
+      if (operation === 'folders') parseFavoriteFolders(data, { allowEmpty: true })
       if (!options.recovery && this.failedTarget?.operation === operation) this.failedTarget = null
+      this.recoveryGate.success(accountId, operation)
       return data
-    } catch (error) {
-      code = error instanceof AppError ? error.code : 'INTERNAL_ERROR'
-      if (
-        !(error instanceof AppError) &&
+    } catch (caught) {
+      const error =
+        !(caught instanceof AppError) &&
         generation !== null &&
         this.window === win &&
         generation !== this.generation
-      )
-        throw new AppError('PAGE_CHANGED', '抖音页面发生导航，本次响应已丢弃。')
+          ? new AppError('PAGE_CHANGED', '抖音页面发生导航，本次响应已丢弃。')
+          : caught
+      code = error instanceof AppError ? error.code : 'INTERNAL_ERROR'
       // API rejections, empty replies and timeouts can accompany an in-page
       // challenge. DOM evidence upgrades those failures instead of guessing.
       let failure = error
@@ -431,13 +526,15 @@ export class DouyinEngine {
         error instanceof AppError &&
         !['CANCELLED', 'BROWSER_CRASHED', 'PAGE_CHANGED'].includes(error.code)
       ) {
+        if (error.code !== 'VERIFICATION_REQUIRED' && (await this.pageState(accountId)).captcha)
+          failure = new AppError('VERIFICATION_REQUIRED', '检测到安全验证，请在抖音窗口完成后继续。')
         if (
           !options.recovery &&
+          failure instanceof AppError &&
+          failure.code !== 'CONTENT_UNAVAILABLE' &&
           (!this.interaction || !this.failedTarget || this.failedTarget.operation === 'self')
         )
           this.failedTarget = this.target
-        if (error.code !== 'VERIFICATION_REQUIRED' && (await this.pageState(accountId)).captcha)
-          failure = new AppError('VERIFICATION_REQUIRED', '检测到安全验证，请在抖音窗口完成后继续。')
         if (
           !options.recovery &&
           failure instanceof AppError &&
@@ -446,6 +543,20 @@ export class DouyinEngine {
           this.requireAttention(accountId, failure.code === 'AUTH_REQUIRED' ? 'login' : 'verification')
       }
       if (failure instanceof AppError) code = failure.code
+      const waiting = this.recoveryGate.failure(accountId, operation, code!)
+      if (waiting && failure instanceof AppError)
+        failure = new AppError(failure.code, failure.message, failure.rule, waiting.retryAt)
+      failureMessage = failure instanceof AppError ? failure.message : '请求处理失败，请查看错误码。'
+      if (
+        code === 'CONTENT_UNAVAILABLE' &&
+        this.failedTarget?.operation === operation &&
+        this.failedTarget.parameters.aweme_id === parameters.aweme_id
+      )
+        this.failedTarget = null
+      const responseType = failureResponseType(code)
+      if (responseType) summary = { ...summary, responseType }
+      const rule = failureRule(failure)
+      if (rule) summary = { ...summary, rule }
       throw failure
     } finally {
       if (timer) clearTimeout(timer)
@@ -461,7 +572,7 @@ export class DouyinEngine {
       ))
         this.observer?.(accountId, {
           kind: 'request',
-          message: code ? '接口请求未正常结束' : '接口已返回',
+          message: failureMessage ?? '接口已返回',
           operation,
           ...summary,
           ...(status === undefined ? {} : { status }),
@@ -490,6 +601,7 @@ export class DouyinEngine {
     this.failedTarget = null
     this.target = { operation: 'self', parameters: {} }
     this.window = null
+    this.documentCommitted = false
     this.starting = null
     this.accountId = null
     win?.destroy()

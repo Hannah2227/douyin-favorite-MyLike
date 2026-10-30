@@ -1,10 +1,17 @@
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+  type Locator,
+  type Page
+} from '@playwright/test'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Command, QueueState } from '../../src/shared/contracts'
 import { version } from '../../package.json'
-import { CHANNEL } from '../../src/shared/channels'
+import { CHANNEL, CHANGED } from '../../src/shared/channels'
 import { terminateApp } from '../helpers/terminate-app'
 import { testTimeout } from '../helpers/test-timeout'
 
@@ -54,6 +61,37 @@ async function invoke(command: Command, input: unknown = {}): Promise<any> {
     { command, input }
   )
 }
+/** Advance only this isolated main process to the application's own next-attempt time. */
+async function advanceRecovery(accountId: string, operations?: string[]) {
+  const waits = ((await invoke('snapshot')).data.recovery ?? []).filter(
+    (state: any) => state.accountId === accountId && (!operations || operations.includes(state.operation))
+  )
+  expect(waits.length).toBeGreaterThan(0)
+  const until = Math.max(...waits.map((state: any) => state.retryAt)) + 1
+  await app.evaluate(
+    ({ BrowserWindow }, { until, channel }) => {
+      const globals = globalThis as any
+      globals.__recoveryBaseNow ??= Date.now.bind(Date)
+      const realNow = globals.__recoveryBaseNow as () => number
+      const offset = until - realNow()
+      Date.now = () => realNow() + offset
+      BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))
+        ?.webContents.send(channel)
+    },
+    { until, channel: CHANGED }
+  )
+  await expect
+    .poll(
+      async () =>
+        ((await invoke('snapshot')).data.recovery ?? []).filter(
+          (state: any) =>
+            state.accountId === accountId && (!operations || operations.includes(state.operation))
+        ).length
+    )
+    .toBe(0)
+}
+
 async function screenshot(path: string) {
   // A never-shown Windows window may have no compositor frame, or return an old one.
   const windowId = await app.evaluate(
@@ -77,6 +115,12 @@ async function screenshot(path: string) {
 async function chooseOption(label: string, option: string) {
   await page.getByRole('combobox', { name: label, exact: true }).click()
   await page.getByRole('option', { name: option, exact: true }).click()
+}
+function taskMessage(_card: Locator) {
+  return page.getByRole('region', { name: '账号状态' }).locator('.connection-copy')
+}
+function taskButton(card: Locator, name: string | RegExp) {
+  return card.getByRole('button', { name: typeof name === 'string' ? name : '向下采集', exact: true })
 }
 async function addAccount() {
   await page.getByRole('button', { name: '添加抖音账号', exact: true }).click()
@@ -137,6 +181,17 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           return new Response(sdkWrapper, { headers: { 'content-type': 'application/javascript' } })
         }
         if (url.pathname === '/user/self' || url.pathname === '/fixture-login-redirect') {
+          if ((globalThis as any).__mylikeNavigationFailure === 'network') return Response.error()
+          if ((globalThis as any).__mylikeNavigationFailure === 'http')
+            return new Response('<html><body>Unavailable</body></html>', {
+              status: 503,
+              headers: { 'content-type': 'text/html' }
+            })
+          if ((globalThis as any).__mylikeNavigationFailure === 'challenge')
+            return new Response(
+              '<html><body><div id="secsdk-Captcha-container" style="width:350px;height:200px">请拖动滑块完成安全验证</div></body></html>',
+              { status: 403, headers: { 'content-type': 'text/html; charset=utf-8' } }
+            )
           if (slow === 'page')
             await new Promise<void>((resolve) => {
               ;(globalThis as any).__mylikeReleasePage = resolve
@@ -167,6 +222,12 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           if ((globalThis as any).__mylikeAuthLost) body = { status_code: 0, user: {} }
           if ((globalThis as any).__mylikeIdentityRejected) body = { status_code: 8 }
         } else if (url.pathname.includes('/aweme/favorite/')) {
+          if ((globalThis as any).__mylikeLikesBare)
+            return Response.json({
+              status_code: 0,
+              extra: { logid: 'SECRET_TRACE' },
+              log_pb: { impr_id: 'PRIVATE_TRACE' }
+            })
           if (url.searchParams.get('max_cursor') === (globalThis as any).__mylikeHoldLikesAt)
             await new Promise<void>((resolve) => {
               ;(globalThis as any).__mylikeReleaseLikes = resolve
@@ -245,11 +306,28 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
             method: request.method,
             cursor,
             folderId: parameters.get('collects_id'),
+            count: parameters.get('count'),
+            version: url.searchParams.get('version_code'),
+            referrer: request.referrer,
+            csrf: request.headers.get('x-secsdk-csrf-token'),
             sdk: url.searchParams.get('_fixture_sdk')
           })
           if (globals.__favoriteChallengeFolder && url.pathname.includes('/collects/list/'))
             return new Response('<html>安全验证</html>')
-          if (globals.__favoriteRateLimited) return new Response('{}', { status: 429 })
+          const favoriteScope = url.pathname.includes('/aweme/listcollection/')
+            ? 'favorites'
+            : url.pathname.includes('/collects/video/list/')
+              ? 'folderItems'
+              : 'folders'
+          if (globals.__favoriteRateLimited || globals.__favoriteRateLimitedScope === favoriteScope)
+            return new Response('{}', { status: 429 })
+          if (globals.__favoriteNetworkFailure) return Response.error()
+          if (globals.__favoriteBareAt === favoriteScope)
+            return Response.json({ status_code: 0, extra: { logid: 'SECRET_TRACE' } })
+          if (globals.__favoriteRiskCode)
+            return Response.json({ status_code: 8, status_msg: 'SECRET_MESSAGE' })
+          if (globals.__favoriteMalformedList && url.pathname.includes('/aweme/listcollection/'))
+            return Response.json({ status_code: 0, has_more: 1, cursor: '9' })
           const ids = [workId, String(BigInt(workId) + 10n), String(BigInt(workId) + 11n)]
           const items = (indexes: number[]) =>
             indexes.map((index) => ({
@@ -268,7 +346,12 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           else if (url.pathname.includes('/aweme/listcollection/'))
             body = {
               status_code: 0,
-              aweme_list: items(cursor === '0' ? [0, 1] : [2]),
+              aweme_list: [
+                ...(globals.__favoriteHeadNew && cursor === '0'
+                  ? [{ aweme_id: '7381234567890999999', desc: '新增收藏', create_time: 1800000000 }]
+                  : []),
+                ...items(cursor === '0' ? [0, 1] : [2])
+              ],
               cursor: cursor === '0' ? '9007199254740993988' : '0',
               has_more: cursor === '0' ? 1 : 0
             }
@@ -284,6 +367,8 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               cursor: first && cursor === '0' ? '9007199254740993977' : '0',
               has_more: first && cursor === '0' ? 1 : 0
             }
+            if (globals.__favoriteBrokenFolder && first) body = { status_code: 0, cursor: '9', has_more: 1 }
+            if (globals.__favoriteBadRows && first && cursor !== '0') (body as any).aweme_list.push(null)
             if (globals.__favoriteNullTerminals && !first)
               body = {
                 status_code: 0,
@@ -369,6 +454,14 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
                 : {})
             }
           }
+          if ((globalThis as any).__favoriteUnavailableDetail === detailId)
+            body = {
+              status_code: 0,
+              aweme_detail: null,
+              filter_detail: { aweme_id: detailId, filter_reason: 'core_dep', detail_msg: '' }
+            }
+          if ((globalThis as any).__favoriteWithheldDetail === detailId)
+            body = { status_code: 0, aweme_detail: null }
         } else if (
           ['/aweme/collect/', '/collects/video/move/', '/collects/maintain/'].some((path) =>
             url.pathname.includes(path)
@@ -674,17 +767,12 @@ test('executes main-world requests in a hidden account session, saves pages and 
   const accountId = await addAccount()
   await installPlatform(accountId)
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await page.getByRole('button', { name: '核验登录', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('已核验：测试用户')
+  expect((await invoke('probe', { accountId })).ok).toBe(true)
   await page.getByText('诊断与运行记录', { exact: true }).click()
-  await page.getByRole('button', { name: '采集一页', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('新增 1 条')
-  await page.getByRole('button', { name: '继续下一页', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('新增 0 条')
-  await page.getByRole('button', { name: '采集一页', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('新增 0 条')
-  await page.getByRole('button', { name: '继续下一页', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('已到末尾')
+  expect((await invoke('collectPage', { accountId, continue: false })).ok).toBe(true)
+  expect((await invoke('collectPage', { accountId, continue: true })).ok).toBe(true)
+  expect((await invoke('collectPage', { accountId, continue: false })).ok).toBe(true)
+  expect((await invoke('collectPage', { accountId, continue: true })).ok).toBe(true)
   const calls = await app.evaluate(() => (globalThis as any).__mylikeTestCalls as string[])
   const likes = calls.filter((value) => value.includes('/aweme/favorite/')).map((value) => new URL(value))
   expect(likes.map((url) => url.searchParams.get('max_cursor'))).toEqual([
@@ -746,7 +834,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeLongCollection = true
   })
-  await page.getByRole('button', { name: '自动采集', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.pages).toBeGreaterThanOrEqual(1)
   await page
     .getByRole('button', { name: /测试视频：喜欢的日常/ })
@@ -758,8 +846,11 @@ test('automatically collects, pauses, restores its task after restart and plays 
     .toBeGreaterThanOrEqual(2)
   await page.getByRole('button', { name: '返回内容库' }).click()
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await page.getByRole('button', { name: '暂停采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('paused')
+  await page
+    .getByRole('region', { name: '自动采集任务', exact: true })
+    .getByRole('button', { name: '停止', exact: true })
+    .click()
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('stopped')
   const paused = (await invoke('snapshot')).data.collection
   await screenshot(info.outputPath('collection-paused.png'))
   expect(paused.pages).toBeGreaterThanOrEqual(1)
@@ -768,7 +859,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
   await launch()
   expect((await invoke('snapshot')).data.collection).toMatchObject({
     id: paused.id,
-    status: 'paused',
+    status: 'stopped',
     pages: paused.pages,
     cursor: paused.cursor
   })
@@ -780,7 +871,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
   await page
     .getByRole('region', { name: '自动采集任务' })
-    .getByRole('button', { name: '继续采集', exact: true })
+    .getByRole('button', { name: '向下采集', exact: true })
     .click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 20000 })
@@ -790,7 +881,7 @@ test('automatically collects, pauses, restores its task after restart and plays 
     added: paused.added,
     received: paused.received
   })
-  await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText('平台已返回列表末尾')
+  await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText('已完成')
 })
 
 test('recovers the committed collection cursor after a forced process exit and waits for explicit resume', async () => {
@@ -864,11 +955,20 @@ test('pauses with an engine crash reason and resumes collection from its committ
     delete (globalThis as any).__mylikeHoldLikesAt
     ;(globalThis as any).__mylikeReleaseLikes()
   })
-  expect((await invoke('collectionControl', { accountId, taskId: start.data.id, action: 'resume' })).ok).toBe(
-    true
-  )
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '自动采集任务', exact: true })
+  await expect(card).not.toContainText(/BROWSER_CRASHED|SDK|ERR_|断点|游标/)
+  await expect(card.getByRole('button', { name: '打开抖音窗口', exact: true })).toHaveCount(0)
+  await card.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
-  expect((await invoke('snapshot')).data.collection).toMatchObject({ pages: 3, received: 2, added: 1 })
+  expect((await invoke('snapshot')).data.collection).toMatchObject({
+    id: start.data.id,
+    pages: 3,
+    received: 2,
+    added: 1,
+    errorCode: null
+  })
+  await expect(card.locator('.task-badge')).toHaveText('已完成')
 })
 
 test('stops an in-flight request without binding identity or advancing the cursor', async () => {
@@ -919,13 +1019,22 @@ test('opens the login window when identity is missing and persists a rate-limit 
     .toMatchObject({ error: 'AUTH_REQUIRED' })
   await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
   await expect.poll(async () => (await invoke('snapshot')).data.collectionActivity).toBeNull()
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '自动采集任务', exact: true })
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
+  expect((await invoke('snapshot')).data.accessChecks).toEqual([])
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeAuthLost = false
     ;(globalThis as any).__mylikeRateLimited = true
   })
   await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
   await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('ready')
-  expect((await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(true)
+  expect((await invoke('snapshot')).data).toMatchObject({
+    collection: { id: task.id, status: 'paused', errorCode: 'AUTH_REQUIRED' },
+    accessChecks: expect.arrayContaining([expect.objectContaining({ accountId, operation: 'self' })])
+  })
+  await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
+  await card.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.collection?.errorCode).toBe('RATE_LIMITED')
   await expect.poll(async () => (await invoke('snapshot')).data.collectionActivity).toBeNull()
   const calls = await app.evaluate(() => (globalThis as any).__mylikeTestCalls as string[])
@@ -1149,12 +1258,19 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
   await expect(page.getByLabel('内容排序')).toHaveCount(0)
   await expect(page.locator('.list-caption')).toContainText('50000 条内容')
   await page.getByRole('button', { name: '批量选择', exact: true }).click()
-  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
-  await expect(page.getByText('已选 50000 条', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '选择前 1000 条', exact: true }).click()
+  await expect(page.getByText('已选 1000 条', { exact: true })).toBeVisible()
+  const selected = (await invoke('matchingIds', { accountId })).data as string[]
+  expect(selected).toHaveLength(1000)
+  await expect(page.getByRole('button', { name: '取消抖音点赞', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: '取消抖音点赞', exact: true }).click()
+  const confirmation = page.getByRole('dialog', { name: '取消抖音点赞', exact: true })
+  await expect(confirmation).toContainText('取消 1000 条作品')
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click()
   await installPlatform(accountId)
   expect((await invoke('collectPage', { accountId, continue: false })).ok).toBe(true)
   await expect(page.getByText('内容有更新，清空选择后刷新。')).toBeVisible()
-  await expect(page.getByText('已选 50000 条', { exact: true })).toBeVisible()
+  await expect(page.getByText('已选 1000 条', { exact: true })).toBeVisible()
   await expect(page.locator('.list-caption')).toContainText('50000 条内容')
   const frozenHeight = await page
     .locator('.virtual-grid')
@@ -1168,7 +1284,7 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
   await screenshot(info.outputPath('library-selection-50k.png'))
   await installMedia()
   await page.getByRole('button', { name: '播放所选', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.playback?.total).toBe(50000)
+  await expect.poll(async () => (await invoke('snapshot')).data.playback?.total).toBe(1000)
   await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
   await expect(page.getByRole('button', { name: '播放队列第 1 条', exact: true })).toBeVisible()
   expect(await page.locator('.queue-row').count()).toBeLessThan(100)
@@ -1176,22 +1292,46 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
     await invoke('queueItems', {
       accountId,
       queueId: (await invoke('snapshot')).data.playback.queueId,
-      offset: 49950,
+      offset: 950,
       limit: 50
     })
   ).data
   expect(tail.items).toHaveLength(50)
   expect(tail.items.some((item: any) => item.work.id === workId)).toBe(false)
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
-  await expect(page.getByText('已选 50000 条', { exact: true })).toBeVisible()
+  await expect(page.getByText('已选 1000 条', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '删除本地条目', exact: true }).click()
-  await expect(page.getByRole('dialog', { name: '删除本地条目' })).toContainText('50000 条记录')
+  await expect(page.getByRole('dialog', { name: '删除本地条目' })).toContainText('1000 条记录')
   await screenshot(info.outputPath('local-delete-confirm.png'))
   await page.getByRole('button', { name: '确认删除本地条目', exact: true }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  await expect(page.locator('.list-caption')).toContainText('49001 条内容')
   expect((await invoke('query', { accountId: other })).data.total).toBe(1)
-  expect((await invoke('query', { accountId })).data.items[0].id).toBe(workId)
+  const remaining = await app.evaluate(
+    ({ app }, { accountId, selected, workId }) => {
+      const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
+      const { join } = process.getBuiltinModule('node:path') as typeof import('node:path')
+      const db = new DatabaseSync(join(app.getPath('userData'), 'mylike.sqlite'))
+      try {
+        return {
+          selected: Number(
+            db
+              .prepare(
+                'SELECT count(*) AS n FROM account_items WHERE accountId=? AND workId IN (SELECT value FROM json_each(?))'
+              )
+              .get(accountId, JSON.stringify(selected))!.n
+          ),
+          newItem: !!db
+            .prepare('SELECT 1 FROM account_items WHERE accountId=? AND workId=?')
+            .get(accountId, workId)
+        }
+      } finally {
+        db.close()
+      }
+    },
+    { accountId, selected, workId }
+  )
+  expect(remaining).toEqual({ selected: 0, newItem: true })
 })
 
 test('persists playback position and preferences across restart and suppresses resume after natural completion', async () => {
@@ -2105,7 +2245,7 @@ test('confirms a single unlike from playback, pauses media and retains the fixed
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
   await expect(page.getByRole('heading', { name: '连接与任务' })).toBeVisible()
-  await expect(page.getByLabel('取消点赞任务')).toContainText('成功 1')
+  await expect(page.getByLabel('取消点赞任务')).toContainText('已完成 1')
   expect(await page.locator('video,audio').count()).toBe(0)
 })
 
@@ -2447,7 +2587,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   ).toBe(true)
   for (const tab of ['仪表盘', '连接与任务', '设置']) {
     await page.getByRole('button', { name: tab, exact: true }).click()
-    await expect(page.locator('.page-header .primary')).toHaveCount(0)
+    await expect(page.locator('.page-header .collection-controls')).toHaveCount(0)
   }
   await page.getByRole('button', { name: '仪表盘', exact: true }).click()
   const overview = (await invoke('libraryOverview', { accountId })).data
@@ -2457,7 +2597,7 @@ test('matches native caption colors to light mode and playback, scopes collectio
   await expect(page.getByRole('group', { name: '其中实况', exact: true })).toHaveCount(0)
   await screenshot(info.outputPath('dashboard-usage-light.png'))
   await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
-  await expect(page.locator('.page-header .primary')).toBeVisible()
+  await expect(page.locator('.page-header .collection-controls')).toBeVisible()
   await screenshot(info.outputPath('library-light.png'))
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -2629,10 +2769,10 @@ test('keeps the playlist clear of native window controls while resizing, maximiz
 
 test('provides readable collection actions and resume banner, unified help links and direct account renaming', async ({}, info) => {
   const { accountId } = await prepareQueue(3)
-  const collect = page.locator('.header-actions .primary')
+  const collect = page.getByRole('group', { name: '喜欢采集操作' })
   const box = await collect.boundingBox()
-  expect(box!.width).toBeGreaterThanOrEqual(144)
-  expect(box!.height).toBeGreaterThanOrEqual(44)
+  expect(box!.width).toBeGreaterThanOrEqual(160)
+  expect(box!.height).toBeGreaterThanOrEqual(32)
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
@@ -2647,7 +2787,8 @@ test('provides readable collection actions and resume banner, unified help links
   await page.getByRole('button', { name: '常见问题', exact: true }).click()
   await expect(page.getByRole('heading', { name: '常见问题', exact: true }).first()).toBeVisible()
   await page.getByText('需要一直登录吗？', { exact: true }).click()
-  await expect(page.locator('details[open]')).toContainText('核验账号')
+  await expect(page.locator('details[open]')).toContainText('按需检查登录情况')
+  await expect(page.locator('details[open]')).toContainText('需要登录时应用会提示')
   await page.getByRole('button', { name: '使用教程', exact: true }).click()
   await expect(page.getByRole('heading', { name: '开始使用 MyLike', exact: true })).toBeVisible()
   await app.evaluate(({ shell }) => {
@@ -2678,11 +2819,11 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
   test.setTimeout(testTimeout(120000))
   const { accountId } = await prepareQueue(3)
   await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
-  await expect(page.locator('.page-header .primary')).toHaveCount(0)
+  await expect(page.locator('.page-header .collection-controls')).toHaveCount(0)
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteHold = true
   })
-  await page.getByRole('button', { name: '同步收藏', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 30000 })
     .toMatchObject({
@@ -2691,6 +2832,19 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
       cursor: '9007199254740993977',
       status: 'running'
     })
+  const initialCalls = await app.evaluate(() => (globalThis as any).__favoriteRequests)
+  const allRead = initialCalls.find((call: any) => call.path.includes('/aweme/listcollection/'))
+  expect(allRead).toMatchObject({
+    method: 'POST',
+    count: '20',
+    version: '290100',
+    csrf: 'DOWNGRADE',
+    sdk: 'page-main-world'
+  })
+  expect(allRead.referrer).toBe(
+    'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
+  )
+  expect(initialCalls.every((call: any) => call.count === '20' && call.version === '290100')).toBe(true)
   expect((await invoke('collectionStart', { accountId, mode: 'update' })).error.code).toBe('BUSY')
   const task = (await invoke('snapshot')).data.favorites
   expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'pause' })).ok).toBe(true)
@@ -2709,7 +2863,7 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
   })
   expect(await app.evaluate(() => (globalThis as any).__favoriteRequests?.length ?? 0)).toBe(0)
   await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
-  await page.getByRole('button', { name: '继续同步收藏', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 20000 })
     .toMatchObject({ status: 'completed', foldersDone: 2, foldersTotal: 2 })
@@ -2719,6 +2873,23 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
     folderId: '9007199254740993999',
     sdk: 'page-main-world'
   })
+  const storedFolders = (await invoke('favoriteFolders', { accountId })).data
+  expect(storedFolders).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: '9007199254740993999', title: '旅行', localCount: 2 }),
+      expect.objectContaining({ id: '8', title: '音乐', localCount: 1 })
+    ])
+  )
+  expect(
+    (await invoke('query', { accountId, source: 'favorites', folderId: '9007199254740993999' })).data.items
+      .map((work: any) => work.id)
+      .sort()
+  ).toEqual([workId, String(BigInt(workId) + 10n)].sort())
+  expect(
+    (await invoke('query', { accountId, source: 'favorites', folderId: '8' })).data.items.map(
+      (work: any) => work.id
+    )
+  ).toEqual([String(BigInt(workId) + 11n)])
   await expect(page.locator('.list-caption')).toContainText('3 条内容')
   await chooseOption('收藏夹筛选', '旅行 · 2')
   await expect(page.locator('.list-caption')).toContainText('2 条内容')
@@ -2811,8 +2982,8 @@ test('persists general and playback settings, restores a visible window, and pro
   for (const name of ['立即备份数据库', '检查数据库完整性', '清理页面缓存'])
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
   await expect(page.getByText('当前页面缓存', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '导入元数据', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '导出全部本地内容', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '导入元数据', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '导出全部本地内容', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '打开备份目录', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '刷新占用', exact: true }).click()
   await page.getByRole('button', { name: '关于', exact: true }).click()
@@ -2984,82 +3155,36 @@ test('uses gallery shortcuts to pin and resume slides while disabling wheel navi
 })
 
 test('shows compact task cards with direct controls and clear errors at small sizes', async ({}, info) => {
-  test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareQueue(3)
-  await app.evaluate(() => {
-    ;(globalThis as any).__mylikeHoldLikesAt = '0'
-  })
-  await invoke('collectionStart', { accountId, mode: 'update' })
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await expect(page.getByRole('button', { name: '暂停采集', exact: true })).toBeVisible()
-  await expect(page.getByRole('progressbar', { name: '喜欢列表采集进度', exact: true })).not.toHaveAttribute(
-    'aria-valuenow'
-  )
-  await expect(page.getByRole('textbox', { name: '搜索任务', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('tablist', { name: '任务状态' })).toHaveCount(0)
-  await expect(page.getByRole('combobox', { name: '任务类型' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '采集一页', exact: true })).toBeHidden()
-  await page.getByRole('button', { name: '暂停采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('paused')
+  for (const label of ['自动采集任务', '收藏同步']) {
+    const card = page.getByRole('region', { name: label, exact: true })
+    await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
+  }
+  await expect(page.getByRole('button', { name: '核验状态', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '喜欢：采集一页', exact: true })).toHaveCount(0)
   await app.evaluate(() => {
-    ;(globalThis as any).__mylikeHoldLikesAt = null
-    ;(globalThis as any).__mylikeReleaseLikes?.()
     ;(globalThis as any).__favoriteRateLimited = true
   })
-  await page.getByRole('button', { name: '同步收藏', exact: true }).click()
+  await invoke('favoritesStart', { accountId })
   await expect.poll(async () => (await invoke('snapshot')).data.favorites?.errorCode).toBe('RATE_LIMITED')
-  const favorites = page.getByRole('region', { name: '收藏同步', exact: true })
-  await expect(favorites.getByRole('alert')).toContainText('限流')
-  await expect(favorites.getByRole('button', { name: '继续同步收藏', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '继续采集', exact: true })).toBeVisible()
-  await screenshot(info.outputPath('tasks-simple.png'))
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
+  const fav = page.getByRole('region', { name: '收藏同步', exact: true })
+  await expect(fav.getByRole('button', { name: '向下采集', exact: true })).toBeDisabled()
+  await expect(
+    page.getByRole('region', { name: '自动采集任务' }).getByRole('button', { name: '向下采集', exact: true })
+  ).toBeEnabled()
+  await screenshot(info.outputPath('tasks-unified.png'))
   await invoke('theme', { theme: 'light' })
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await screenshot(info.outputPath('tasks-simple-light.png'))
   await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find((window) =>
-      window.webContents.getURL().startsWith('mylike://ui/')
-    )!
-    win.setSize(920, 640)
-    win.webContents.setZoomFactor(1.5)
+    const w = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('mylike://ui/'))!
+    w.setSize(920, 640)
+    w.webContents.setZoomFactor(1.5)
   })
-  await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(650)
   await expect
-    .poll(() => page.locator('.task-center').evaluate((node) => node.scrollWidth - node.clientWidth))
+    .poll(() => page.locator('.task-center').evaluate((n) => n.scrollWidth - n.clientWidth))
     .toBeLessThanOrEqual(1)
-  await page.getByRole('button', { name: '继续同步收藏', exact: true }).scrollIntoViewIfNeeded()
-  await expect(favorites.getByRole('button', { name: '继续同步收藏', exact: true })).toBeVisible()
-  await screenshot(info.outputPath('tasks-simple-small.png'))
-  const favoriteTaskId = (await invoke('snapshot')).data.favorites.id
-  await app.evaluate(() => {
-    ;(globalThis as any).__favoriteRateLimited = false
-    ;(globalThis as any).__favoriteHold = true
-  })
-  await page.getByRole('button', { name: '继续同步收藏', exact: true }).click()
-  await expect
-    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 30000 })
-    .toMatchObject({ status: 'running', stage: 'folder', cursor: '9007199254740993977' })
-  await page.getByRole('button', { name: '暂停同步', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.favorites.status).toBe('paused')
-  await app.evaluate(() => {
-    ;(globalThis as any).__favoriteHold = false
-    ;(globalThis as any).__releaseFavorite?.()
-  })
-  await page.getByRole('button', { name: '继续同步收藏', exact: true }).click()
-  await expect
-    .poll(async () => (await invoke('snapshot')).data.favorites?.status, { timeout: 30000 })
-    .toBe('completed')
-  expect((await invoke('snapshot')).data.favorites.id).toBe(favoriteTaskId)
-  await app.evaluate(() => {
-    ;(globalThis as any).__mylikeHoldLikesAt = '0'
-  })
-  await page.getByRole('button', { name: '继续采集', exact: true }).click()
-  await page.getByRole('button', { name: '停止采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('stopped')
-  await app.evaluate(() => {
-    ;(globalThis as any).__mylikeHoldLikesAt = null
-    ;(globalThis as any).__mylikeReleaseLikes?.()
-  })
+  await screenshot(info.outputPath('tasks-unified-light-small.png'))
 })
 
 test('shows a concise dashboard with publication years and recent works', async ({}, info) => {
@@ -3296,7 +3421,7 @@ test('reports task history read failures without an empty-state claim and allows
   }, CHANNEL)
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('受控历史读取失败')
-  await expect(page.getByText('任务历史暂不可用', { exact: true })).toBeVisible()
+  await expect(page.getByText('任务记录暂时无法读取', { exact: true })).toBeVisible()
   await expect(page.getByText('还没有任务', { exact: true })).toHaveCount(0)
   await app.evaluate(() => {
     ;(globalThis as any).__failHistory = false
@@ -3317,7 +3442,7 @@ test('keeps history results scoped while changing records and accounts', async (
         accountId,
         remoteId: 'fixture',
         mode: 'single',
-        status: 'paused',
+        status: index ? 'completed' : 'paused',
         createdAt: Date.now() - index * 86400000,
         updatedAt: Date.now(),
         total: 1,
@@ -3373,14 +3498,26 @@ test('keeps history results scoped while changing records and accounts', async (
   await page.getByRole('combobox', { name: '取消点赞历史任务', exact: true }).click()
   await page.getByRole('option').nth(1).click()
   await expect(page.getByText('第一项结果', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '重新核验', exact: true })).toHaveCount(0)
+  await expect(
+    page
+      .getByRole('region', { name: '取消点赞任务', exact: true })
+      .locator('.simple-task-actions')
+      .getByRole('button', { name: '检查结果', exact: true })
+  ).toBeDisabled()
   await expect.poll(() => app.evaluate(() => typeof (globalThis as any).__releaseResult)).toBe('function')
   await app.evaluate(() => {
     ;(globalThis as any).__holdResult = false
     ;(globalThis as any).__releaseResult()
   })
   await expect(page.getByText('第二项结果', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '重新核验', exact: true }).click()
+  await expect(page.getByRole('region', { name: '取消点赞任务', exact: true })).toContainText(
+    '有 1 条操作需要确认'
+  )
+  await page
+    .getByRole('region', { name: '取消点赞任务', exact: true })
+    .locator('.simple-task-actions')
+    .getByRole('button', { name: '检查结果', exact: true })
+    .click()
   await expect
     .poll(() => app.evaluate(() => (globalThis as any).__verifiedTargets))
     .toEqual([{ accountId, taskId: 'second-task', workId: '7381234567890123457' }])
@@ -3388,7 +3525,261 @@ test('keeps history results scoped while changing records and accounts', async (
   await invoke('createAccount', { name: '另一个账号' })
   await expect(page.getByRole('region', { name: '取消点赞任务', exact: true })).toContainText('暂无记录')
   await expect(page.getByText('第二项结果', { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '重新核验', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '检查结果', exact: true })).toHaveCount(0)
+})
+
+test('checks a fixed paged set of uncertain results without repeating writes or waiting for the write endpoint', async () => {
+  const accountId = await addAccount()
+  await app.evaluate(
+    ({ ipcMain }, { channel, accountId }) => {
+      const handler = (ipcMain as any)._invokeHandlers.get(channel)
+      if (!handler) throw new Error('Missing test IPC handler')
+      const task = {
+        id: 'paged-uncertain-results',
+        accountId,
+        remoteId: 'fixture',
+        source: 'likes',
+        mode: 'batch',
+        status: 'completed',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        total: 103,
+        pending: 0,
+        inflight: 0,
+        success: 0,
+        failed: 0,
+        unknown: 103,
+        reason: '受控未知结果',
+        errorCode: 'TIMEOUT' as string | null
+      }
+      const items = Array.from({ length: 103 }, (_, index) => ({
+        position: index,
+        workId: String(7381234567890123456n + BigInt(index)),
+        title: '需要检查的作品 ' + (index + 1),
+        status: 'unknown',
+        reason: null,
+        errorCode: 'TIMEOUT'
+      }))
+      const globals = globalThis as any
+      globals.__pagedVerified = []
+      globals.__pagedReads = []
+      globals.__unexpectedResultWrites = []
+      ipcMain.removeHandler(channel)
+      ipcMain.handle(channel, async (event, command, input) => {
+        if (command === 'snapshot') {
+          const result = await handler(event, command, input)
+          if (result.ok)
+            result.data.recovery = [
+              { accountId, operation: 'unlike', code: 'RATE_LIMITED', retryAt: Date.now() + 60000 }
+            ]
+          return result
+        }
+        if (input?.accountId === accountId) {
+          if (command === 'unlikeHistory') return { ok: true, data: [task] }
+          if (command === 'unlikeItems') {
+            const available = input.issuesOnly ? items.filter((item) => item.status === 'unknown') : items
+            globals.__pagedReads.push({
+              offset: input.offset,
+              limit: input.limit,
+              issuesOnly: !!input.issuesOnly
+            })
+            return {
+              ok: true,
+              data: {
+                total: available.length,
+                items: available.slice(input.offset, input.offset + input.limit)
+              }
+            }
+          }
+          if (command === 'unlikeVerify') {
+            const item = items.find((item) => item.workId === input.workId)
+            if (!item || item.status !== 'unknown') throw Error('Repeated or unexpected target')
+            globals.__pagedVerified.push(input.workId)
+            item.status = 'success'
+            task.unknown--
+            task.success++
+            if (!task.unknown) {
+              task.errorCode = null
+              task.reason = '操作结果已保存。'
+            }
+            return { ok: true, data: task }
+          }
+          if (command === 'unlikeStart' || command === 'unlikeControl') {
+            globals.__unexpectedResultWrites.push({ command, input })
+            return { ok: false, error: { code: 'UNEXPECTED_WRITE', message: '检查结果不得重发写操作' } }
+          }
+        }
+        return handler(event, command, input)
+      })
+    },
+    { channel: CHANNEL, accountId }
+  )
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const task = page.getByRole('region', { name: '取消点赞任务', exact: true })
+  await expect(task.locator('.task-badge')).toHaveText('待确认')
+  await expect(task).toContainText('有 103 条操作需要确认')
+  const check = task.locator('.simple-task-actions').getByRole('button', { name: '检查结果', exact: true })
+  await expect(check).toBeEnabled()
+  await check.click()
+  await expect.poll(() => app.evaluate(() => (globalThis as any).__pagedVerified.length)).toBe(103)
+  const result = await app.evaluate(() => ({
+    verified: (globalThis as any).__pagedVerified,
+    reads: (globalThis as any).__pagedReads,
+    writes: (globalThis as any).__unexpectedResultWrites
+  }))
+  expect(result.verified).toEqual(
+    Array.from({ length: 103 }, (_, index) => String(7381234567890123456n + BigInt(index)))
+  )
+  expect(result.reads.filter((read: any) => read.limit === 100)).toEqual([
+    { offset: 0, limit: 100, issuesOnly: false },
+    { offset: 100, limit: 100, issuesOnly: false }
+  ])
+  expect(result.writes).toEqual([])
+  await expect(task.locator('.task-badge')).toHaveText('已完成')
+  await expect(task).toContainText('已完成 103')
+  await expect(
+    task.locator('.simple-task-actions').getByRole('button', { name: '检查结果', exact: true })
+  ).toHaveCount(0)
+})
+
+test('rejects failed login documents, reopens them with a real navigation and supports a successful manual reload', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeNavigationFailure = 'network'
+  })
+  expect(await invoke('login', { accountId })).toMatchObject({
+    ok: false,
+    error: { code: 'BROWSER_NOT_READY', message: expect.stringContaining('ERR_FAILED') }
+  })
+  expect((await invoke('snapshot')).data.engine.status).toBe('failed')
+  const failedId = await app.evaluate(
+    ({ BrowserWindow, session }, id) =>
+      BrowserWindow.getAllWindows().find(
+        (win) => win.webContents.session === session.fromPartition(`persist:mylike-${id}`)
+      )!.id,
+    accountId
+  )
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeNavigationFailure = null
+  })
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  const reopenedId = await app.evaluate(
+    ({ BrowserWindow, session }, id) =>
+      BrowserWindow.getAllWindows().find(
+        (win) => win.webContents.session === session.fromPartition(`persist:mylike-${id}`)
+      )!.id,
+    accountId
+  )
+  expect(reopenedId).not.toBe(failedId)
+  expect(
+    await app.evaluate(
+      () =>
+        ((globalThis as any).__mylikeTestCalls as string[]).filter(
+          (url) => new URL(url).pathname === '/user/self'
+        ).length
+    )
+  ).toBe(2)
+
+  await invoke('releaseEngine')
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeNavigationFailure = 'http'
+  })
+  expect(await invoke('login', { accountId })).toMatchObject({
+    ok: false,
+    error: { code: 'BROWSER_NOT_READY', message: expect.stringContaining('HTTP 503') }
+  })
+  expect((await invoke('snapshot')).data.engine.status).toBe('failed')
+  await app.evaluate(({ BrowserWindow, session }, id) => {
+    ;(globalThis as any).__mylikeNavigationFailure = null
+    BrowserWindow.getAllWindows()
+      .find((win) => win.webContents.session === session.fromPartition(`persist:mylike-${id}`))!
+      .webContents.reload()
+  }, accountId)
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data.engine.status).toBe('ready')
+})
+
+test('keeps an HTTP 403 challenge document interactive and verifies only after its visible challenge clears', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeNavigationFailure = 'challenge'
+  })
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  await new Promise((resolve) => setTimeout(resolve, 1600))
+  expect((await invoke('snapshot')).data).toMatchObject({
+    engine: { status: 'visible' },
+    authentication: { status: 'waiting' }
+  })
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[]).some((url) => url.includes('/profile/self/'))
+    )
+  ).toBe(false)
+  expect(
+    (await invoke('runtimeEvents', { accountId })).data.some(
+      (event: any) => event.code === 'BROWSER_NOT_READY'
+    )
+  ).toBe(false)
+  await remoteChallenge(accountId, 'none')
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  expect((await invoke('snapshot')).data.engine.status).toBe('ready')
+})
+
+test('reports a renderer crash during initial login immediately with its native reason instead of a later loading timeout', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId, 'page')
+  const opening = invoke('login', { accountId })
+  try {
+    await expect
+      .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleasePage))
+      .toBe('function')
+    const began = Date.now()
+    const details = await app.evaluate(
+      ({ BrowserWindow, session }, id) =>
+        new Promise<{ reason: string; exitCode: number }>((resolve) => {
+          const win = BrowserWindow.getAllWindows().find(
+            (win) => win.webContents.session === session.fromPartition(`persist:mylike-${id}`)
+          )!
+          win.webContents.once('render-process-gone', (_event, details) =>
+            resolve({ reason: details.reason, exitCode: details.exitCode })
+          )
+          win.webContents.forcefullyCrashRenderer()
+        }),
+      accountId
+    )
+    expect(await opening).toMatchObject({
+      ok: false,
+      error: {
+        code: 'BROWSER_CRASHED',
+        message: expect.stringContaining(`${details.reason}，退出码 ${details.exitCode}`)
+      }
+    })
+    expect(Date.now() - began).toBeLessThan(testTimeout(5000))
+    await expect
+      .poll(async () =>
+        (await invoke('runtimeEvents', { accountId })).data.some(
+          (event: any) =>
+            event.kind === 'engine' &&
+            event.code === 'BROWSER_CRASHED' &&
+            event.message.includes(`${details.reason}，退出码 ${details.exitCode}`)
+        )
+      )
+      .toBe(true)
+    expect(
+      (await invoke('runtimeEvents', { accountId })).data.some(
+        (event: any) => event.code === 'BROWSER_NOT_READY'
+      )
+    ).toBe(false)
+    expect((await invoke('snapshot')).data.engine.status).toBe('failed')
+  } finally {
+    await app.evaluate(() => {
+      ;(globalThis as any).__mylikeReleasePage?.()
+    })
+    await opening
+  }
 })
 
 test('cancels a still-loading login on close without waiting for navigation timeout or binding another account', async () => {
@@ -3576,11 +3967,12 @@ test('polls login every two seconds after an HTTP 200 identity rejection and clo
 test('persists only exceptions and confirmed ends per account with a prominent verify button and MB sizes', async ({}, info) => {
   const { accountId } = await prepareQueue(2)
   const collectionBackground = await page
-    .locator('.page-header .primary')
-    .evaluate((node) => getComputedStyle(node).backgroundColor)
+    .locator('html')
+    .evaluate((node) => getComputedStyle(node).getPropertyValue('--accent').trim())
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  const verify = page.getByRole('button', { name: '核验登录', exact: true })
-  await expect(verify).toHaveCSS('background-color', collectionBackground)
+  const verify = page.getByRole('button', { name: '核验状态', exact: true })
+  expect(await verify.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
+  expect(collectionBackground).toBeTruthy()
   const rect = await verify.boundingBox()
   expect(rect!.height).toBeGreaterThanOrEqual(44)
   expect(rect!.width).toBeGreaterThanOrEqual(144)
@@ -3598,6 +3990,10 @@ test('persists only exceptions and confirmed ends per account with a prominent v
   await expect(history).toContainText('确认触底')
   await expect(history).not.toContainText('接口已返回')
   await expect(history).not.toContainText('已开始')
+  const failureRows = history.locator('li').filter({ hasText: '限流' })
+  await expect(failureRows).toHaveCount(1)
+  await expect(failureRows.locator('details')).not.toHaveAttribute('open', '')
+  await failureRows.getByText('诊断详情', { exact: true }).click()
   await expect(history).toContainText('HTTP 429')
   await expect(history).toContainText('RATE_LIMITED')
   await expect(history).toContainText('返回类型')
@@ -3665,7 +4061,7 @@ test('rechecks the retained terminal cursor after head updates and restart witho
       '0': { aweme_list: [{ aweme_id: workId }], has_more: 1, max_cursor: '99' }
     }
   }, workId)
-  await page.getByRole('button', { name: '更新', exact: true }).click()
+  await page.getByRole('button', { name: '更新顶部', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.collection)
     .toMatchObject({ mode: 'incremental', status: 'completed', tailCursor: '10' })
@@ -3679,7 +4075,7 @@ test('rechecks the retained terminal cursor after head updates and restart witho
     }
   }, workId)
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await page.getByRole('button', { name: '复查末尾', exact: true }).click()
+  await page.getByRole('button', { name: '检查更多内容', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.collection)
     .toMatchObject({ mode: 'recheck', status: 'completed', tailCursor: '20', added: 1 })
@@ -3741,7 +4137,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
       },
       { workId, outcome }
     )
-    await page.getByRole('button', { name: '更新', exact: true }).click()
+    await page.getByRole('button', { name: '更新顶部', exact: true }).click()
     await expect
       .poll(async () => (await invoke('snapshot')).data.collection)
       .toMatchObject({
@@ -3761,12 +4157,10 @@ for (const outcome of ['overlap', 'terminal-empty']) {
           .map((url) => new URL(url).searchParams.get('max_cursor'))
       )
     ).toEqual(outcome === 'overlap' ? ['0', '10', '20'] : ['0', '0'])
-    await expect(page.getByRole('button', { name: '继续历史采集', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '向下采集', exact: true })).toBeVisible()
     await screenshot(info.outputPath(`incremental-${outcome}.png`))
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-    await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText(
-      '新增更新已完成；历史采集断点已保留'
-    )
+    await expect(page.getByRole('region', { name: '自动采集任务' })).toContainText('已完成')
     if (outcome === 'overlap') {
       await app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((win) =>
@@ -3779,7 +4173,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
         .poll(() => page.locator('.task-center').evaluate((node) => node.scrollWidth - node.clientWidth))
         .toBeLessThanOrEqual(1)
       await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
-      await expect(page.getByRole('button', { name: '更新', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: '更新顶部', exact: true })).toBeVisible()
       expect(
         await page.locator('.main-area').evaluate((node) => node.scrollWidth - node.clientWidth)
       ).toBeLessThanOrEqual(1)
@@ -3796,7 +4190,7 @@ for (const outcome of ['overlap', 'terminal-empty']) {
       },
       { workId, deep }
     )
-    await page.getByRole('button', { name: '继续历史采集', exact: true }).click()
+    await page.getByRole('button', { name: '向下采集', exact: true }).click()
     await expect
       .poll(async () => (await invoke('snapshot')).data.collection)
       .toMatchObject({ phase: 'backfill', status: 'completed', added: 1 })
@@ -3824,7 +4218,7 @@ test('continues an interrupted incremental update without restarting on its newl
     },
     { workId, old: ids[0] }
   )
-  await page.getByRole('button', { name: '更新', exact: true }).click()
+  await page.getByRole('button', { name: '更新顶部', exact: true }).click()
   await expect
     .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleaseLikes))
     .toBe('function')
@@ -3846,7 +4240,7 @@ test('continues an interrupted incremental update without restarting on its newl
     },
     { workId, old: ids[0] }
   )
-  await page.getByRole('button', { name: '继续更新', exact: true }).click()
+  await page.getByRole('button', { name: '更新顶部', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.collection)
     .toMatchObject({
@@ -3887,7 +4281,7 @@ test('guides a verified empty account to collection and keeps a breathing task i
   })
   await expect.poll(async () => (await invoke('snapshot')).data.authentication, { timeout: 5000 }).toBeNull()
   await expect(page.getByRole('heading', { name: '开始收录喜欢', exact: true })).toBeVisible()
-  await expect(page.locator('.empty-state')).toContainText('点击上方“自动采集”')
+  await expect(page.locator('.empty-state')).toContainText('向下采集')
   await expect(page.locator('.empty-state')).toContainText('采集途中也可以观看已收录的视频')
   await expect(page.getByRole('button', { name: '打开抖音登录', exact: true })).toHaveCount(0)
   await screenshot(info.outputPath('logged-in-empty-dark.png'))
@@ -3930,7 +4324,10 @@ test('guides a verified empty account to collection and keeps a breathing task i
   await screenshot(info.outputPath('task-breathing-light.png'))
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await expect(dot).toHaveCSS('animation-name', 'none')
-  await page.getByRole('button', { name: '暂停采集', exact: true }).click()
+  await page
+    .getByRole('region', { name: '自动采集任务', exact: true })
+    .getByRole('button', { name: '停止', exact: true })
+    .click()
   await expect(dot).toHaveCount(0)
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeReleaseLikes?.()
@@ -4082,8 +4479,8 @@ for (const mode of ['advancing', 'stagnant']) {
     )
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
     const task = page.getByRole('region', { name: '自动采集任务' })
-    await expect(task).toContainText('待复查')
-    await expect(task).toContainText('尚未确认末尾')
+    await expect(page.getByRole('region', { name: '账号状态' })).toContainText('暂时没有获取到更多内容')
+    await expect(task).not.toContainText(/断点|游标|待复查|尚未确认末尾/)
     await expect(task.getByRole('alert')).toHaveCount(0)
     await screenshot(info.outputPath(`empty-tail-${mode}.png`))
     await app.close()
@@ -4097,7 +4494,7 @@ for (const mode of ['advancing', 'stagnant']) {
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
     await page
       .getByRole('region', { name: '自动采集任务' })
-      .getByRole('button', { name: '继续采集', exact: true })
+      .getByRole('button', { name: '向下采集', exact: true })
       .click()
     await expect
       .poll(async () => (await invoke('snapshot')).data.collection)
@@ -4175,7 +4572,10 @@ for (const source of ['likes', 'favorites']) {
       ;(globalThis as any).__mylikeReplayCollection = source === 'likes'
       ;(globalThis as any).__favoriteReplayPage = source === 'favorites'
     }, source)
-    await invoke(source === 'likes' ? 'collectionStart' : 'favoritesStart', { accountId, mode: 'update' })
+    await invoke(source === 'likes' ? 'collectionStart' : 'favoritesStart', {
+      accountId,
+      ...(source === 'likes' ? { mode: 'update' } : {})
+    })
     const current = async () => {
       const snapshot = (await invoke('snapshot')).data
       return source === 'likes' ? snapshot.collection : snapshot.favorites
@@ -4235,23 +4635,71 @@ for (const shape of ['html', 'json']) {
             url.includes('/aweme/favorite/')
           ).length
       )
+    await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+    let card = page.getByRole('region', { name: '自动采集任务', exact: true })
+    await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
     const before = await requests()
     await expect.poll(requests).toBeGreaterThan(before)
+    expect((await invoke('snapshot')).data.accessChecks).toEqual([])
+    await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeVisible()
     expect((await invoke('snapshot')).data.engine.status).toBe('visible')
     expect((await invoke('snapshot')).data.collection.pages).toBe(0)
-    await app.evaluate(() => {
-      ;(globalThis as any).__mylikeChallengeResponse = null
-    })
-    await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
-    expect((await invoke('snapshot')).data).toMatchObject({
-      engine: { status: 'ready' },
-      collection: { id: task.id, status: 'paused', pages: 0, cursor: '0' }
-    })
+    if (shape === 'json') {
+      // Restart loses the transient failed target, but a fresh successful identity
+      // and page check must still let the user retry the persisted task manually.
+      await app.close()
+      await launch()
+      await installPlatform(accountId)
+      await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+      card = page.getByRole('region', { name: '自动采集任务', exact: true })
+      await expect(page.locator('.connection-avatar')).toHaveClass(/health-uncertain/)
+      await invoke('probe', { accountId })
+    } else {
+      await app.evaluate(() => {
+        ;(globalThis as any).__mylikeChallengeResponse = null
+      })
+    }
+    // Manual login checks do not create an authentication polling session.
+    // Wait for completed access evidence, never the already-null session alone.
+    await expect
+      .poll(async () => (await invoke('snapshot')).data)
+      .toMatchObject({
+        authentication: null,
+        engine: { status: 'ready' },
+        accessChecks: expect.arrayContaining([expect.objectContaining({ accountId, operation: 'self' })]),
+        collection: {
+          id: task.id,
+          status: 'paused',
+          pages: 0,
+          cursor: '0',
+          errorCode: 'VERIFICATION_REQUIRED'
+        }
+      })
+    await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeVisible()
     expect((await invoke('query', { accountId })).data.total).toBe(2)
-    expect((await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(
-      true
+    const checks = (await invoke('snapshot')).data.accessChecks
+    expect(checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ accountId, operation: 'self' })])
     )
+    if (shape === 'html')
+      expect(checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ accountId, operation: 'likes' })])
+      )
+    else expect(checks.some((item: any) => item.operation === 'likes')).toBe(false)
+    await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
+    await card.getByRole('button', { name: '向下采集', exact: true }).click()
     await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+    if (shape === 'html') {
+      await app.evaluate(() => {
+        ;(globalThis as any).__mylikeChallengeResponse = 'html'
+      })
+      await invoke('collectionStart', { accountId, mode: 'update' })
+      await expect
+        .poll(async () => (await invoke('snapshot')).data.collection)
+        .toMatchObject({ status: 'paused', errorCode: 'VERIFICATION_REQUIRED' })
+      expect((await invoke('snapshot')).data.accessChecks).toEqual([])
+      await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
+    }
   })
 }
 
@@ -4373,6 +4821,9 @@ test('checks the failed folders API instead of accepting healthy identity or fav
   await expect.poll(async () => (await invoke('snapshot')).data.favorites?.status).toBe('paused')
   const before = (await invoke('snapshot')).data.favorites
   expect(before.errorCode).toBe('VERIFICATION_REQUIRED')
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '收藏同步', exact: true })
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
   await expect
     .poll(() =>
       app.evaluate(
@@ -4384,6 +4835,8 @@ test('checks the failed folders API instead of accepting healthy identity or fav
     )
     .toBeGreaterThan(1)
   expect((await invoke('snapshot')).data.engine.status).toBe('visible')
+  expect((await invoke('snapshot')).data.accessChecks).toEqual([])
+  await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeVisible()
   expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteChallengeFolder = false
@@ -4395,7 +4848,14 @@ test('checks the failed folders API instead of accepting healthy identity or fav
     cursor: before.cursor
   })
   expect((await invoke('favoriteFolders', { accountId })).data).toEqual([])
-  await invoke('favoritesControl', { accountId, taskId: before.id, action: 'resume' })
+  expect((await invoke('snapshot')).data.accessChecks).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ accountId, operation: 'self' }),
+      expect.objectContaining({ accountId, operation: 'folders' })
+    ])
+  )
+  await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
+  await card.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites.status, { timeout: 30000 })
     .toBe('completed')
@@ -4531,7 +4991,10 @@ test('keeps confirmed favorite progress after an empty write response and requir
   const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
   await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
   await dialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('暂时无法确认此次收藏的完整结果')
   await expect(dialog.getByRole('alert')).toContainText('未自动重发')
+  await expect(dialog.getByRole('alert')).toContainText('请重新读取后确认，已确认的结果会保留')
+  await expect(dialog.getByRole('alert')).not.toContainText('获取到更多内容')
   await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
   expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
   expect((await invoke('query', { accountId, source: 'favorites', folderId: '8' })).data.total).toBe(0)
@@ -4540,6 +5003,12 @@ test('keeps confirmed favorite progress after an empty write response and requir
     ;(globalThis as any).__favoriteWriteFailure = ''
   })
   await dialog.getByRole('button', { name: '重新读取', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+  expect(
+    await app.evaluate(() => (globalThis as any).__favoriteWrites.map((write: any) => write.operation))
+  ).toEqual(['favoriteAdd', 'favoriteFolderAdd'])
+  expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(true)
+  expect((await invoke('query', { accountId, source: 'favorites', folderId: '8' })).data.total).toBe(0)
   await dialog.getByRole('checkbox', { name: '音乐', exact: true }).check()
   await dialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(dialog).toHaveCount(0)
@@ -4613,7 +5082,7 @@ test('finishes empty favorite folders with null or omitted terminal arrays after
     ;(globalThis as any).__favoriteNullTerminals = true
   })
   await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
-  await page.getByRole('button', { name: '同步收藏', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 60000 })
     .toMatchObject({ status: 'completed', foldersDone: 3, foldersTotal: 3 })
@@ -4624,7 +5093,14 @@ test('finishes empty favorite folders with null or omitted terminal arrays after
   }
   const events = (await invoke('runtimeEvents', { accountId })).data
   expect(events.some((event: any) => event.code === 'INVALID_RESPONSE')).toBe(false)
-  expect(events.filter((event: any) => event.code === 'END_CONFIRMED').length).toBeGreaterThanOrEqual(5)
+  expect(
+    events.filter((event: any) => event.code === 'END_CONFIRMED' && event.operation === 'favorites')
+  ).toHaveLength(1)
+  expect(
+    events.some(
+      (event: any) => event.code === 'END_CONFIRMED' && ['folders', 'folderItems'].includes(event.operation)
+    )
+  ).toBe(false)
 })
 
 for (const kind of ['video', 'live'] as const) {
@@ -4888,9 +5364,9 @@ test('pauses bulk uncollect on an unknown response and verifies read-only before
     .poll(async () => (await invoke('snapshot')).data.unlike)
     .toMatchObject({ status: 'paused', unknown: 1, pending: 1 })
   const task = page.getByRole('region', { name: '取消收藏任务', exact: true })
-  await expect(task).toContainText('结果未知 1')
+  await expect(task).toContainText('有 1 条操作需要确认')
   expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(2)
-  await task.getByRole('button', { name: '重新核验', exact: true }).click()
+  await task.locator('.simple-task-actions').getByRole('button', { name: '检查结果', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.unlike)
     .toMatchObject({ unknown: 0, failed: 1, pending: 1 })
@@ -4898,11 +5374,624 @@ test('pauses bulk uncollect on an unknown response and verifies read-only before
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteWriteFailure = ''
   })
-  await task.getByRole('button', { name: '继续未发送项', exact: true }).click()
+  await task.getByRole('button', { name: '继续处理剩余内容', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.unlike)
     .toMatchObject({ status: 'completed', success: 1, failed: 1, unknown: 0 })
   expect(await app.evaluate(() => (globalThis as any).__favoriteWrites.length)).toBe(2)
   expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(1)
   expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(2)
+})
+
+test('defers a malformed favorite folder, completes other folders and retries only the incomplete folder', async ({}, info) => {
+  test.setTimeout(testTimeout(120000))
+  await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteBrokenFolder = true
+  })
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 70000 })
+    .toMatchObject({ status: 'partial', foldersDone: 1, foldersDeferred: 1 })
+  await expect(page.getByRole('status').filter({ hasText: '部分完成' })).toBeVisible()
+  await page.getByText('未完成的收藏夹（1）', { exact: true }).click()
+  await expect(page.locator('.favorite-sync-issues')).toContainText('旅行')
+  await chooseOption('收藏夹筛选', '音乐 · 1')
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  await screenshot(info.outputPath('favorites-partial.png'))
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteBrokenFolder = false
+    ;(globalThis as any).__favoriteRequests = []
+  })
+  await page.getByRole('button', { name: '重试未完成项', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 20000 })
+    .toMatchObject({ status: 'completed', foldersDone: 2, foldersDeferred: 0 })
+  const calls = await app.evaluate(() => (globalThis as any).__favoriteRequests)
+  expect(
+    calls.every(
+      (call: any) => call.path.includes('/collects/video/list/') && call.folderId === '9007199254740993999'
+    )
+  ).toBe(true)
+  await chooseOption('收藏夹筛选', '旅行 · 2')
+  await expect(page.locator('.list-caption')).toContainText('2 条内容')
+})
+
+test('reports invalid favorites response shape on readonly checks without advancing or saving collection data', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteMalformedList = true
+  })
+  const before = (await invoke('snapshot')).data
+  const result = await invoke('favoritesProbe', { accountId })
+  expect(result).toMatchObject({ ok: false, error: { code: 'UPSTREAM_CHANGED' } })
+  expect((await invoke('snapshot')).data.favorites).toEqual(before.favorites)
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(0)
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        operation: 'favorites',
+        code: 'UPSTREAM_CHANGED',
+        shape: 'aweme_list=缺失；has_more=1；status_code=0'
+      })
+    ])
+  )
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteMalformedList = false
+  })
+  expect((await invoke('favoritesProbe', { accountId })).data).toMatchObject({
+    stage: 'all',
+    count: 2,
+    hasMore: true
+  })
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(0)
+})
+
+test('updates head favorites from the UI while preserving a paused folder cursor and restores both tasks after restart', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteHold = true
+  })
+  await invoke('favoritesStart', { accountId })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 30000 })
+    .toMatchObject({ stage: 'folder', cursor: '9007199254740993977' })
+  const task = (await invoke('snapshot')).data.favorites
+  await invoke('favoritesControl', { accountId, taskId: task.id, action: 'pause' })
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteHold = false
+    ;(globalThis as any).__releaseFavorite?.()
+    ;(globalThis as any).__favoriteHeadNew = true
+  })
+  const before = (await invoke('snapshot')).data.favorites
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await page.getByRole('button', { name: '更新顶部', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 20000 })
+    .toMatchObject({ status: 'completed', added: 1, mode: 'update' })
+  expect((await invoke('snapshot')).data.favorites).toEqual(before)
+  await expect(page.locator('.list-caption')).toContainText('4 条内容')
+  await app.close()
+  await launch()
+  expect((await invoke('snapshot')).data.favorites).toEqual(before)
+  expect((await invoke('snapshot')).data.favoritesUpdate).toMatchObject({ status: 'completed', added: 1 })
+})
+
+test('skips an explicitly unavailable favorite during bulk uncollect and exposes it directly in filtered task results', async ({}, info) => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId, ids } = await prepareCollectedQueue(2)
+  await app.evaluate((_electron, id) => {
+    ;(globalThis as any).__favoriteUnavailableDetail = id
+  }, ids[0])
+  await page.getByRole('button', { name: '批量选择', exact: true }).click()
+  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
+  await page.getByRole('button', { name: '取消抖音收藏', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消抖音收藏', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike, { timeout: 25000 })
+    .toMatchObject({ status: 'completed', failed: 1, success: 1, pending: 0, unknown: 0 })
+  const task = page.getByRole('region', { name: '取消收藏任务', exact: true })
+  await expect(task.getByRole('checkbox', { name: '仅看未完成的内容', exact: true })).toBeChecked()
+  await expect(task.locator('.write-results li')).toHaveCount(1)
+  await expect(task.locator('.write-results')).toContainText('已跳过')
+  const skipped = task.locator('.write-results li')
+  await expect(skipped.locator('details')).not.toHaveAttribute('open', '')
+  await skipped.getByText('诊断详情', { exact: true }).click()
+  await expect(skipped.locator('details[open] small')).toBeVisible()
+  await expect(skipped.locator('details[open] small')).toContainText('ID ' + ids[0])
+  const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
+  expect(
+    writes
+      .filter((write: any) => write.operation === 'favoriteRemove')
+      .map((write: any) => write.body.aweme_id)
+  ).toEqual([ids[1]])
+  expect(
+    (await invoke('query', { accountId, source: 'favorites' })).data.items.map((item: any) => item.id)
+  ).toEqual([ids[0]])
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(2)
+  await screenshot(info.outputPath('uncollect-skipped.png'))
+})
+
+test('pauses uncollect for an unexplained empty favorite detail without skipping or sending any writes', async () => {
+  const { accountId, ids } = await prepareCollectedQueue(2)
+  await app.evaluate((_electron, id) => {
+    ;(globalThis as any).__favoriteWithheldDetail = id
+  }, ids[0])
+  expect(
+    (await invoke('unlikeStart', { accountId, workIds: ids, mode: 'batch', source: 'favorites' })).ok
+  ).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.unlike)
+    .toMatchObject({
+      status: 'paused',
+      pending: 2,
+      failed: 0,
+      unknown: 0,
+      errorCode: 'UPSTREAM_RISK_CONTROL'
+    })
+  expect((await invoke('query', { accountId, source: 'favorites' })).data.total).toBe(2)
+  expect(
+    await app.evaluate(
+      () =>
+        ((globalThis as any).__favoriteWrites ?? []).filter(
+          (call: any) => call.operation === 'favoriteRemove'
+        ).length
+    )
+  ).toBe(0)
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        operation: 'detail',
+        code: 'UPSTREAM_RISK_CONTROL',
+        responseType: 'risk-control'
+      })
+    ])
+  )
+})
+
+test('pauses likes on a status-only response without advancing its cursor and preserves the classified reason after restart', async () => {
+  const { accountId } = await prepareQueue(2)
+  const baseline = new Set((await invoke('runtimeEvents', { accountId })).data.map((event: any) => event.id))
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeLikesBare = true
+  })
+  expect((await invoke('collectionStart', { accountId, mode: 'incremental' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.collection)
+    .toMatchObject({ status: 'paused', errorCode: 'UPSTREAM_RISK_CONTROL', cursor: '0', pages: 0 })
+  expect((await invoke('query', { accountId, source: 'likes' })).data.total).toBe(2)
+  const events = (await invoke('runtimeEvents', { accountId })).data
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        operation: 'likes',
+        rule: 'payload.bare_envelope',
+        platformCode: '0',
+        code: 'UPSTREAM_RISK_CONTROL'
+      })
+    ])
+  )
+  expect(events.some((event: any) => !baseline.has(event.id) && event.code === 'END_CONFIRMED')).toBe(false)
+  expect(JSON.stringify(events)).not.toMatch(/SECRET_TRACE|PRIVATE_TRACE/)
+  await app.close()
+  await launch()
+  expect((await invoke('snapshot')).data.collection).toMatchObject({
+    status: 'paused',
+    cursor: '0',
+    pages: 0
+  })
+  expect((await invoke('runtimeEvents', { accountId })).data).toEqual(events)
+})
+
+test('pauses a withheld favorite folder response without deferring it as malformed or clearing existing memberships', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareCollectedQueue(2)
+  const before = (await invoke('favoriteFolders', { accountId })).data.find(
+    (folder: any) => folder.id === '9007199254740993999'
+  )
+  expect(before.localCount).toBe(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteBareAt = 'folderItems'
+    ;(globalThis as any).__favoriteRequests = []
+  })
+  expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 25000 })
+    .toMatchObject({
+      status: 'paused',
+      folderId: before.id,
+      cursor: '0',
+      foldersDeferred: 0,
+      errorCode: 'UPSTREAM_RISK_CONTROL'
+    })
+  const folders = (await invoke('favoriteFolders', { accountId })).data
+  expect(folders.find((folder: any) => folder.id === before.id).localCount).toBe(2)
+  const calls = await app.evaluate(() => (globalThis as any).__favoriteRequests)
+  expect(calls.filter((call: any) => call.path.includes('/collects/video/list/'))).toHaveLength(1)
+  expect((await invoke('runtimeEvents', { accountId })).data).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ operation: 'folderItems', rule: 'payload.bare_envelope', platformCode: '0' })
+    ])
+  )
+})
+
+test('distinguishes rate limits, schema changes and risk responses in task recovery guidance and diagnostic rules', async ({}, info) => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimited = true
+  })
+  await invoke('favoritesStart', { accountId })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites)
+    .toMatchObject({ status: 'paused', errorCode: 'RATE_LIMITED' })
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '收藏同步', exact: true })
+  await expect(taskMessage(card)).toContainText('暂时')
+  await expect(taskButton(card, /^稍后重试/)).toBeDisabled()
+  await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
+  await expect(card.getByRole('button', { name: '更新顶部', exact: true })).toBeDisabled()
+  await expect(card).not.toContainText(/断点|游标|SDK|空壳|UPSTREAM_|原接口/)
+  const task = (await invoke('snapshot')).data.favorites
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimited = false
+    ;(globalThis as any).__favoriteMalformedList = true
+  })
+  await advanceRecovery(accountId, ['favorites'])
+  await invoke('favoritesControl', { accountId, taskId: task.id, action: 'resume' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites)
+    .toMatchObject({ status: 'paused', errorCode: 'UPSTREAM_CHANGED' })
+  await expect(taskMessage(card)).toContainText('当前版本暂时无法读取')
+  await expect(page.getByRole('button', { name: '核验状态', exact: true })).toBeVisible()
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteMalformedList = false
+    ;(globalThis as any).__favoriteRiskCode = true
+  })
+  await invoke('favoritesControl', { accountId, taskId: task.id, action: 'resume' })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites)
+    .toMatchObject({ status: 'paused', errorCode: 'UPSTREAM_RISK_CONTROL' })
+  await expect(taskMessage(card)).toContainText('暂时')
+  await expect(taskButton(card, /^稍后重试/)).toBeDisabled()
+  await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
+  await expect(card.getByRole('button', { name: '更新顶部', exact: true })).toBeDisabled()
+  await page.getByText('诊断与运行记录', { exact: true }).click()
+  await page
+    .locator('.history details summary')
+    .evaluateAll((nodes) => nodes.forEach((node) => ((node.parentElement as HTMLDetailsElement).open = true)))
+  await expect(page.locator('.history')).toContainText('http.rate_limit')
+  await expect(page.locator('.history')).toContainText('payload.schema')
+  await expect(page.locator('.history')).toContainText('envelope.risk_code')
+  await expect(page.locator('.history')).toContainText('平台状态 8')
+  expect(await app.evaluate(() => (globalThis as any).__favoriteRequests.length)).toBe(3)
+  expect(JSON.stringify((await invoke('runtimeEvents', { accountId })).data)).not.toContain('SECRET_MESSAGE')
+  await screenshot(info.outputPath('recovery-guidance.png'))
+})
+
+test('holds a restricted collection until its next-attempt time without resetting progress or blocking healthy detail reads', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimited = true
+  })
+  expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites)
+    .toMatchObject({ status: 'paused', errorCode: 'RATE_LIMITED', cursor: '0', pages: 0 })
+  const snapshot = (await invoke('snapshot')).data
+  const task = snapshot.favorites
+  const wait = snapshot.recovery.find(
+    (state: any) => state.accountId === accountId && state.operation === 'favorites'
+  )
+  expect(wait).toMatchObject({ code: 'RATE_LIMITED' })
+  expect(wait.retryAt).toBeGreaterThan(await app.evaluate(() => Date.now()))
+  const before = await app.evaluate(() => (globalThis as any).__favoriteRequests.length)
+  const identityCalls = await app.evaluate(
+    () =>
+      ((globalThis as any).__mylikeTestCalls as string[]).filter((url) => url.includes('/profile/self/'))
+        .length
+  )
+  for (let i = 0; i < 3; i++) {
+    for (const [command, input] of [
+      ['favoritesStart', { accountId }],
+      ['favoritesStart', { accountId, mode: 'update' }],
+      ['favoritesControl', { accountId, taskId: task.id, action: 'resume' }],
+      ['favoritesProbe', { accountId }]
+    ] as const) {
+      expect(await invoke(command, input)).toMatchObject({
+        ok: false,
+        error: { code: 'RATE_LIMITED', retryAt: wait.retryAt }
+      })
+    }
+  }
+  expect(await app.evaluate(() => (globalThis as any).__favoriteRequests.length)).toBe(before)
+  expect(
+    await app.evaluate(
+      () =>
+        ((globalThis as any).__mylikeTestCalls as string[]).filter((url) => url.includes('/profile/self/'))
+          .length
+    )
+  ).toBe(identityCalls)
+  expect((await invoke('snapshot')).data.favorites).toEqual(task)
+  expect((await invoke('media', { accountId, workId })).ok).toBe(true)
+  expect((await invoke('login', { accountId })).ok).toBe(true)
+  expect((await invoke('media', { accountId, workId })).ok).toBe(true)
+  expect(
+    (await invoke('snapshot')).data.recovery.find((state: any) => state.operation === 'favorites')?.retryAt
+  ).toBe(wait.retryAt)
+  expect(await app.evaluate(() => (globalThis as any).__favoriteRequests.length)).toBe(before)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '收藏同步', exact: true })
+  await expect(card).not.toContainText(/断点|游标|SDK|空壳|UPSTREAM_/)
+  await expect(card).not.toContainText('账号已恢复')
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimited = false
+  })
+  await advanceRecovery(accountId, ['favorites'])
+  expect((await invoke('probe', { accountId })).ok).toBe(true)
+  expect((await invoke('snapshot')).data.favorites).toEqual(task)
+  expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 40000 })
+    .toMatchObject({ id: task.id, status: 'completed' })
+  expect(
+    (await invoke('snapshot')).data.recovery.some(
+      (state: any) => state.accountId === accountId && state.operation === 'favorites'
+    )
+  ).toBe(false)
+})
+
+test('stops a pending collection network retry without sending another request or restarting after account switch', async () => {
+  test.setTimeout(testTimeout(30000))
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteNetworkFailure = true
+  })
+  expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
+  await expect.poll(() => app.evaluate(() => (globalThis as any).__favoriteRequests?.length ?? 0)).toBe(1)
+  await expect.poll(async () => (await invoke('snapshot')).data.favoritesActivity).toBe('waiting')
+  const task = (await invoke('snapshot')).data.favorites
+  expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'stop' })).ok).toBe(true)
+  const other = (await invoke('createAccount', { name: '停止后切换账号' })).data.id
+  await page.waitForTimeout(3500)
+  expect(await app.evaluate(() => (globalThis as any).__favoriteRequests.length)).toBe(1)
+  expect((await invoke('snapshot')).data.activeAccountId).toBe(other)
+  expect((await invoke('switchAccount', { accountId })).ok).toBe(true)
+  expect((await invoke('snapshot')).data.favorites).toMatchObject({
+    id: task.id,
+    status: 'stopped',
+    pages: 0,
+    cursor: '0'
+  })
+})
+
+test('keeps a folder wait scoped to that read while allowing new favorites to update', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimitedScope = 'folderItems'
+  })
+  expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 40000 })
+    .toMatchObject({ status: 'paused', stage: 'folder', errorCode: 'RATE_LIMITED' })
+  const before = (await invoke('snapshot')).data
+  const task = before.favorites
+  const wait = before.recovery.find((state: any) => state.operation === 'folderItems')
+  expect(wait).toMatchObject({ accountId, code: 'RATE_LIMITED' })
+  const folderReads = await app.evaluate(
+    () =>
+      (globalThis as any).__favoriteRequests.filter((request: any) =>
+        request.path.includes('/collects/video/list/')
+      ).length
+  )
+  expect(folderReads).toBe(1)
+  expect(await invoke('favoritesProbe', { accountId })).toMatchObject({
+    ok: false,
+    error: { code: 'RATE_LIMITED', retryAt: wait.retryAt }
+  })
+  expect((await invoke('favoritesStart', { accountId, mode: 'update' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 20000 })
+    .toMatchObject({ status: 'completed' })
+  const after = (await invoke('snapshot')).data
+  expect(after.favorites).toEqual(task)
+  expect(after.recovery.find((state: any) => state.operation === 'folderItems')).toEqual(wait)
+  expect(
+    await app.evaluate(
+      () =>
+        (globalThis as any).__favoriteRequests.filter((request: any) =>
+          request.path.includes('/collects/video/list/')
+        ).length
+    )
+  ).toBe(folderReads)
+  expect((await invoke('media', { accountId, workId })).ok).toBe(true)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteMalformedList = true
+  })
+  expect((await invoke('favoritesStart', { accountId, mode: 'update' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate)
+    .toMatchObject({ status: 'paused', errorCode: 'UPSTREAM_CHANGED' })
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '收藏同步', exact: true })
+  await expect(taskMessage(card)).toContainText('暂时')
+  await expect(page.getByRole('region', { name: '账号状态' })).toContainText('当前版本暂时无法读取')
+  await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
+  expect((await invoke('snapshot')).data.favorites).toEqual(task)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteMalformedList = false
+    ;(globalThis as any).__favoriteRateLimitedScope = null
+  })
+  await advanceRecovery(accountId, ['folderItems'])
+  expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 40000 })
+    .toMatchObject({ id: task.id, status: 'completed', foldersDone: 2, foldersTotal: 2 })
+})
+
+test('unified health checks are read-only, show real green status and keep exactly three collection actions', async ({}, info) => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-uncertain/)
+  await expect(page.locator('.connection-avatar')).toHaveCSS('color', 'rgb(214, 175, 94)')
+  await expect(page.locator('.collection-controls').first()).toHaveCSS('display', 'flex')
+  await expect(page.locator('.simple-task').first()).toHaveCSS('border-top-style', 'solid')
+  expect(
+    await page
+      .locator('.simple-task')
+      .first()
+      .evaluate((node) => parseFloat(getComputedStyle(node).borderTopWidth))
+  ).toBeGreaterThan(0)
+  for (const name of ['自动采集任务', '收藏同步'])
+    await expect(page.getByRole('region', { name, exact: true }).getByRole('button')).toHaveText([
+      '更新顶部',
+      '向下采集',
+      '停止'
+    ])
+  for (const name of ['喜欢：采集一页', '喜欢：继续下一页', '检查同步状态', '停止当前请求', '释放页面引擎'])
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '核验状态', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.health)
+    .toMatchObject({ status: 'normal', checking: false })
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-normal/)
+  await expect(page.locator('.connection-avatar')).toHaveCSS('color', 'rgb(86, 184, 148)')
+  expect((await invoke('query', { accountId })).data.total).toBe(0)
+  expect((await invoke('snapshot')).data.collection).toBeNull()
+  expect((await invoke('snapshot')).data.favorites).toBeNull()
+  await screenshot(info.outputPath('health-normal.png'))
+  const card = page.getByRole('region', { name: '自动采集任务', exact: true })
+  await card.getByRole('button', { name: '向下采集', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
+  await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
+})
+
+test('unified health counts three real failed rounds, resets on recovery and isolates accounts', async ({}, info) => {
+  const { accountId } = await prepareQueue(2)
+  const total = (await invoke('query', { accountId })).data.total
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteNetworkFailure = true
+  })
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  for (let round = 1; round <= 3; round++) {
+    await page.getByRole('button', { name: '核验状态', exact: true }).click()
+    await expect
+      .poll(async () => {
+        const h = (await invoke('snapshot')).data.health
+        return { checking: h.checking, entry: h.entries.find((e: any) => e.operation === 'favorites') }
+      })
+      .toMatchObject({
+        checking: false,
+        entry: { failures: round, status: round === 3 ? 'abnormal' : 'uncertain' }
+      })
+    await expect(page.locator('.connection-avatar')).toHaveClass(
+      round === 3 ? /health-abnormal/ : /health-uncertain/
+    )
+  }
+  expect((await invoke('query', { accountId })).data.total).toBe(total)
+  expect(await app.evaluate(() => ((globalThis as any).__favoriteWrites ?? []).length)).toBe(0)
+  await expect(page.locator('.connection-avatar')).toHaveCSS('color', 'rgb(235, 116, 116)')
+  await screenshot(info.outputPath('health-abnormal.png'))
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteNetworkFailure = false
+  })
+  await page.getByRole('button', { name: '核验状态', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.health)
+    .toMatchObject({ status: 'normal', checking: false })
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-normal/)
+  await expect(page.locator('.connection-avatar')).toHaveCSS('color', 'rgb(86, 184, 148)')
+  expect(
+    (await invoke('snapshot')).data.health.entries.find((e: any) => e.operation === 'favorites').failures
+  ).toBe(0)
+  const other = (await invoke('createAccount', { name: '另一个账号' })).data.id
+  await expect.poll(async () => (await invoke('snapshot')).data.activeAccountId).toBe(other)
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-uncertain/)
+})
+
+test('unified fixed stop preserves task progress and never resumes collection after health verification', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldLikesAt = '0'
+  })
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const card = page.getByRole('region', { name: '自动采集任务', exact: true })
+  await card.getByRole('button', { name: '更新顶部', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('running')
+  await card.getByRole('button', { name: '停止', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('stopped')
+  const stopped = (await invoke('snapshot')).data.collection
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeHoldLikesAt = null
+    ;(globalThis as any).__mylikeReleaseLikes?.()
+  })
+  await page.getByRole('button', { name: '核验状态', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.health)
+    .toMatchObject({ status: 'normal', checking: false })
+  expect((await invoke('snapshot')).data.collection).toEqual(stopped)
+  await card.getByRole('button', { name: '向下采集', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
+})
+
+test('unified health opens required login then finishes content checks without starting a collection', async () => {
+  const accountId = await addAccount()
+  await installPlatform(accountId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = true
+  })
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await page.getByRole('button', { name: '核验状态', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication?.kind).toBe('login')
+  await expect.poll(async () => (await invoke('snapshot')).data.engine.status).toBe('visible')
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-abnormal/)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeAuthLost = false
+  })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.health, { timeout: 20000 })
+    .toMatchObject({ status: 'normal', checking: false })
+  await expect.poll(async () => (await invoke('snapshot')).data.authentication).toBeNull()
+  const state = (await invoke('snapshot')).data
+  expect(state.collection).toBeNull()
+  expect(state.favorites).toBeNull()
+  expect((await invoke('query', { accountId })).data.total).toBe(0)
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-normal/)
+  await expect(page.locator('.connection-avatar')).toHaveCSS('color', 'rgb(86, 184, 148)')
+})
+
+test('unified health keeps bare payload uncertain and does not count a blocked retry as another failure', async () => {
+  const { accountId } = await prepareQueue(2)
+  await app.evaluate(() => {
+    ;(globalThis as any).__mylikeLikesBare = true
+  })
+  const reads = () =>
+    app.evaluate(
+      () =>
+        ((globalThis as any).__mylikeTestCalls ?? []).filter((url: string) =>
+          url.includes('/aweme/favorite/')
+        ).length
+    )
+  const before = await reads()
+  const one = await invoke('checkHealth', { accountId })
+  expect(one.data.entries.find((e: any) => e.operation === 'likes')).toMatchObject({
+    status: 'uncertain',
+    failures: 1,
+    rule: 'payload.bare_envelope'
+  })
+  expect(
+    (await invoke('checkHealth', { accountId })).data.entries.find((e: any) => e.operation === 'likes')
+  ).toMatchObject({ status: 'uncertain', failures: 1 })
+  expect(await reads()).toBe(before + 1)
+  expect((await invoke('query', { accountId })).data.total).toBe(2)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await expect(page.locator('.connection-avatar')).toHaveClass(/health-uncertain/)
 })

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { UnlikeTask, UnlikeItem } from '../../shared/contracts'
+import { MAX_BATCH_SIZE, type UnlikeTask, type UnlikeItem } from '../../shared/contracts'
 import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
 
@@ -13,6 +13,7 @@ type Method =
   | 'unlikeNext'
   | 'unlikeReserve'
   | 'unlikeFinish'
+  | 'unlikeSkip'
   | 'unlikeResolve'
 export class UnlikeStore {
   constructor(
@@ -101,12 +102,33 @@ export class UnlikeStore {
         return {
           items: this.db
             .prepare(
-              'SELECT position,workId,title,status,reason,errorCode FROM unlike_items WHERE taskId=? ORDER BY position LIMIT ? OFFSET ?'
+              `SELECT position,workId,title,status,reason,errorCode FROM unlike_items WHERE taskId=? ${input.issuesOnly ? "AND status IN ('failed','unknown')" : ''} ORDER BY position LIMIT ? OFFSET ?`
             )
             .all(task.id, input.limit, input.offset),
-          total: task.total
+          total: input.issuesOnly
+            ? Number(
+                this.db
+                  .prepare(
+                    "SELECT count(*) AS n FROM unlike_items WHERE taskId=? AND status IN ('failed','unknown')"
+                  )
+                  .get(task.id)!.n
+              )
+            : task.total
         }
       }
+      case 'unlikeSkip':
+        return this.transaction(() => {
+          const task = this.task(input.accountId, input.taskId)!,
+            item = this.item(input.accountId, input.taskId, input.workId)
+          if (task.source !== 'favorites' || task.status !== 'running' || item.status !== 'pending')
+            throw new AppError('TASK_CHANGED', '条目已变化，不能覆盖已发送的请求。')
+          this.db
+            .prepare(
+              "UPDATE unlike_items SET status='failed',errorCode='ITEM_SKIPPED',reason=?,updatedAt=? WHERE taskId=? AND workId=?"
+            )
+            .run(input.reason, Date.now(), task.id, input.workId)
+          return this.task(input.accountId, task.id)
+        })
       case 'unlikeCreate':
         return this.transaction(() => {
           const source: UnlikeTask['source'] = input.source ?? 'likes'
@@ -122,7 +144,7 @@ export class UnlikeStore {
           )
             throw new AppError('BUSY', '已有取消点赞或收藏任务正在运行。')
           const ids = [...new Set<string>(input.workIds)]
-          if (!ids.length || ids.length > 1000 || (input.mode === 'single' && ids.length !== 1))
+          if (!ids.length || ids.length > MAX_BATCH_SIZE || (input.mode === 'single' && ids.length !== 1))
             throw new AppError('INVALID_TARGETS', '单条操作只能选择一条；批量操作一次最多 1000 条。')
           const rows = ids.map((id) => {
             if (
@@ -254,6 +276,26 @@ export class UnlikeStore {
               input.workId
             )
           if (!input.liked) this.remove(input.accountId, input.workId, task.source)
+          const resolved = this.task(input.accountId, input.taskId)!
+          if (!resolved.unknown && !resolved.inflight) {
+            // A read-only confirmation finishes uncertainty; it never resumes
+            // pending writes or turns a user's explicit stop into a running job.
+            this.db
+              .prepare(
+                'UPDATE unlike_tasks SET status=?,errorCode=NULL,reason=?,updatedAt=? WHERE id=? AND accountId=?'
+              )
+              .run(
+                resolved.pending ? (task.status === 'stopped' ? 'stopped' : 'paused') : 'completed',
+                resolved.pending
+                  ? '检查已完成，可以继续处理剩余内容。'
+                  : resolved.failed
+                    ? '检查已完成，部分操作未完成；如需再次操作，请重新选择并确认。'
+                    : '检查已完成，操作结果已保存。',
+                Date.now(),
+                input.taskId,
+                input.accountId
+              )
+          }
           return this.task(input.accountId, input.taskId)
         })
     }

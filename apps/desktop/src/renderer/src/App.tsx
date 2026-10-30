@@ -1,7 +1,8 @@
+import { CollectionActions } from './CollectionActions'
 import { FavoritesPanel, useFavoriteFolders } from './FavoritesPanel'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, LoaderCircle, RefreshCw, X } from 'lucide-react'
-import type { CollectionTask, Diagnostics, ImportPreview, Snapshot, Work } from '../../shared/contracts'
+import { X } from 'lucide-react'
+import type { Diagnostics, Snapshot, Work } from '../../shared/contracts'
 import { Player } from './Player'
 
 import { call, type Tab } from './api'
@@ -32,7 +33,6 @@ export function App() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [name, setName] = useState('')
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null)
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ accountId: string; ids: string[] } | null>(null)
   const [unlikeTarget, setUnlikeTarget] = useState<{
     accountId: string
@@ -79,20 +79,17 @@ export function App() {
   }, [favoriteFolders.loaded, favoriteFolders.folders, folderId])
   const startFavorites = () =>
     accountId &&
-    void perform('启动收藏同步', () => call(window.mylike.invoke('favoritesStart', { accountId })))
+    void perform('向下采集', () =>
+      call(window.mylike.invoke('collectionAction', { accountId, source: 'favorites', action: 'down' }))
+    )
   const collecting =
     snapshot?.collection?.status === 'running' ||
     !!snapshot?.collectionActivity ||
     snapshot?.favorites?.status === 'running' ||
+    snapshot?.favoritesUpdate?.status === 'running' ||
     !!snapshot?.favoritesActivity
   const unliking = snapshot?.unlike?.status === 'running'
   const busy = !!operation || !!snapshot?.busy || collecting || unliking
-  const incrementalPending =
-    snapshot?.collection?.mode === 'incremental' && snapshot.collection.status !== 'completed'
-  const historyPending =
-    snapshot?.collection?.mode === 'incremental' &&
-    snapshot.collection.status === 'completed' &&
-    snapshot.collection.backfillCursor !== null
   const refresh = useCallback(async () => {
     const seq = ++snapshotSequence.current
     const next = await call(window.mylike.invoke('snapshot', {}))
@@ -157,31 +154,20 @@ export function App() {
     accountId &&
     void perform('打开抖音窗口', async () => {
       await call(window.mylike.invoke('login', { accountId }))
-      setNotice('在抖音窗口完成登录，应用会自动核验身份并收起窗口。')
+      setNotice('完成登录后，抖音窗口会自动收起。')
     })
-  const probe = () =>
+  const probe = () => {
+    if (!accountId) return
+    setTab('tasks')
+    void perform('核验状态', async () => {
+      await call(window.mylike.invoke('checkHealth', { accountId }))
+    })
+  }
+  const startCollection = () =>
     accountId &&
-    void perform('核验登录', async () => {
-      const value = await call(window.mylike.invoke('probe', { accountId }))
-      setNotice(`已核验：${value.nickname || value.name}`)
-    })
-  const collect = (resume: boolean) =>
-    accountId &&
-    void perform('读取喜欢列表', async () => {
-      const result = await call(window.mylike.invoke('collectPage', { accountId, continue: resume }))
-      const text = `本页接收 ${result.received} 条，新增 ${result.added} 条。${result.hasMore ? '还有更多内容，可继续验证下一页。' : '接口返回已到末尾。'}`
-      setNotice(text)
-    })
-  const startCollection = (mode: Exclude<CollectionTask['mode'], 'full'> = 'update') =>
-    accountId &&
-    void perform('启动采集', async () => {
-      await call(window.mylike.invoke('collectionStart', { accountId, mode }))
-      setNotice(
-        mode === 'incremental'
-          ? '更新已启动，历史采集断点保留；期间可以浏览和播放。'
-          : '采集已启动，可在“连接与任务”查看进度或暂停；期间可以浏览和播放。'
-      )
-    })
+    void perform('向下采集', () =>
+      call(window.mylike.invoke('collectionAction', { accountId, source: 'likes', action: 'down' }))
+    )
   const back = presentation.exit
   const startQueue = (mode: 'sequence' | 'shuffle', work?: Work) => {
     presentation.rememberFocus()
@@ -217,29 +203,6 @@ export function App() {
     presentation.rememberFocus()
     if (snapshot?.playback) void perform('恢复播放', () => playback.resume(snapshot.playback!))
   }
-  const importFile = () =>
-    accountId &&
-    void perform('预览导入文件', async () => {
-      setImportPreview(await call(window.mylike.invoke('importLibrary', { accountId })))
-    })
-  const exportFile = (all = false) =>
-    accountId &&
-    void perform('导出元数据', async () => {
-      const result = await call(
-        window.mylike.invoke('exportLibrary', {
-          accountId,
-          source: all
-            ? {
-                type: 'filter',
-                filter: { search: '', mediaType: 'all', year: null, month: null, sort: 'published' }
-              }
-            : library.selection.ids.size
-              ? { type: 'ids', ids: [...library.selection.ids], sort: library.sort }
-              : { type: 'filter', filter: library.filter }
-        })
-      )
-      if (result) setNotice(`已导出 ${result.count} 条元数据：${result.fileName}`)
-    })
   return (
     <div
       className={`app-shell${playback.view && !presentation.leaving ? ' player-mode sidebar-collapsed' : ''}`}
@@ -283,35 +246,13 @@ export function App() {
           )}
           {tab === 'library' && (
             <div className="header-actions">
-              {account?.lastVerifiedAt && (snapshot?.collection || likesLibrary.page.total > 0) && (
-                <button
-                  disabled={busy || incrementalPending}
-                  onClick={() => startCollection('incremental')}
-                  title={
-                    incrementalPending
-                      ? '请先继续当前未完成的新增更新'
-                      : '从列表头部检查新增点赞，保留历史采集断点'
-                  }
-                >
-                  <RefreshCw size={16} />
-                  更新
-                </button>
-              )}
-              <button className="primary" disabled={!accountId || busy} onClick={() => startCollection()}>
-                {busy ? <LoaderCircle className="spin" size={16} /> : <ArrowDownToLine size={16} />}
-                {operation ||
-                  (collecting
-                    ? snapshot?.collection?.mode === 'incremental'
-                      ? '正在更新'
-                      : '正在采集'
-                    : snapshot?.collection && snapshot.collection.status !== 'completed'
-                      ? incrementalPending
-                        ? '继续更新'
-                        : '继续采集'
-                      : historyPending
-                        ? '继续历史采集'
-                        : '自动采集')}
-              </button>
+              <CollectionActions
+                snapshot={snapshot}
+                accountId={accountId}
+                source="likes"
+                busy={busy}
+                perform={perform}
+              />
             </div>
           )}
         </header>
@@ -344,9 +285,14 @@ export function App() {
         {(tab === 'faq' || tab === 'guide') && <HelpPage kind={tab} />}
         {tab === 'favorites' && (
           <FavoritesPanel
+            snapshot={snapshot}
             compact
             accountId={accountId}
             task={snapshot?.favorites ?? null}
+            recovery={snapshot?.recovery}
+            accessChecks={snapshot?.accessChecks}
+            login={login}
+            updateTask={snapshot?.favoritesUpdate ?? null}
             busy={
               !!operation ||
               !!snapshot?.busy ||
@@ -396,7 +342,6 @@ export function App() {
             login={login}
             setAdding={setAdding}
             selectAll={() => void perform('选择筛选结果', library.selection.all)}
-            exportFile={() => exportFile()}
             unlike={() => {
               setError('')
               if (accountId)
@@ -421,9 +366,6 @@ export function App() {
             busy={busy}
             login={login}
             probe={probe}
-            collect={collect}
-            startCollection={startCollection}
-            setError={setError}
             perform={perform}
           />
         )}
@@ -440,8 +382,6 @@ export function App() {
             login={login}
             probe={probe}
             notice={setNotice}
-            importFile={importFile}
-            exportAll={() => exportFile(true)}
           />
         )}
       </main>
@@ -526,46 +466,6 @@ export function App() {
             这会修改抖音账号。每条成功后移除对应本地条目；未知结果保留条目。采集将先暂停，一次最多 1000
             条，任务详情可停止后续未发送项。
           </p>
-          {error && (
-            <p className="task-error" role="alert">
-              {error}
-            </p>
-          )}
-        </ConfirmDialog>
-      )}
-      {importPreview && (
-        <ConfirmDialog
-          title="合并导入元数据"
-          busy={!!operation}
-          danger={false}
-          confirmLabel="确认合并导入"
-          cancel={() =>
-            void perform('取消导入', async () => {
-              await call(window.mylike.invoke('importCancel', { token: importPreview.token }))
-              setImportPreview(null)
-            })
-          }
-          confirm={() =>
-            void perform('合并导入元数据', async () => {
-              const result = await call(
-                window.mylike.invoke('importCommit', {
-                  accountId: importPreview.accountId,
-                  token: importPreview.token
-                })
-              )
-              setImportPreview(null)
-              setNotice(`已导入 ${result.added} 条新记录，保留现有 ${result.received - result.added} 条。`)
-            })
-          }
-        >
-          <p>
-            将“{importPreview.fileName}”合并到“{importPreview.accountName}”。
-          </p>
-          <p>
-            共 {importPreview.total} 条，新增 {importPreview.newCount} 条，已存在{' '}
-            {importPreview.existingCount} 条，文件内重复 {importPreview.duplicates} 条。
-          </p>
-          <p>合并前自动备份。现有元数据优先，不修改账号绑定或采集断点；导入内容不代表当前账号已点赞。</p>
           {error && (
             <p className="task-error" role="alert">
               {error}

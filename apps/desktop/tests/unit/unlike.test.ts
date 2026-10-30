@@ -1,12 +1,13 @@
+import { dropFavoriteExtensions } from '../helpers/legacy-schema'
 import { afterEach, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Store } from '../../src/main/storage/database'
 import { UnlikeService } from '../../src/main/unlike'
-import { encodeTransfer } from '../../src/main/storage/transfer-format'
 import { AppError } from '../../src/main/errors'
+import { parseResponse } from '../../src/main/douyin/parse'
 import type { Work } from '../../src/shared/contracts'
 import type { Database } from '../../src/main/storage/client'
 const folders: string[] = [],
@@ -186,12 +187,21 @@ it('does not retry an uncertain write; explicit resume only sends pending items'
   })
   expect(store.call('query', query).items.map((item) => item.id)).toEqual(['1'])
 })
-it('checks imported membership before any write and preserves an unliked imported record', async () => {
-  const { store, folder } = setup(),
-    input = join(folder, 'import.json')
-  writeFileSync(input, encodeTransfer([{ ...work('3'), collectedAt: Date.now() }], 'other'))
-  const preview = store.call('prepareImport', { accountId: 'a', file: input })
-  store.call('commitImport', { accountId: 'a', token: preview.token })
+it('checks legacy unverified membership before any write and preserves an unliked local record', async () => {
+  const { store, file } = setup()
+  store.call('savePage', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    items: [work('3')],
+    cursor: '0',
+    hasMore: false
+  })
+  const raw = new DatabaseSync(file)
+  try {
+    raw.prepare('UPDATE account_items SET platformSeen=0 WHERE accountId=? AND workId=?').run('a', '3')
+  } finally {
+    raw.close()
+  }
   const operations: string[] = []
   const value = service(store, async (_account, operation) => {
     operations.push(operation)
@@ -349,6 +359,127 @@ it('reads collection state and type before cancelling, syncing already-uncollect
   expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(0)
   expect(store.call('query', query).total).toBe(2)
 })
+it('skips an explicitly unavailable favorite immediately and continues without removing local data', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  const reads: string[] = [],
+    writes: string[] = []
+  const value = service(store, async (_account, operation, parameters) => {
+    if (operation === 'detail') {
+      reads.push(parameters.aweme_id)
+      return parameters.aweme_id === '1'
+        ? { status_code: 0, aweme_detail: null, filter_detail: { aweme_id: '1', filter_reason: 'core_dep' } }
+        : favoriteDetail(parameters.aweme_id)
+    }
+    writes.push(parameters.aweme_id)
+    return { status_code: 0 }
+  })
+  const task = await value.start('a', ['1', '2'], 'batch', 'favorites')
+  await settled(value)
+  expect(reads).toEqual(['1', '2'])
+  expect(writes).toEqual(['2'])
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    status: 'completed',
+    failed: 1,
+    success: 1,
+    pending: 0,
+    unknown: 0
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).items.map((w) => w.id)).toEqual(['1'])
+  expect(
+    store.call('unlikeItems', { accountId: 'a', taskId: task.id, offset: 0, limit: 50, issuesOnly: true })
+  ).toMatchObject({ total: 1, items: [{ workId: '1', errorCode: 'ITEM_SKIPPED', status: 'failed' }] })
+  await expect(value.resume('a', task.id)).rejects.toThrow(/没有未发送/)
+})
+it('does not misclassify account rejection as an unavailable favorite or skip the rest of a batch', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  let calls = 0
+  const value = service(store, async () => {
+    calls++
+    throw new AppError('AUTH_REQUIRED', '登录失效')
+  })
+  await value.start('a', ['1', '2'], 'batch', 'favorites')
+  await settled(value)
+  expect(calls).toBe(1)
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    status: 'paused',
+    pending: 2,
+    failed: 0,
+    errorCode: 'AUTH_REQUIRED'
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(2)
+})
+it('pauses on the first unexplained empty detail without silently skipping an entire account', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  store.call('favoriteConfirm', { accountId: 'a', remoteId: 'remote-a', work: work('3') })
+  let calls = 0
+  const value = service(store, async () => {
+    calls++
+    return { status_code: 0, aweme_detail: null }
+  })
+  await value.start('a', ['1', '2', '3'], 'batch', 'favorites')
+  await settled(value)
+  expect(calls).toBe(1)
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    status: 'paused',
+    pending: 3,
+    failed: 0,
+    errorCode: 'UPSTREAM_RISK_CONTROL'
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(3)
+})
+it('continues through consecutive known unavailable works without treating them as account failures', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  for (const id of ['3', '4'])
+    store.call('favoriteConfirm', { accountId: 'a', remoteId: 'remote-a', work: work(id) })
+  const calls: string[] = []
+  const value = service(store, async (_account, operation, parameters) => {
+    calls.push(`${operation}:${parameters.aweme_id}`)
+    return {
+      status_code: 0,
+      aweme_detail: null,
+      filter_detail: { aweme_id: parameters.aweme_id, filter_reason: 'core_dep' }
+    }
+  })
+  await value.start('a', ['1', '2', '3', '4'], 'batch', 'favorites')
+  await settled(value)
+  expect(calls).toEqual(['detail:1', 'detail:2', 'detail:3', 'detail:4'])
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    status: 'completed',
+    failed: 4,
+    pending: 0,
+    unknown: 0,
+    success: 0
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(4)
+})
+it('skips a definite business rejection of uncollect without repeating the POST or removing its local record', async () => {
+  const { store } = setup()
+  collectFavorites(store)
+  const writes: string[] = []
+  const value = service(store, async (_account, operation, parameters) => {
+    if (operation === 'detail') return favoriteDetail(parameters.aweme_id)
+    writes.push(parameters.aweme_id)
+    return parseResponse(JSON.stringify({ status_code: parameters.aweme_id === '1' ? 2053 : 0 }), 200, {
+      operation,
+      workId: parameters.aweme_id
+    })
+  })
+  await value.start('a', ['1', '2'], 'batch', 'favorites')
+  await settled(value)
+  expect(writes).toEqual(['1', '2'])
+  expect(store.call('unlikeTask', { accountId: 'a' })).toMatchObject({
+    status: 'completed',
+    failed: 1,
+    success: 1,
+    pending: 0,
+    unknown: 0
+  })
+  expect(store.call('query', { ...query, source: 'favorites' }).items.map((w) => w.id)).toEqual(['1'])
+})
 it('keeps an uncertain uncollect, prevents conflicting collect writes, and only resumes unsent items', async () => {
   const { store } = setup()
   collectFavorites(store)
@@ -450,6 +581,7 @@ it('migrates a v6 library preserving prior unlike history, with a consistent v6 
   create(store)
   store.call('close', undefined)
   const old = new DatabaseSync(file)
+  dropFavoriteExtensions(old)
   old.exec('ALTER TABLE unlike_tasks DROP COLUMN source; PRAGMA user_version=6;')
   old.close()
   const reopened = new Store(file)
@@ -463,4 +595,61 @@ it('migrates a v6 library preserving prior unlike history, with a consistent v6 
   expect(backup.prepare('PRAGMA user_version').get()?.user_version).toBe(6)
   expect(backup.prepare('PRAGMA quick_check').get()?.quick_check).toBe('ok')
   backup.close()
+})
+
+it.each(['paused', 'stopped'] as const)(
+  'clears stale failure after readonly confirmation without resuming a %s task',
+  (status) => {
+    const { store } = setup()
+    create(store)
+    reserve(store)
+    finish(store, 'unknown')
+    store.call('unlikeUpdate', { ...scope, status, errorCode: 'TIMEOUT', reason: '请求结果未知' })
+    const task = store.call('unlikeResolve', { ...scope, workId: '1', liked: false })
+    expect(task).toMatchObject({ status, errorCode: null, unknown: 0, pending: 1, success: 1 })
+    expect(store.call('query', query).total).toBe(1)
+  }
+)
+
+it('finishes a checked task with unsuccessful items without retaining its old uncertainty error', () => {
+  const { store } = setup()
+  store.call('unlikeCreate', { accountId: 'a', id: 'task', mode: 'single', workIds: ['1'] })
+  reserve(store)
+  finish(store, 'unknown')
+  store.call('unlikeUpdate', { ...scope, status: 'completed', errorCode: 'TIMEOUT', reason: '请求结果未知' })
+  expect(store.call('unlikeResolve', { ...scope, workId: '1', liked: true })).toMatchObject({
+    status: 'completed',
+    errorCode: null,
+    unknown: 0,
+    pending: 0,
+    failed: 1,
+    success: 0
+  })
+  expect(store.call('query', query).total).toBe(2)
+})
+
+it('rolls back readonly confirmation and local removal if saving the task summary fails', () => {
+  const { store, file } = setup()
+  create(store)
+  reserve(store)
+  finish(store, 'unknown')
+  store.call('unlikeUpdate', { ...scope, status: 'paused', errorCode: 'TIMEOUT', reason: '请求结果未知' })
+  const db = new DatabaseSync(file)
+  try {
+    db.exec(
+      "CREATE TRIGGER fail_resolution_summary BEFORE UPDATE ON unlike_tasks BEGIN SELECT RAISE(ABORT,'fixture summary failure'); END"
+    )
+    expect(() => store.call('unlikeResolve', { ...scope, workId: '1', liked: false })).toThrow(
+      /fixture summary failure/
+    )
+    expect(store.call('unlikeTask', scope)).toMatchObject({
+      unknown: 1,
+      errorCode: 'TIMEOUT',
+      pending: 1,
+      success: 0
+    })
+    expect(store.call('query', query).total).toBe(2)
+  } finally {
+    db.close()
+  }
 })

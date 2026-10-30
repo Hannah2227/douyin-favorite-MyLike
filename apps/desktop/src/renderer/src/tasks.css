@@ -88,6 +88,18 @@
 .history time {
   flex-shrink: 0;
 }
+.runtime-details {
+  margin-top: 6px;
+}
+.runtime-details summary {
+  width: fit-content;
+  color: var(--subtle);
+  cursor: pointer;
+  font-size: 12px;
+}
+.runtime-details[open] small {
+  margin-top: 6px;
+}
 .collection-tasks {
   display: grid;
   gap: 12px;
@@ -263,6 +275,41 @@
 .unlike-load-error {
   margin-top: 14px;
 }
+.favorite-update-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.recovery-hint {
+  flex-basis: 100%;
+  max-width: 680px;
+  overflow-wrap: anywhere;
+}
+.favorite-update-actions button {
+  font-size: 12px;
+  padding: 8px 11px;
+  background: transparent;
+}
+.favorite-update-actions small,
+.favorite-sync-issues small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.favorite-sync-issues {
+  flex-basis: 100%;
+  font-size: 12px;
+  max-width: 100%;
+}
+.favorite-sync-issues ul {
+  padding-left: 18px;
+  max-height: 180px;
+  overflow: auto;
+}
+.favorite-sync-issues small {
+  display: block;
+  overflow-wrap: anywhere;
+}
 .unlike-load-error p {
   margin: 0 0 8px;
 }
@@ -308,5 +355,71 @@
 @media (prefers-reduced-motion: reduce) {
   .task-working::after {
     animation: none;
+  }
+}
+
+.connection-avatar.health-normal {
+  color: #56b894;
+  background: #56b89418;
+}
+.connection-avatar.health-abnormal {
+  color: #eb7474;
+  background: #eb747418;
+}
+.connection-avatar.health-uncertain {
+  color: #d6af5e;
+  background: #d6af5e18;
+}
+.health-label {
+  font-size: 12px;
+  margin-left: 10px;
+}
+.health-label.health-normal {
+  color: #56b894;
+}
+.health-label.health-abnormal {
+  color: #eb7474;
+}
+.health-label.health-uncertain {
+  color: #d6af5e;
+}
+:root[data-theme='light'] .health-normal {
+  color: #247c59;
+}
+:root[data-theme='light'] .health-abnormal {
+  color: #b63b3b;
+}
+:root[data-theme='light'] .health-uncertain {
+  color: #946d10;
+}
+.collection-control-group {
+  max-width: 100%;
+  min-width: 0;
+}
+.collection-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.collection-controls button {
+  min-height: 34px;
+  padding: 8px 11px;
+  font-size: 12px;
+  background: transparent;
+  white-space: nowrap;
+}
+.collection-blocked {
+  display: block;
+  max-width: 360px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+@container (max-width:700px) {
+  .collection-controls {
+    justify-content: flex-start;
   }
 }

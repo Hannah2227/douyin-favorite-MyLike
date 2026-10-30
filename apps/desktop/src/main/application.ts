@@ -1,3 +1,5 @@
+import { HealthMonitor } from './health'
+import type { HealthSnapshot } from '../shared/health'
 import { FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
 import { app, shell, clipboard, type BrowserWindow } from 'electron'
@@ -14,11 +16,11 @@ import {
 } from './douyin/parse'
 import { Authentication } from './authentication'
 import type { AccessTarget } from './douyin/page-state'
+import type { Operation } from './douyin/page-request'
 import { AppError } from './errors'
 import { version } from '../../package.json'
 import { RequestLane } from './request-lane'
 import { CollectionService } from './collection'
-import { FileTransfers } from './transfers'
 import { AccountService } from './accounts'
 import { DataMaintenance } from './data-maintenance'
 import { UnlikeService } from './unlike'
@@ -26,6 +28,10 @@ import { metadataBytes } from './storage/usage'
 import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
 
 export class Application {
+  private readonly health = new HealthMonitor()
+  private readonly healthRuns = new Map<string, Promise<HealthSnapshot>>()
+  private readonly healthAfterAuth = new Set<string>()
+  private readonly accessChecks = new Map<string, { accountId: string; operation: string; at: number }>()
   private playerVisible = false
   private busy = false
   private epoch = 0
@@ -39,7 +45,6 @@ export class Application {
   } | null = null
   private closing = false
   private accountAction: Promise<unknown> | null = null
-  private readonly files: FileTransfers
   private readonly accounts: AccountService
   private readonly maintenance: DataMaintenance
   private readonly lane = new RequestLane()
@@ -61,11 +66,17 @@ export class Application {
       this.run.bind(this),
       async (accountId, target, check, kind) => {
         await this.verifyAccess(accountId, target, check, kind === 'login')
+        if (this.healthAfterAuth.delete(accountId))
+          setTimeout(() => {
+            if (!this.closing) void this.checkHealth(accountId).catch(() => {})
+          }, 0)
       },
       changed,
       this.record.bind(this)
     )
     engine.setAttentionHandler((event) => {
+      if (event.type === 'closed') this.healthAfterAuth.delete(event.accountId)
+      if (event.type === 'required') this.clearAccessChecks(event.accountId)
       if (!this.closing) this.authentication.handle(event)
     })
     this.collection = new CollectionService(
@@ -112,16 +123,6 @@ export class Application {
         changed()
       }
     )
-    this.files = new FileTransfers(
-      database,
-      parent,
-      this.exclusive.bind(this),
-      this.active.bind(this),
-      () => {
-        this.libraryRevision++
-        changed()
-      }
-    )
     this.accounts = new AccountService(
       database,
       engine,
@@ -133,6 +134,11 @@ export class Application {
     this.maintenance = new DataMaintenance()
   }
   private record(accountId: string, event: RuntimeEventInput) {
+    if (!this.closing && event.operation) {
+      if (event.operation !== 'self' || event.code)
+        this.health.observe(accountId, event.operation, event.code, undefined, false, event.rule)
+      this.changed()
+    }
     if (this.closing || !runtimeEventCategory(event)) return
     void this.database
       .call('appendRuntimeEvent', { accountId, event })
@@ -150,16 +156,22 @@ export class Application {
       theme: theme === 'light' ? 'light' : 'dark',
       engine: this.engine.snapshot(),
       authentication: this.authentication.snapshot(),
+      health: activeAccountId ? this.health.snapshot(activeAccountId) : null,
       busy: this.busy,
       collection: activeAccountId
         ? await this.database.call('collection', { accountId: activeAccountId })
         : null,
+      recovery: activeAccountId ? this.engine.recovery(activeAccountId) : [],
+      accessChecks: [...this.accessChecks.values()].filter((item) => item.accountId === activeAccountId),
       collectionActivity: this.collection.activity,
       unlike: activeAccountId ? await this.database.call('unlikeTask', { accountId: activeAccountId }) : null,
       favorites: activeAccountId
         ? await this.database.call('favoritesTask', { accountId: activeAccountId })
         : null,
       favoritesActivity: this.favorites.activity,
+      favoritesUpdate: activeAccountId
+        ? await this.database.call('favoritesTask', { accountId: activeAccountId, mode: 'update' })
+        : null,
       libraryRevision: this.libraryRevision,
       playback: activeAccountId
         ? await this.database.call('queueState', { accountId: activeAccountId })
@@ -231,8 +243,12 @@ export class Application {
     const identity = parseIdentity(await this.engine.request(accountId, 'self'))
     check()
     try {
-      return await this.database.call('bindAccount', { accountId, ...identity })
+      const account = await this.database.call('bindAccount', { accountId, ...identity })
+      check()
+      this.health.observe(accountId, 'self')
+      return account
     } catch (error) {
+      if (error instanceof AppError) this.health.observe(accountId, 'self', error.code)
       if (error instanceof AppError && ['IDENTITY_MISMATCH', 'DUPLICATE_ACCOUNT'].includes(error.code))
         this.engine.requireAttention(accountId, 'login', { operation: 'self', parameters: {} })
       throw error
@@ -245,6 +261,7 @@ export class Application {
     loginCheck = false
   ): Promise<Account> {
     const account = await this.active(accountId)
+    this.assertAvailable(accountId, target ? [target.operation] : [])
     check()
     let identity: ReturnType<typeof parseIdentity>
     try {
@@ -288,7 +305,258 @@ export class Application {
     check()
     if (!state.ready) throw new AppError('BROWSER_NOT_READY', '抖音页面尚未就绪，请稍候核验。')
     if (state.captcha) throw new AppError('VERIFICATION_REQUIRED', '请先完成抖音窗口中的安全验证。')
-    return this.database.call('bindAccount', { accountId, ...identity })
+    const bound = await this.database.call('bindAccount', { accountId, ...identity })
+    check()
+    // Only the complete read-only recovery check grants this UI evidence.
+    // A healthy self response followed by a failed target must not unlock it.
+    this.health.observe(accountId, 'self')
+    const at = Date.now()
+    for (const operation of new Set(['self', target?.operation ?? 'self']))
+      this.accessChecks.set(JSON.stringify([accountId, operation]), { accountId, operation, at })
+    return bound
+  }
+  private async checkHealth(accountId: string): Promise<HealthSnapshot> {
+    const existing = this.healthRuns.get(accountId)
+    if (existing) return existing
+    const run = (async () => {
+      await this.active(accountId)
+      this.engine.allowAttention()
+      this.health.begin(accountId)
+      this.changed()
+      let completed = false
+      try {
+        await this.run(accountId, async (check) => {
+          const identityWaiting = this.engine.recovery(accountId).some((r) => r.operation === 'self')
+          let identity: Account
+          try {
+            identity = await this.verifyAccess(accountId, null, check, true)
+          } catch (caught) {
+            const error =
+              caught instanceof AppError
+                ? caught
+                : new AppError('STORAGE_ERROR', '暂时无法读取本地账号信息。')
+            if (error instanceof AppError) {
+              this.health.observe(accountId, 'self', error.code, error.retryAt, !identityWaiting, error.rule)
+              if (
+                [
+                  'AUTH_REQUIRED',
+                  'LOGIN_PENDING',
+                  'IDENTITY_MISMATCH',
+                  'DUPLICATE_ACCOUNT',
+                  'VERIFICATION_REQUIRED'
+                ].includes(error.code)
+              ) {
+                this.healthAfterAuth.add(accountId)
+                this.engine.requireAttention(
+                  accountId,
+                  error.code === 'VERIFICATION_REQUIRED' ? 'verification' : 'login',
+                  { operation: 'self', parameters: {} }
+                )
+              }
+            }
+            if (error instanceof AppError && ['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING'].includes(error.code))
+              throw error
+            return
+          }
+          const likes = await this.database.call('collection', { accountId })
+          const favorites = await this.database.call('favoritesTask', { accountId })
+          const targets: AccessTarget[] = [
+            {
+              operation: 'likes',
+              parameters: { sec_user_id: identity.remoteId!, max_cursor: '0', count: '18' }
+            },
+            { operation: 'favorites', parameters: { cursor: '0', count: '20' } },
+            { operation: 'folders', parameters: { cursor: '0', count: '20' } }
+          ]
+          if (likes?.errorCode && likes.cursor !== '0')
+            targets.push({
+              operation: 'likes',
+              parameters: { sec_user_id: identity.remoteId!, max_cursor: likes.cursor, count: '18' }
+            })
+          if (favorites?.stage === 'folder' && favorites.folderId)
+            targets.push({
+              operation: 'folderItems',
+              parameters: { collects_id: favorites.folderId, cursor: favorites.cursor, count: '20' }
+            })
+          for (const issue of (favorites?.issues ?? []).slice(0, 5))
+            targets.push({
+              operation: 'folderItems',
+              parameters: { collects_id: issue.folderId, cursor: '0', count: '20' }
+            })
+          const original = this.engine.recoveryTarget(accountId)
+          if (original && ['likes', 'favorites', 'folders', 'folderItems'].includes(original.operation))
+            targets.push(original)
+          const seen = new Set<string>(),
+            failed = new Set<string>()
+          let attention = false
+          for (const target of targets) {
+            check()
+            const key = JSON.stringify(target)
+            if (seen.has(key)) continue
+            seen.add(key)
+            let attempted = false
+            try {
+              this.engine.assertAvailable(accountId, target.operation)
+              attempted = true
+              const data = await this.engine.request(accountId, target.operation, target.parameters, {
+                recovery: true
+              })
+              const page =
+                target.operation === 'likes'
+                  ? parseLikedPage(data, { allowEmpty: true })
+                  : target.operation === 'folders'
+                    ? parseFavoriteFolders(data, { allowEmpty: true })
+                    : parseFavoritesPage(data, { allowEmpty: true })
+              if (page.hasMore && ('folders' in page ? !page.folders.length : !page.items.length))
+                throw new AppError('EMPTY_PAGE', '暂时未能取得可用内容，请稍后核验。')
+              check()
+              if (failed.has(target.operation)) continue
+              this.health.observe(accountId, target.operation)
+            } catch (error) {
+              if (!(error instanceof AppError)) throw error
+              if (['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING'].includes(error.code)) throw error
+              // One failed operation counts once per explicit round, even with several folders.
+              const first = !failed.has(target.operation)
+              failed.add(target.operation)
+              this.health.observe(
+                accountId,
+                target.operation,
+                error.code,
+                error.retryAt,
+                first && attempted,
+                error.rule
+              )
+              if (['AUTH_REQUIRED', 'VERIFICATION_REQUIRED'].includes(error.code)) {
+                this.healthAfterAuth.add(accountId)
+                attention = true
+                this.engine.requireAttention(
+                  accountId,
+                  error.code === 'AUTH_REQUIRED' ? 'login' : 'verification',
+                  target
+                )
+                break
+              }
+            }
+          }
+          // A healthy folder cannot erase the failure of another checked folder.
+          for (const operation of failed) {
+            const entry = this.health.snapshot(accountId).entries.find((e) => e.operation === operation)
+            if (entry?.status === 'normal') this.health.observe(accountId, operation, 'INVALID_RESPONSE')
+          }
+          if ((favorites?.issues?.length ?? 0) > 5)
+            this.health.observe(accountId, 'folderItems', 'MORE_CHECKS')
+          if (!attention) {
+            this.engine.hide(accountId)
+            this.authentication.stop()
+          }
+        })
+        completed = true
+        return this.health.snapshot(accountId)
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          ['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING', 'BUSY'].includes(error.code)
+        )
+          throw error
+        const failure =
+          error instanceof AppError ? error : new AppError('STORAGE_ERROR', '暂时无法完成本地检查。')
+        this.health.observe(accountId, 'self', failure.code, failure.retryAt, true, failure.rule)
+        completed = true
+        this.record(accountId, {
+          kind: 'task',
+          operation: 'self',
+          code: failure.code,
+          message: '状态核验未完成，请查看诊断详情。'
+        })
+        return this.health.snapshot(accountId)
+      } finally {
+        this.health.finish(accountId, completed)
+        this.changed()
+      }
+    })()
+    const result = run.then(() => this.health.snapshot(accountId))
+    this.healthRuns.set(accountId, result)
+    try {
+      return await result
+    } finally {
+      if (this.healthRuns.get(accountId) === result) this.healthRuns.delete(accountId)
+    }
+  }
+  private async collectionAction(
+    accountId: string,
+    source: 'likes' | 'favorites',
+    action: 'top' | 'down' | 'stop'
+  ) {
+    await this.active(accountId)
+    if (source === 'favorites') {
+      if (action === 'stop') {
+        const normal = await this.database.call('favoritesTask', { accountId }),
+          top = await this.database.call('favoritesTask', { accountId, mode: 'update' })
+        for (const task of [normal, top])
+          if (task && task.status !== 'completed' && task.status !== 'stopped')
+            await this.execute('favoritesControl', {
+              accountId,
+              taskId: task.id,
+              mode: task.mode,
+              action: 'stop'
+            })
+      } else await this.execute('favoritesStart', { accountId, mode: action === 'top' ? 'update' : 'sync' })
+      return
+    }
+    const task = await this.database.call('collection', { accountId })
+    if (action === 'stop') {
+      if (task && task.status !== 'completed' && task.status !== 'stopped')
+        await this.execute('collectionControl', { accountId, taskId: task.id, action: 'stop' })
+      return
+    }
+    if (action === 'top') {
+      await this.execute('collectionStart', { accountId, mode: 'incremental' })
+      return
+    }
+    if (task && task.status !== 'completed') {
+      // Finish an interrupted head before continuing its preserved historical cursor.
+      this.assertAvailable(accountId, ['likes'])
+      if (task.mode === 'incremental') {
+        await this.exclusive(async () => {
+          await this.active(accountId)
+          if (this.collection.running || this.favorites.running || this.unlike.running)
+            throw new AppError('BUSY', '请先停止当前任务。')
+          this.assertAvailable(accountId, ['likes'])
+          await this.database.call('updateCollection', {
+            accountId,
+            taskId: task.id,
+            status: task.status,
+            reason: task.reason,
+            mode: 'update'
+          })
+          await this.collection.control(accountId, task.id, 'resume')
+        })
+      } else await this.execute('collectionControl', { accountId, taskId: task.id, action: 'resume' })
+    } else {
+      const checkpoint = await this.database.call('checkpoint', { accountId })
+      const mode = task?.tailCursor != null && !checkpoint?.hasMore ? 'recheck' : 'update'
+      await this.execute('collectionStart', { accountId, mode })
+    }
+  }
+  private clearAccessChecks(accountId: string): void {
+    for (const [key, item] of this.accessChecks)
+      if (item.accountId === accountId) this.accessChecks.delete(key)
+  }
+  private assertAvailable(accountId: string, operations: Operation[]): void {
+    for (const operation of new Set<Operation>(['self', ...operations]))
+      this.engine.assertAvailable(accountId, operation)
+  }
+  private async favoriteReadOperation(
+    accountId: string,
+    mode: 'sync' | 'update' = 'sync',
+    probe = false
+  ): Promise<Operation> {
+    const task = await this.database.call('favoritesTask', { accountId, mode })
+    if (mode === 'update' || !task || task.status === 'completed' || (probe && task.status === 'partial'))
+      return 'favorites'
+    if (task.status === 'partial')
+      return task.incomplete || !task.foldersDeferred ? 'favorites' : 'folderItems'
+    return task.stage === 'all' ? 'favorites' : task.stage === 'folders' ? 'folders' : 'folderItems'
   }
   private async quiesce(): Promise<void> {
     await this.unlike.stop()
@@ -308,6 +576,7 @@ export class Application {
         'probe',
         'collectionStart',
         'favoritesStart',
+        'favoritesProbe',
         'unlikeStart',
         'collectPage',
         'favoriteEditor',
@@ -344,7 +613,6 @@ export class Application {
         'switchAccount',
         'collectPage',
         'collectionStart',
-        'importCommit',
         'deleteLocal',
         'favoriteEditor',
         'favoriteSave',
@@ -418,19 +686,39 @@ export class Application {
           return null
         })
       case 'login':
-        return this.run(input.accountId, async () => {
+        return this.run(input.accountId, async (check) => {
           const target = this.engine.recoveryTarget(input.accountId)
-          await this.authentication.open(
-            input.accountId,
-            target && target.operation !== 'self' ? 'verification' : 'login',
-            target
-          )
+          // A temporarily unavailable business API is not a captcha. Opening
+          // the page must not put otherwise healthy media requests behind a
+          // fabricated verification requirement or clear the API's wait.
+          if (
+            target &&
+            target.operation !== 'self' &&
+            this.engine.recovery(input.accountId).some((state) => state.operation === target.operation)
+          ) {
+            await this.engine.show(input.accountId)
+            return null
+          }
+          const interaction = this.authentication.snapshot()
+          const kind =
+            interaction && interaction.accountId === input.accountId
+              ? interaction.kind
+              : (await this.engine.pageState(input.accountId)).captcha
+                ? 'verification'
+                : 'login'
+          check()
+          await this.active(input.accountId)
+          check()
+          await this.authentication.open(input.accountId, kind, target)
           return null
         })
       case 'renameAccount':
         return this.accounts.rename(input.accountId, input.name)
       case 'logoutAccount':
       case 'removeAccount': {
+        this.health.clear(input.accountId)
+        this.healthAfterAuth.delete(input.accountId)
+        this.clearAccessChecks(input.accountId)
         const action =
           command === 'logoutAccount'
             ? this.accounts.logout(input.accountId)
@@ -440,6 +728,24 @@ export class Application {
           return await action
         } finally {
           if (this.accountAction === action) this.accountAction = null
+        }
+      }
+      case 'checkHealth':
+        return this.checkHealth(input.accountId)
+      case 'collectionAction': {
+        try {
+          await this.collectionAction(input.accountId, input.source, input.action)
+          return null
+        } catch (error) {
+          if (error instanceof AppError)
+            this.health.observe(
+              input.accountId,
+              input.source === 'likes' ? 'likes' : 'favorites',
+              error.code,
+              error.retryAt
+            )
+          this.changed()
+          throw error
         }
       }
       case 'probe':
@@ -476,6 +782,8 @@ export class Application {
         return null
       }
       case 'collectPage':
+        await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['likes'])
         if (this.collection.running || this.favorites.running)
           throw new AppError('BUSY', '请先暂停自动采集，再进行单页检查。')
         return this.run(input.accountId, async (check) => {
@@ -520,38 +828,57 @@ export class Application {
         await this.active(input.accountId)
         return this.database.call('favoriteStatus', input)
       case 'favoriteEditor':
+        await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['detail', 'folders'])
         return this.favoriteActions.open(input)
       case 'favoriteSave':
         await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['detail', 'folders'])
         await this.favorites.pause()
         return this.favoriteActions.save(input.accountId, input.token, input.folderIds)
       case 'favoriteCreateFolder':
         await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['favoriteFolderCreate'])
         await this.favorites.pause()
         return this.favoriteActions.createFolder(input.accountId, input.token, input.name, input.private)
       case 'favoritesStart':
         return this.exclusive(async () => {
           await this.active(input.accountId)
+          this.assertAvailable(input.accountId, [
+            await this.favoriteReadOperation(input.accountId, input.mode)
+          ])
           if (this.collection.running || this.unlike.running)
             throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞 / 收藏任务。')
-          return this.favorites.start(input.accountId)
+          return this.favorites.start(input.accountId, input.mode)
         })
+      case 'favoritesProbe':
+        await this.active(input.accountId)
+        this.assertAvailable(input.accountId, [
+          await this.favoriteReadOperation(input.accountId, 'sync', true)
+        ])
+        if (this.collection.running || this.unlike.running || this.favorites.running)
+          throw new AppError('BUSY', '请先暂停自动任务，再进行收藏检查。')
+        return this.favorites.probe(input.accountId)
       case 'favoritesControl':
         await this.active(input.accountId)
         if (input.action === 'resume' && (this.collection.running || this.unlike.running))
           throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞 / 收藏任务。')
         return input.action === 'resume'
-          ? this.exclusive(() => {
+          ? this.exclusive(async () => {
+              this.assertAvailable(input.accountId, [
+                await this.favoriteReadOperation(input.accountId, input.mode)
+              ])
               if (this.collection.running || this.unlike.running)
                 throw new AppError('BUSY', '其他任务正在运行。')
-              return this.favorites.control(input.accountId, input.taskId, input.action)
+              return this.favorites.control(input.accountId, input.taskId, input.action, input.mode)
             })
-          : this.favorites.control(input.accountId, input.taskId, input.action)
+          : this.favorites.control(input.accountId, input.taskId, input.action, input.mode)
       case 'collectionStart':
         return this.exclusive(async () => {
+          await this.active(input.accountId)
+          this.assertAvailable(input.accountId, ['likes'])
           if (this.unlike.running || this.favorites.running)
             throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务。')
-          await this.active(input.accountId)
           return this.collection.start(input.accountId, input.mode)
         })
       case 'collectionControl':
@@ -560,6 +887,7 @@ export class Application {
           throw new AppError('BUSY', '请先停止取消点赞 / 收藏任务。')
         if (input.action === 'resume')
           return this.exclusive(() => {
+            this.assertAvailable(input.accountId, ['likes'])
             if (this.unlike.running || this.favorites.running)
               throw new AppError('BUSY', '请先停止收藏同步或取消点赞 / 收藏任务。')
             return this.collection.control(input.accountId, input.taskId, input.action)
@@ -567,6 +895,10 @@ export class Application {
         return this.collection.control(input.accountId, input.taskId, input.action)
       case 'unlikeStart':
         await this.active(input.accountId)
+        this.assertAvailable(
+          input.accountId,
+          input.source === 'favorites' ? ['detail', 'favoriteRemove'] : ['unlike']
+        )
         await Promise.all([this.collection.pause(), this.favorites.pause()])
         await this.favoriteActions.idle()
         await this.lane.idle()
@@ -574,11 +906,20 @@ export class Application {
           await this.active(input.accountId)
           if (this.lane.pending || this.collection.running || this.favorites.running)
             throw new AppError('BUSY', '请等待当前页面请求结束。')
+          this.assertAvailable(
+            input.accountId,
+            input.source === 'favorites' ? ['detail', 'favoriteRemove'] : ['unlike']
+          )
           return this.unlike.start(input.accountId, input.workIds, input.mode, input.source)
         })
       case 'unlikeControl': {
         await this.active(input.accountId)
         if (input.action === 'resume') {
+          const task = await this.database.call('unlikeTask', input)
+          this.assertAvailable(
+            input.accountId,
+            task?.source === 'favorites' ? ['detail', 'favoriteRemove'] : ['unlike']
+          )
           await Promise.all([this.collection.pause(), this.favorites.pause()])
           await this.favoriteActions.idle()
           await this.lane.idle()
@@ -586,6 +927,10 @@ export class Application {
             await this.active(input.accountId)
             if (this.lane.pending || this.collection.running || this.favorites.running)
               throw new AppError('BUSY', '请等待当前页面请求结束。')
+            this.assertAvailable(
+              input.accountId,
+              task?.source === 'favorites' ? ['detail', 'favoriteRemove'] : ['unlike']
+            )
             return this.unlike.resume(input.accountId, input.taskId)
           })
         }
@@ -602,6 +947,7 @@ export class Application {
       }
       case 'unlikeVerify':
         await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['detail'])
         return this.unlike.verify(input.accountId, input.taskId, input.workId)
       case 'unlikeItems':
       case 'unlikeHistory':
@@ -675,14 +1021,6 @@ export class Application {
         this.changed()
         return preferences
       }
-      case 'exportLibrary':
-        return this.files.export(input.accountId, input.source)
-      case 'importLibrary':
-        return this.files.prepareImport(input.accountId)
-      case 'importCommit':
-        return this.files.commit(input.accountId, input.token)
-      case 'importCancel':
-        return this.files.cancel(input.token)
       case 'backup':
         return this.database.call('backup', { reason: 'manual' })
       case 'dataInfo':

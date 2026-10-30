@@ -47,6 +47,42 @@ async function requestInPage(request: PageRequest) {
       ? {}
       : request.parameters)
   })
+  const collection = ['favorites', 'folders', 'folderItems'].includes(request.operation)
+  const collectionReferrer = 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
+  if (collection) {
+    if (request.operation !== 'favorites' && !params.has('count')) params.set('count', '20')
+    params.set('pc_client_type', '1')
+    // Values describe this Chromium session; never copy another client's fingerprint.
+    if (typeof navigator !== 'undefined') {
+      params.set('browser_language', navigator.language)
+      params.set('browser_platform', navigator.platform)
+      params.set('browser_online', String(navigator.onLine))
+      if (navigator.hardwareConcurrency) params.set('cpu_core_num', String(navigator.hardwareConcurrency))
+      const chrome = navigator.userAgent.match(/Chrome\/([\d.]+)/)?.[1]
+      if (chrome) {
+        params.set('browser_name', 'Chrome')
+        params.set('browser_version', chrome)
+        params.set('engine_name', 'Blink')
+        params.set('engine_version', chrome)
+      }
+      const os = /Windows/.test(navigator.userAgent)
+        ? 'Windows'
+        : /Macintosh/.test(navigator.userAgent)
+          ? 'Mac OS'
+          : /Linux/.test(navigator.userAgent)
+            ? 'Linux'
+            : ''
+      if (os) {
+        params.set('os_name', os)
+        if (request.operation === 'favorites') params.set('pc_libra_divert', os)
+      }
+    }
+    if (typeof screen !== 'undefined') {
+      params.set('screen_width', String(screen.width))
+      params.set('screen_height', String(screen.height))
+    }
+    if (request.operation === 'favorites') params.set('publish_video_strategy_type', '2')
+  }
   if (request.operation === 'favoriteFolderCreate') {
     params.set('version_code', '230000')
     params.set('version_name', '23.0.0')
@@ -55,7 +91,7 @@ async function requestInPage(request: PageRequest) {
   try {
     // Match the original page-SDK request: use only the current page's token,
     // never a fabricated or persisted signing value.
-    if (request.operation === 'likes') {
+    if (request.operation === 'likes' || collection) {
       try {
         const token = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/)?.[1]
         if (token) {
@@ -73,6 +109,7 @@ async function requestInPage(request: PageRequest) {
       credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,
+      ...(collection ? { referrer: collectionReferrer } : {}),
       method: [
         'unlike',
         'favorites',
@@ -85,6 +122,7 @@ async function requestInPage(request: PageRequest) {
         : 'GET',
       headers: {
         accept: 'application/json, text/plain, */*',
+        ...(request.operation === 'favorites' ? { 'x-secsdk-csrf-token': 'DOWNGRADE' } : {}),
         ...(['unlike', 'favorites', 'favoriteAdd', 'favoriteRemove'].includes(request.operation)
           ? { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' }
           : {})
@@ -105,7 +143,7 @@ async function requestInPage(request: PageRequest) {
             : request.operation === 'favorites'
               ? new URLSearchParams({
                   cursor: request.parameters.cursor ?? '0',
-                  count: request.parameters.count ?? '18'
+                  count: request.parameters.count ?? '20'
                 }).toString()
               : undefined
     })

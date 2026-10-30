@@ -15,6 +15,7 @@ export function purgeAccountRows(db: DatabaseSync, accountId: string): void {
   for (const table of [
     'unlike_tasks',
     'saved_tasks',
+    'saved_updates',
     'collection_tasks',
     'checkpoints',
     'playback_queues',

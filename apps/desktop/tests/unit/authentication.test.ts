@@ -142,7 +142,11 @@ it('leaves mismatched accounts visible and bounds automatic checking to ten minu
   probe.mockRejectedValue(new AppError('IDENTITY_MISMATCH', '账号不一致'))
   await auth.open('a', 'login')
   await vi.advanceTimersByTimeAsync(1200)
-  expect(auth.snapshot()).toMatchObject({ status: 'failed', message: '账号不一致' })
+  expect(auth.snapshot()).toMatchObject({
+    status: 'failed',
+    code: 'IDENTITY_MISMATCH',
+    message: '登录的抖音账号与当前账号不一致，请切回原账号。'
+  })
   expect(engine.hide).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(630_000)
   const count = probe.mock.calls.length
@@ -239,4 +243,48 @@ it('scopes replay detection to the collection phase or folder and permits an act
   progress.check('folder:8', ['2', '1'], true)
   progress.check('folder:8', ['1', '2'], false)
   expect(() => progress.check('folder:9', ['1', '2'], true)).not.toThrow()
+})
+
+it('does not let reopening the same login window bypass a shared wait supplied by the engine', async () => {
+  const { auth, engine, probe } = fixture()
+  const retryAt = Date.now() + 60_000
+  probe.mockRejectedValueOnce(new AppError('UPSTREAM_RISK_CONTROL', 'limited', 'envelope.risk_code', retryAt))
+  await auth.open('a', 'verification', { operation: 'favorites', parameters: { cursor: '0' } })
+  await vi.advanceTimersByTimeAsync(300)
+  expect(auth.snapshot()).toMatchObject({ status: 'waiting', code: 'UPSTREAM_RISK_CONTROL', retryAt })
+  await auth.open('a', 'verification')
+  auth.handle({ type: 'changed', accountId: 'a' })
+  await vi.advanceTimersByTimeAsync(59_699)
+  expect(probe).toHaveBeenCalledTimes(1)
+  expect(engine.hide).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(probe).toHaveBeenCalledTimes(2)
+  expect(engine.hide).toHaveBeenCalledExactlyOnceWith('a')
+})
+
+it.each(['INVALID_RESPONSE', 'EMPTY_RESPONSE', 'EMPTY_PAGE', 'NO_AVAILABLE_ITEMS'])(
+  'does not ask for a challenge or claim login succeeded when %s prevents confirmation',
+  async (code) => {
+    const { auth, engine, probe } = fixture()
+    probe.mockRejectedValue(new AppError(code, 'fixture technical response'))
+    await auth.open('a', 'verification', { operation: 'favorites', parameters: { cursor: '0' } })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(auth.snapshot()).toMatchObject({
+      code,
+      message: '抖音暂时没有返回可用内容，请稍后再试；已同步的内容会保留。'
+    })
+    expect(auth.snapshot()!.message).not.toMatch(/完成.*验证|已登录|fixture/)
+    expect(engine.hide).not.toHaveBeenCalled()
+  }
+)
+
+it('keeps an unclassified failed verification neutral and requests login only on explicit authentication evidence', async () => {
+  const { auth, probe } = fixture()
+  probe.mockRejectedValueOnce(new AppError('INTERNAL_ERROR', 'fixture internal failure'))
+  probe.mockRejectedValueOnce(new AppError('AUTH_REQUIRED', 'fixture expired login'))
+  await auth.open('a', 'verification', { operation: 'favorites', parameters: { cursor: '0' } })
+  await vi.advanceTimersByTimeAsync(300)
+  expect(auth.snapshot()?.message).toBe('暂时无法完成检查，请稍后重试；已同步的内容会保留。')
+  await vi.advanceTimersByTimeAsync(3000)
+  expect(auth.snapshot()?.message).toBe('请在抖音窗口完成登录，完成后窗口会自动收起。')
 })

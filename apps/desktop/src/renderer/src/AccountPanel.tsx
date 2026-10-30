@@ -38,7 +38,7 @@ export function AccountPanel({
       <h2>当前账号</h2>
       <div className="setting-row">
         <span>
-          本地名称<small>抖音昵称：{account.nickname || '尚未核验'}</small>
+          本地名称<small>抖音昵称：{account.nickname || '尚未检查'}</small>
         </span>
         <div className="account-name-editor">
           <input
@@ -62,15 +62,15 @@ export function AccountPanel({
       </div>
       <p className="muted">
         {account.lastVerifiedAt
-          ? `最近核验：${new Date(account.lastVerifiedAt).toLocaleString('zh-CN')}`
-          : '尚无最近核验记录；已有本地内容仍可浏览。'}
+          ? `最近检查：${new Date(account.lastVerifiedAt).toLocaleString('zh-CN')}`
+          : '尚无最近检查记录；已有本地内容仍可浏览。'}
       </p>
       <div className="panel-actions">
         <button disabled={busy} onClick={login}>
           打开抖音登录
         </button>
         <button className="primary verify-login" disabled={busy} onClick={probe}>
-          核验登录
+          核验状态
         </button>
         <button
           disabled={busy}

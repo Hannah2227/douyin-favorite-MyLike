@@ -54,7 +54,7 @@ export class FavoriteActions {
     for (let page = 0; page < 100; page++) {
       check()
       const data = parseFavoriteFolders(
-        await this.engine.request(accountId, 'folders', { cursor, count: '18' })
+        await this.engine.request(accountId, 'folders', { cursor, count: '20' })
       )
       check()
       for (const folder of data.folders)

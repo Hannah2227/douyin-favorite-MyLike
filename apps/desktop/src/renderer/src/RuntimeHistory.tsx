@@ -2,10 +2,36 @@ import { useEffect, useState } from 'react'
 import {
   operationLabels,
   responseLabels,
+  responseRuleLabels,
   runtimeEventCategory,
   type RuntimeEvent
 } from '../../shared/runtime-events'
 import { call } from './api'
+import { taskRecovery } from '../../shared/task-recovery'
+
+const legacyFailureLabels: Record<string, string> = {
+  TIMEOUT: '请求超时',
+  NETWORK_ERROR: '网络请求失败',
+  AUTH_REQUIRED: '需要重新登录或完成验证',
+  VERIFICATION_REQUIRED: '需要完成人工验证',
+  RATE_LIMITED: '平台暂时限流',
+  API_REJECTED: '平台拒绝请求',
+  EMPTY_RESPONSE: '平台返回空响应，未确认末尾',
+  INVALID_RESPONSE: '平台响应格式异常',
+  UPSTREAM_CHANGED: '接口结构变化',
+  UPSTREAM_RISK_CONTROL: '平台暂未提供所需数据',
+  BROWSER_NOT_READY: '抖音页面未加载成功',
+  BROWSER_CRASHED: '抖音页面进程意外停止'
+}
+function eventMessage(event: RuntimeEvent): string {
+  if (runtimeEventCategory(event) === 'exception' && event.code)
+    return taskRecovery(event.code)?.message ?? '操作未完成，请稍后重试。'
+  if (event.message !== '接口请求未正常结束') return event.message
+  return (
+    (event.rule ? responseRuleLabels[event.rule] : legacyFailureLabels[event.code ?? '']) ??
+    `请求失败（${event.code ?? '原因未明'}）`
+  )
+}
 
 export function RuntimeHistory({ accountId, revision }: { accountId: string | null; revision: unknown }) {
   const [result, setResult] = useState<{ accountId: string; events: RuntimeEvent[]; error: string } | null>(
@@ -59,7 +85,7 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
           </button>
         ))}
       </div>
-      <p className="task-note">仅记录异常与确认触底，重复异常会合并，最多保留 300 条。</p>
+      <p className="task-note">仅保留关键异常与采集确认结束，5 分钟内同原因合并。</p>
       {events.length ? (
         <ul className="history" aria-label="运行记录">
           {events.map((event) => (
@@ -75,22 +101,31 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
               </time>
               <div>
                 <span>
-                  {event.operation ? `${operationLabels[event.operation] ?? event.operation}：` : ''}
-                  {event.message}
+                  {event.kind === 'request' && event.operation
+                    ? `${operationLabels[event.operation] ?? event.operation}：`
+                    : ''}
+                  {eventMessage(event)}
                 </span>
-                <small>
-                  {[
-                    event.responseType
-                      ? `返回类型：${responseLabels[event.responseType] ?? event.responseType}`
-                      : '',
-                    event.status === undefined ? '' : `HTTP ${event.status}`,
-                    event.count === undefined ? '' : `${event.count} 条`,
-                    event.durationMs === undefined ? '' : `${(event.durationMs / 1000).toFixed(2)} 秒`,
-                    event.code ?? ''
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </small>
+                {runtimeEventCategory(event) === 'exception' && (
+                  <details className="runtime-details">
+                    <summary>诊断详情</summary>
+                    <small>
+                      {[
+                        event.message,
+                        event.responseType
+                          ? `返回类型：${responseLabels[event.responseType] ?? event.responseType}`
+                          : '',
+                        event.status === undefined ? '' : `HTTP ${event.status}`,
+                        event.code ?? '',
+                        event.rule ? `判定：${responseRuleLabels[event.rule]}（${event.rule}）` : '',
+                        event.platformCode === undefined ? '' : `平台状态 ${event.platformCode}`,
+                        event.shape ?? ''
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </small>
+                  </details>
+                )}
               </div>
             </li>
           ))}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FolderHeart, LoaderCircle, LockKeyhole, PlusCircle, Star, X } from 'lucide-react'
 import type { FavoriteEditor, PlaybackScope } from '../../shared/contracts'
 import { call, CommandError } from './api'
+import { favoriteWriteMessage } from './favorite-feedback'
 import './favorite-dialog.css'
 
 export function FavoriteDialog({
@@ -78,7 +79,7 @@ export function FavoriteDialog({
       }
     } catch (error) {
       if (mounted.current) {
-        setError(error instanceof Error ? error.message : '收藏未完成，请重新读取后核对。')
+        setError(favoriteWriteMessage(error, 'save'))
         setNeedsReload(true)
       }
     } finally {
@@ -107,7 +108,7 @@ export function FavoriteDialog({
       setCreating(false)
     } catch (error) {
       if (mounted.current) {
-        setError(error instanceof Error ? error.message : '新建收藏夹未完成。')
+        setError(favoriteWriteMessage(error, 'create'))
         if (!(error instanceof CommandError && error.code === 'FOLDER_EXISTS')) setNeedsReload(true)
       }
     } finally {

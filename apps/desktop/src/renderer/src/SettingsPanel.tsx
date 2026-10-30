@@ -47,8 +47,6 @@ type Props = {
   login: () => void
   probe: () => void
   notice: (message: string) => void
-  importFile: () => void
-  exportAll: () => void
 }
 const groups = [
   {
@@ -78,7 +76,7 @@ const groups = [
     id: 'storage',
     title: '数据与存储',
     icon: Database,
-    keywords: '数据 存储 备份 导入 导出 元数据 目录 路径 占用'
+    keywords: '数据 存储 备份 元数据 目录 路径 占用'
   },
   {
     id: 'about',
@@ -128,9 +126,7 @@ export function SettingsPanel({
   busy,
   login,
   probe,
-  notice,
-  importFile,
-  exportAll
+  notice
 }: Props) {
   const [search, setSearch] = useState(''),
     [active, setActive] = useState('general'),
@@ -383,13 +379,7 @@ export function SettingsPanel({
             />
           </div>
           <div id="settings-storage" className="settings-section" hidden={!visible('storage')}>
-            <DataPanel
-              accountId={account?.id ?? null}
-              busy={busy}
-              perform={perform}
-              importFile={importFile}
-              exportAll={exportAll}
-            />
+            <DataPanel accountId={account?.id ?? null} perform={perform} />
           </div>
           <section id="settings-about" className="panel settings-section" hidden={!visible('about')}>
             <div className="settings-about-brand">

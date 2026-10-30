@@ -1,3 +1,4 @@
+import { dropFavoriteExtensions } from '../helpers/legacy-schema'
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -214,6 +215,7 @@ describe('persistent playback queues', () => {
     const { store, file, folder } = setup()
     store.call('close', undefined)
     const old = new DatabaseSync(file)
+    dropFavoriteExtensions(old)
     old.exec(
       'DROP TABLE saved_cursors; DROP TABLE saved_jobs; DROP TABLE saved_tasks; DROP TABLE saved_members; DROP TABLE saved_folders; DROP TABLE saved_items; DROP TABLE unlike_items; DROP TABLE unlike_tasks; DROP TABLE playback_items; DROP TABLE playback_queues; ALTER TABLE accounts DROP COLUMN lastVerifiedAt; ALTER TABLE account_items DROP COLUMN platformSeen; PRAGMA user_version=3;'
     )

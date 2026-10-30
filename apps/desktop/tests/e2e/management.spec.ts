@@ -1,13 +1,12 @@
 import { testTimeout } from '../helpers/test-timeout'
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { encodeTransfer } from '../../src/main/storage/transfer-format'
 import { terminateApp } from '../helpers/terminate-app'
 
-let app: ElectronApplication, page: Page, profile: string, files: string
+let app: ElectronApplication, page: Page, profile: string
 async function launch() {
   app = await electron.launch({
     ...(process.env.MYLIKE_EXECUTABLE
@@ -92,79 +91,34 @@ async function account(name = '受控账号') {
   await expect(page.locator('.list-caption')).toContainText('2 条内容')
   return id
 }
-async function dialogs(open: string | null, save: string | null = null) {
-  await app.evaluate(
-    ({ dialog }, { open, save }) => {
-      ;(dialog as any).showOpenDialog = async () => ({ canceled: !open, filePaths: open ? [open] : [] })
-      ;(dialog as any).showSaveDialog = async () => ({ canceled: !save, filePath: save ?? undefined })
-    },
-    { open, save }
-  )
-}
 test.beforeEach(async () => {
   profile = mkdtempSync(join(tmpdir(), 'mylike-management-profile-'))
-  files = mkdtempSync(join(tmpdir(), 'mylike-management-files-'))
   await launch()
 })
 test.afterEach(async () => {
   await app?.close().catch(() => {})
-  for (const folder of [profile, files]) {
+  for (const folder of [profile]) {
     if (dirname(resolve(folder)) !== resolve(tmpdir()) || !basename(folder).startsWith('mylike-management-'))
       throw new Error('Unsafe cleanup')
     rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 })
 
-test('previews and cancels imports, merges after confirmation, and exports a fixed selection without secrets', async () => {
-  const accountId = await account(),
-    input = join(files, '元数据.json'),
-    output = join(files, '导出.json')
-  writeFileSync(
-    input,
-    encodeTransfer(
-      [
-        {
-          id: '3',
-          title: '<img src=x onerror=alert(1)>',
-          author: '导入作者',
-          publishedAt: 1700000000,
-          coverUrl: null,
-          mediaType: 'gallery',
-          isLive: false,
-          collectedAt: 1700000000000
-        }
-      ],
-      'other'
-    )
-  )
-  await dialogs(input, output)
+test('removes import and export controls and rejects the retired IPC commands without changing local content', async () => {
+  const accountId = await account()
+  for (const name of ['导出所选', '导出当前范围'])
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '设置', exact: true }).click()
-  await page.getByRole('button', { name: '导入元数据', exact: true }).click()
-  const modal = page.getByRole('dialog', { name: '合并导入元数据' })
-  await expect(modal).toContainText('新增 1 条')
-  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('button', { name: '数据与存储', exact: true }).click()
+  for (const name of ['导入元数据', '导出全部本地内容'])
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
+  for (const command of ['importLibrary', 'importCommit', 'importCancel', 'exportLibrary'])
+    expect(await invoke(command, { accountId })).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_COMMAND' }
+    })
   expect((await invoke('query', { accountId })).data.total).toBe(2)
-  await page.getByRole('button', { name: '导入元数据', exact: true }).click()
-  await modal.getByRole('button', { name: '确认合并导入' }).click()
-  await expect(modal).not.toBeVisible()
-  expect((await invoke('query', { accountId })).data.total).toBe(3)
-  const info = await invoke('dataInfo', { accountId })
-  expect(info.data.backupsCount).toBeGreaterThan(0)
-  await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
-  await expect(page.getByRole('button', { name: /<img src=x onerror=alert\(1\)>/ })).toBeVisible()
-  expect(await page.locator('img[src="x"]').count()).toBe(0)
-  await page.getByRole('button', { name: '批量选择', exact: true }).click()
-  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
-  await page.getByRole('button', { name: '导出所选', exact: true }).click()
-  await expect(page.getByRole('status').filter({ hasText: '已导出 3 条' })).toBeVisible()
-  const exported = readFileSync(output, 'utf8')
-  expect(JSON.parse(exported).items).toHaveLength(3)
-  expect(exported).not.toContain('remoteId')
-  expect(exported).not.toContain('coverUrl')
-  expect(exported).not.toContain('cookie')
-  await dialogs(null)
-  expect((await invoke('exportLibrary', { accountId, source: { type: 'ids', ids: ['1'] } })).data).toBeNull()
-  expect((await invoke('query', { accountId })).data.total).toBe(3)
+  await expect(page.getByRole('button', { name: '打开备份目录', exact: true })).toBeVisible()
 })
 
 test('renames, clears cache without login loss, logs out only one session, and purges current data and backup records when deleting that account', async () => {
@@ -279,11 +233,15 @@ test('requires explicit batch confirmation, persists unknown results, verifies r
     ;(globalThis as any).__likeFlag = 0
   })
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await page.getByRole('button', { name: '重新核验', exact: true }).click()
+  await page
+    .getByRole('region', { name: '取消点赞任务', exact: true })
+    .locator('.simple-task-actions')
+    .getByRole('button', { name: '检查结果', exact: true })
+    .click()
   await expect.poll(async () => (await invoke('snapshot')).data.unlike.unknown).toBe(0)
   expect((await invoke('query', { accountId })).data.total).toBe(1)
   expect(await app.evaluate(() => (globalThis as any).__writeCalls.length)).toBe(0)
-  await page.getByRole('button', { name: '继续未发送项', exact: true }).click()
+  await page.getByRole('button', { name: '继续处理剩余内容', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.unlike.status).toBe('completed')
   expect((await invoke('snapshot')).data.unlike.success).toBe(2)
   expect((await invoke('query', { accountId })).data.total).toBe(0)

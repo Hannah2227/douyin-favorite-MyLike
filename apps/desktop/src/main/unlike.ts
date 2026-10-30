@@ -49,6 +49,18 @@ export class UnlikeService {
     this.wake?.()
     await this.loop
   }
+  private async waitNext(): Promise<void> {
+    if (this.stopped) return
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer)
+        this.wake = null
+        resolve()
+      }
+      const timer = setTimeout(finish, this.interval)
+      this.wake = finish
+    })
+  }
   private launch(task: UnlikeTask): void {
     this.stopped = false
     this.loop = this.process(task).finally(() => {
@@ -123,7 +135,7 @@ export class UnlikeService {
                     workId: item.workId,
                     status: 'failed',
                     errorCode: 'NOT_LIKED',
-                    reason: '已核验当前账号未点赞，未发送取消请求；导入的本地记录保留。'
+                    reason: '已核验当前账号未点赞，未发送取消请求；本地记录保留。'
                   })
                   reserved = false
                   this.changed()
@@ -154,7 +166,28 @@ export class UnlikeService {
             true
           )
         } catch (error) {
+          if (this.stopped && !reserved && !sent) break
           const code = error instanceof AppError ? error.code : 'STORAGE_ERROR'
+          if (favorite && code === 'CONTENT_UNAVAILABLE') {
+            const reason = `${error instanceof AppError ? error.message : '作品不可访问。'} 已跳过并保留本地记录，未自动重发。`
+            if (reserved)
+              await this.db.call('unlikeFinish', {
+                ...scope,
+                workId: item.workId,
+                status: 'failed',
+                errorCode: 'ITEM_SKIPPED',
+                reason
+              })
+            else
+              await this.db.call('unlikeSkip', {
+                ...scope,
+                workId: item.workId,
+                reason
+              })
+            this.changed()
+            await this.waitNext()
+            continue
+          }
           const rejected = sent && code === 'API_REJECTED'
           if (reserved)
             await this.db.call('unlikeFinish', {
@@ -177,22 +210,13 @@ export class UnlikeService {
               : sent
                 ? '请求结果未知，后续条目已暂停；请重新核验。'
                 : error instanceof AppError
-                  ? error.message
+                  ? `${item.title || '作品'}（ID ${item.workId}）：${error.message}`.slice(0, 600)
                   : '保存或读取失败，任务已暂停。'
           })
           this.changed()
           return
         }
-        if (!this.stopped)
-          await new Promise<void>((resolve) => {
-            const finish = () => {
-              clearTimeout(timer)
-              this.wake = null
-              resolve()
-            }
-            const timer = setTimeout(finish, this.interval)
-            this.wake = finish
-          })
+        await this.waitNext()
       }
       await this.db.call('unlikeUpdate', {
         ...scope,

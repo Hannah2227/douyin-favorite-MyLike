@@ -1,4 +1,5 @@
 import { FavoritesStore, favoritesMigration } from './favorites'
+import { FavoriteState, favoriteStateSchema } from './favorite-state'
 import { RuntimeEventsStore } from './runtime-events'
 import { purgeAccountRows, purgeAccountBackups } from './account-purge'
 import { DatabaseSync } from 'node:sqlite'
@@ -6,10 +7,10 @@ import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Account, CollectionTask, Filter, Query } from '../../shared/contracts'
+import { MAX_BATCH_SIZE } from '../../shared/contracts'
 import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
 import { PlaybackStore } from './playback'
-import { TransferStore } from './transfer'
 import { UnlikeStore } from './unlike'
 import { appPreferencesSchema } from '../../shared/preferences'
 
@@ -18,7 +19,6 @@ export class Store {
   private readonly events: RuntimeEventsStore
   private readonly favorites: FavoritesStore
   private readonly playback: PlaybackStore
-  private readonly transfer: TransferStore
   private readonly unlike: UnlikeStore
   constructor(private readonly file: string) {
     this.db = new DatabaseSync(file)
@@ -93,9 +93,13 @@ export class Store {
         this.db.exec(
           "BEGIN IMMEDIATE; ALTER TABLE unlike_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'likes' CHECK(source IN ('likes','favorites')); PRAGMA user_version=7; COMMIT;"
         )
+      this.db.exec('BEGIN IMMEDIATE; ' + favoriteStateSchema + ' COMMIT;')
+      const favoriteState = new FavoriteState(this.db)
+      const favoriteTasks = this.db.prepare('SELECT id FROM saved_tasks').all()
+      for (const task of favoriteTasks) favoriteState.ensure(String(task.id))
       const interrupted = this.db
         .prepare(
-          "SELECT accountId,'喜欢采集' AS label FROM collection_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏同步' FROM saved_tasks WHERE status='running' UNION ALL SELECT accountId,CASE source WHEN 'favorites' THEN '取消收藏' ELSE '取消点赞' END FROM unlike_tasks WHERE status='running'"
+          "SELECT accountId,'喜欢采集' AS label FROM collection_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏同步' FROM saved_tasks WHERE status='running' UNION ALL SELECT accountId,'收藏更新' FROM saved_updates WHERE status='running' UNION ALL SELECT accountId,CASE source WHEN 'favorites' THEN '取消收藏' ELSE '取消点赞' END FROM unlike_tasks WHERE status='running'"
         )
         .all()
       this.db
@@ -103,7 +107,11 @@ export class Store {
           "UPDATE saved_tasks SET status='paused',reason='应用已中断，可继续已保存的收藏断点。',errorCode='INTERRUPTED' WHERE status='running'"
         )
         .run()
+      for (const task of favoriteTasks) favoriteState.touch(String(task.id))
       this.favorites = new FavoritesStore(this.db, this.transaction.bind(this))
+      this.db.exec(
+        "UPDATE saved_updates SET status='paused',reason='应用已中断，可继续收藏更新。',errorCode='INTERRUPTED' WHERE status='running'"
+      )
       this.db.exec(
         "BEGIN IMMEDIATE; UPDATE unlike_items SET status='unknown',errorCode='INTERRUPTED',reason='应用退出前请求结果未确认，未自动重发。' WHERE status='inflight'; UPDATE unlike_tasks SET status='paused',errorCode='INTERRUPTED',reason='任务已中断；仅可继续未发送项。' WHERE status='running'; COMMIT;"
       )
@@ -114,13 +122,6 @@ export class Store {
         .run(Date.now())
       this.playback = new PlaybackStore(this.db, this.filter.bind(this), this.transaction.bind(this))
       this.unlike = new UnlikeStore(this.db, this.transaction.bind(this))
-      this.transfer = new TransferStore(
-        this.db,
-        file,
-        this.filter.bind(this),
-        this.transaction.bind(this),
-        this.backup.bind(this)
-      )
       for (const row of interrupted) {
         try {
           this.events.append(String(row.accountId), {
@@ -235,7 +236,7 @@ export class Store {
   call<K extends keyof Inputs>(method: K, input: Inputs[K]): Replies[K] {
     const kind = ['startCollection', 'updateCollection', 'saveCollectionPage'].includes(method)
       ? '喜欢采集'
-      : ['favoritesStart', 'favoritesUpdate', 'favoritesSave'].includes(method)
+      : ['favoritesStart', 'favoritesUpdate', 'favoritesSave', 'favoritesDefer'].includes(method)
         ? '收藏同步'
         : ['unlikeCreate', 'unlikeUpdate'].includes(method)
           ? '取消点赞'
@@ -245,7 +246,7 @@ export class Store {
       kind === '喜欢采集'
         ? this.collection(accountId!)
         : kind === '收藏同步'
-          ? this.favorites.task(accountId!)
+          ? this.favorites.task(accountId!, (input as { mode?: 'sync' | 'update' }).mode)
           : this.unlike.call('unlikeTask', { accountId: accountId! })
     const before = kind ? task() : null
     const result = this.dispatch(method, input) as Replies[K]
@@ -255,32 +256,33 @@ export class Store {
         const end =
           ['saveCollectionPage', 'favoritesSave'].includes(method) &&
           (input as { hasMore?: boolean }).hasMore === false
-        if (end) {
-          const stage = (input as { stage?: string }).stage
-          const operation =
-            kind === '喜欢采集'
-              ? 'likes'
-              : stage === 'all'
-                ? 'favorites'
-                : stage === 'folders'
-                  ? 'folders'
-                  : 'folderItems'
-          const label = {
-            likes: '喜欢列表',
-            favorites: '全部收藏作品',
-            folders: '收藏夹列表',
-            folderItems: '收藏夹作品'
-          }[operation]
+        const collectionInput = input as Inputs['favoritesSave']
+        const uncertainScope =
+          method === 'favoritesSave' &&
+          ((collectionInput.stage === 'folder' &&
+            !!this.db
+              .prepare('SELECT deferred FROM saved_job_meta WHERE taskId=? AND folderId=?')
+              .get(collectionInput.taskId, collectionInput.folderId)?.deferred) ||
+            (collectionInput.stage === 'all' && !!((after as { incomplete?: number })?.incomplete! & 1)) ||
+            (collectionInput.stage === 'folders' && !!((after as { incomplete?: number })?.incomplete! & 2)))
+        if (
+          end &&
+          after?.status === 'completed' &&
+          !(input as { incomplete?: boolean }).incomplete &&
+          !(input as { skipped?: unknown[] }).skipped?.length &&
+          !uncertainScope
+        ) {
+          const favorites = kind === '收藏同步'
+          const label = favorites
+            ? (input as { mode?: string }).mode === 'update'
+              ? '收藏更新'
+              : '收藏同步'
+            : '喜欢采集'
           this.events.append(accountId, {
             kind: 'task',
             code: 'END_CONFIRMED',
-            operation,
-            responseType: 'terminal-list',
-            message: `${label}已确认触底。`,
-            count:
-              (input as { items?: unknown[]; folders?: unknown[] }).items?.length ??
-              (input as { folders?: unknown[] }).folders?.length ??
-              0
+            operation: favorites ? 'favorites' : 'likes',
+            message: `${label}已确认触底，本轮新增 ${'added' in after ? after.added : 0} 条。`
           })
         } else if (
           after?.errorCode &&
@@ -291,11 +293,23 @@ export class Store {
           this.events.append(accountId, {
             kind: 'task',
             message:
-              `${'source' in after && after.source === 'favorites' ? '取消收藏' : kind}异常中断${after.reason ? `：${after.reason}` : ''}`.slice(
+              `${'source' in after && after.source === 'favorites' ? '取消收藏' : kind === '收藏同步' && (input as { mode?: string }).mode === 'update' ? '收藏更新' : kind}${after.status === 'partial' ? '部分完成' : '异常中断'}${after.reason ? `：${after.reason}` : ''}`.slice(
                 0,
                 600
               ),
-            code: after.errorCode
+            code: after.errorCode,
+            operation:
+              kind === '喜欢采集'
+                ? 'likes'
+                : kind === '收藏同步'
+                  ? before && 'stage' in before && before.stage === 'folder'
+                    ? 'folderItems'
+                    : before && 'stage' in before && before.stage === 'folders'
+                      ? 'folders'
+                      : 'favorites'
+                  : 'source' in after && after.source === 'favorites'
+                    ? 'favoriteRemove'
+                    : 'unlike'
           })
         }
       } catch {
@@ -351,7 +365,7 @@ export class Store {
         return { ok: issues === 0, issues, checkedAt: Date.now() }
       }
       case 'favoritesTask':
-        return this.favorites.task(input.accountId)
+        return this.favorites.task(input.accountId, input.mode)
       case 'favoriteFolders':
         return this.favorites.folders(input.accountId)
       case 'favoriteStatus':
@@ -363,14 +377,17 @@ export class Store {
         return this.favorites.confirm(input)
       case 'favoritesStart':
         this.account(input.accountId)
-        return this.favorites.start(input.accountId, input.id)
+        return this.favorites.start(input.accountId, input.id, input.mode)
+      case 'favoritesDefer':
+        return this.favorites.defer(input)
       case 'favoritesUpdate':
         return this.favorites.update(
           input.accountId,
           input.taskId,
           input.status,
           input.reason,
-          input.errorCode
+          input.errorCode,
+          input.mode
         )
       case 'favoritesSave':
         return this.favorites.save(input)
@@ -414,7 +431,6 @@ export class Store {
         purgeAccountBackups(dirname(this.file), input.accountId)
         this.db.exec('PRAGMA secure_delete=ON')
         this.transaction(() => purgeAccountRows(this.db, input.accountId))
-        this.transfer.forgetAccount(input.accountId)
         this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
         return null
       }
@@ -508,13 +524,14 @@ export class Store {
         if (task.status !== 'completed')
           this.db
             .prepare(
-              'UPDATE collection_tasks SET status=?,reason=?,errorCode=?,updatedAt=? WHERE accountId=? AND id=?'
+              'UPDATE collection_tasks SET status=?,reason=?,errorCode=?,updatedAt=?,mode=coalesce(?,mode) WHERE accountId=? AND id=?'
             )
             .run(
               input.status,
               input.reason,
               input.errorCode ?? null,
               Date.now(),
+              input.mode ?? null,
               input.accountId,
               input.taskId
             )
@@ -556,9 +573,7 @@ export class Store {
             this.db.prepare('INSERT INTO collection_cursors VALUES(?,?,?)').run(task.id, task.phase, cursor)
           const result = this.savePage({
             ...input,
-            preserveCheckpoint:
-              task.phase === 'head' &&
-              (input.hasMore || (task.mode === 'incremental' && task.backfillCursor !== null))
+            preserveCheckpoint: task.phase === 'head' && (input.hasMore || task.backfillCursor !== null)
           })
           let phase = task.phase,
             cursor = input.cursor,
@@ -568,7 +583,10 @@ export class Store {
             task.backfillCursor !== null
               ? '新增更新已完成；历史采集断点已保留，可继续历史采集。'
               : '新增更新已完成。'
-          if (!input.hasMore) {
+          if (!input.hasMore && task.phase === 'head' && task.mode === 'update' && task.backfillCursor) {
+            phase = 'backfill'
+            cursor = task.backfillCursor
+          } else if (!input.hasMore) {
             status = 'completed'
             reason = task.mode === 'incremental' ? incrementalReason : '平台已返回列表末尾。'
             if (task.phase === 'backfill')
@@ -652,9 +670,7 @@ export class Store {
       case 'matchingIds': {
         this.account(input.accountId)
         const { from, params, order } = this.filter(input)
-        const rows = this.db.prepare(`SELECT w.id ${from} ${order} LIMIT 100001`).all(...params)
-        if (rows.length > 100000)
-          throw new AppError('SELECTION_TOO_LARGE', '一次最多选择 10 万条，请缩小筛选范围。')
+        const rows = this.db.prepare(`SELECT w.id ${from} ${order} LIMIT ?`).all(...params, MAX_BATCH_SIZE)
         return rows.map((row) => String(row.id))
       }
       case 'deleteLocal': {
@@ -699,14 +715,9 @@ export class Store {
       case 'unlikeNext':
       case 'unlikeReserve':
       case 'unlikeFinish':
+      case 'unlikeSkip':
       case 'unlikeResolve':
         return this.unlike.call(method, input)
-      case 'prepareExport':
-      case 'finishExport':
-      case 'prepareImport':
-      case 'commitImport':
-      case 'discardTransfer':
-        return this.transfer.call(method, input)
     }
   }
   private filter(query: Filter): { from: string; params: (string | number)[]; order: string } {

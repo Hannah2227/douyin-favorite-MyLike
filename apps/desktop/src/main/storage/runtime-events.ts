@@ -9,6 +9,54 @@ import {
 } from '../../shared/runtime-events'
 import { AppError } from '../errors'
 
+const repeatWindow = 5 * 60_000
+const priority = { request: 0, auth: 1, engine: 2, task: 3 }
+function compact(events: RuntimeEvent[]): RuntimeEvent[] {
+  const result: RuntimeEvent[] = []
+  for (const input of events) {
+    const category = runtimeEventCategory(input)
+    if (!category) continue
+    // Counts and timings describe individual requests, not the task outcome.
+    const { durationMs: _duration, count: _count, ...event } = input
+    const duplicate =
+      category === 'exception'
+        ? result.findLastIndex(
+            (previous) =>
+              runtimeEventCategory(previous) === 'exception' &&
+              event.time >= previous.time &&
+              event.time - previous.time < repeatWindow &&
+              previous.code === event.code &&
+              (event.code?.startsWith('BROWSER_') || previous.operation === event.operation) &&
+              (!event.code?.startsWith('BROWSER_') ||
+                previous.message.includes(event.message) ||
+                event.message.includes(previous.message)) &&
+              (!previous.rule || !event.rule || previous.rule === event.rule) &&
+              (!previous.platformCode ||
+                !event.platformCode ||
+                previous.platformCode === event.platformCode) &&
+              (previous.status === undefined ||
+                event.status === undefined ||
+                previous.status === event.status) &&
+              // Different deferred folders must stay independently identifiable.
+              (!['FOLDER_DEFERRED', 'INTERRUPTED', 'PARTIAL_SYNC'].includes(event.code ?? '') ||
+                previous.message === event.message)
+          )
+        : -1
+    if (duplicate < 0) result.push(event)
+    else {
+      const previous = result[duplicate]!
+      const preferred = priority[event.kind] >= priority[previous.kind] ? event : previous
+      const other = preferred === event ? previous : event
+      result[duplicate] = { ...other, ...preferred, id: previous.id, time: previous.time }
+    }
+  }
+  // Request failures cannot displace committed task outcomes.
+  return [
+    ...result.filter((e) => e.kind === 'request').slice(-150),
+    ...result.filter((e) => e.kind !== 'request').slice(-150)
+  ].sort((a, b) => a.time - b.time)
+}
+
 export class RuntimeEventsStore {
   constructor(private readonly db: DatabaseSync) {}
   read(accountId: string): RuntimeEvent[] {
@@ -17,11 +65,12 @@ export class RuntimeEventsStore {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(`runtime:${accountId}`)
     if (!row) return []
     try {
-      return z
-        .array(runtimeEventSchema)
-        .max(300)
-        .parse(JSON.parse(String(row.value)))
-        .filter((event) => runtimeEventCategory(event) !== null)
+      return compact(
+        z
+          .array(runtimeEventSchema)
+          .max(300)
+          .parse(JSON.parse(String(row.value)))
+      )
     } catch {
       throw new AppError('LOG_READ_FAILED', '运行记录读取失败，请重试。')
     }
@@ -29,28 +78,9 @@ export class RuntimeEventsStore {
   append(accountId: string, input: RuntimeEventInput): null {
     const events = this.read(accountId)
     const event = runtimeEventSchema.parse({ ...input, id: randomUUID(), time: Date.now() })
-    const category = runtimeEventCategory(event)
-    if (!category) return null
-    // Repeated polling failures should not fill the history with identical rows.
-    if (
-      category === 'exception' &&
-      events.some(
-        (previous) =>
-          event.time - previous.time < 30_000 &&
-          previous.kind === event.kind &&
-          previous.operation === event.operation &&
-          previous.code === event.code &&
-          previous.responseType === event.responseType &&
-          previous.status === event.status &&
-          previous.message === event.message
-      )
-    )
-      return null
-    events.push(event)
-    // Bound request failures separately so they cannot erase task outcomes.
-    const requests = events.filter((e) => e.kind === 'request').slice(-150)
-    const transitions = events.filter((e) => e.kind !== 'request').slice(-150)
-    const retained = [...requests, ...transitions].sort((a, b) => a.time - b.time)
+    if (!runtimeEventCategory(event)) return null
+    const retained = compact([...events, event])
+    if (JSON.stringify(retained) === JSON.stringify(events)) return null
     this.db
       .prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(`runtime:${accountId}`, JSON.stringify(retained))

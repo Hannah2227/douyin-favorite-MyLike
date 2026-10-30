@@ -222,6 +222,56 @@ describe('SQLite transactions and account ownership', () => {
     expect(backup.prepare('SELECT count(*) AS n FROM account_items WHERE accountId=?').get('a')?.n).toBe(251)
     backup.close()
   })
+  it('caps favorite selection to the first 1000 visible matches within the chosen folder', () => {
+    const { store, file } = setup()
+    const items = Array.from({ length: 1305 }, (_, i) => ({
+      ...item(String(8000000 + i)),
+      publishedAt: 1700000000 + i,
+      title: i % 10 === 0 ? '旅行' : '日常'
+    }))
+    store.call('savePage', { accountId: 'a', remoteId: 'remote-a', items, cursor: '0', hasMore: false })
+    const db = new DatabaseSync(file)
+    try {
+      db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE')
+      for (const [id, count] of [
+        ['8', 1205],
+        ['9', 100]
+      ] as const)
+        db.prepare('INSERT INTO saved_folders VALUES(?,?,?,?,?)').run(
+          'a',
+          id,
+          'Folder ' + id,
+          count,
+          'fixture'
+        )
+      const saved = db.prepare('INSERT INTO saved_items VALUES(?,?,?)'),
+        member = db.prepare('INSERT INTO saved_members VALUES(?,?,?,?)')
+      items.forEach((work, i) => {
+        saved.run('a', work.id, i)
+        member.run('a', i < 1205 ? '8' : '9', work.id, 'fixture')
+      })
+      db.exec('COMMIT')
+    } finally {
+      db.close()
+    }
+    const filter = { ...query, source: 'favorites' as const, folderId: '8' }
+    expect(store.call('query', filter).total).toBe(1205)
+    const expected = items
+      .slice(0, 1205)
+      .reverse()
+      .slice(0, 1000)
+      .map((work) => work.id)
+    for (const sort of ['published', 'collected'] as const)
+      expect(store.call('matchingIds', { ...filter, sort })).toEqual(expected)
+    expect(store.call('matchingIds', { ...filter, search: '旅行' })).toEqual(
+      items
+        .slice(0, 1205)
+        .filter((work) => work.title === '旅行')
+        .reverse()
+        .map((work) => work.id)
+    )
+    expect(store.call('matchingIds', { ...filter, folderId: '9' })).toHaveLength(100)
+  })
   it('rolls back a partially failing local deletion without removing another account data', () => {
     const { store, file } = setup()
     store.call('savePage', {
@@ -267,7 +317,14 @@ describe('SQLite transactions and account ownership', () => {
       times.push(elapsed)
       expect(page.items.length).toBeLessThanOrEqual(60)
     }
-    expect(store.call('matchingIds', { ...query, search: '旅行' })).toHaveLength(5000)
+    for (const sort of ['published', 'collected'] as const) {
+      const filter = { ...query, search: '旅行', sort }
+      const expected = Array.from({ length: 10 }, (_, i) =>
+        store.call('query', { ...filter, offset: i * 100, limit: 100 }).items.map((w) => w.id)
+      ).flat()
+      expect(store.call('matchingIds', filter)).toEqual(expected)
+      expect(expected).toHaveLength(1000)
+    }
     console.log(
       '50k SQLite benchmark:',
       JSON.stringify({
@@ -277,4 +334,46 @@ describe('SQLite transactions and account ownership', () => {
       })
     )
   }, 20000)
+})
+
+it('preserves an interrupted head and deep cursor when switching to downward collection without a schema upgrade', () => {
+  const { store } = setup()
+  store.call('savePage', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    items: [item()],
+    cursor: '999',
+    hasMore: true
+  })
+  let task = store.call('startCollection', { accountId: 'a', id: 'head-direction', mode: 'incremental' })
+  store.call('saveCollectionPage', {
+    accountId: 'a',
+    taskId: task.id,
+    remoteId: 'remote-a',
+    requestCursor: '0',
+    items: [item('456')],
+    cursor: '5',
+    hasMore: true
+  })
+  store.call('updateCollection', { accountId: 'a', taskId: task.id, status: 'stopped', reason: 'stop' })
+  task = store.call('updateCollection', {
+    accountId: 'a',
+    taskId: task.id,
+    status: 'running',
+    reason: null,
+    mode: 'update'
+  })
+  expect(task).toMatchObject({ phase: 'head', cursor: '5', backfillCursor: '999', mode: 'update' })
+  task = store.call('saveCollectionPage', {
+    accountId: 'a',
+    taskId: task.id,
+    remoteId: 'remote-a',
+    requestCursor: '5',
+    items: [],
+    cursor: '0',
+    hasMore: false
+  })
+  expect(task).toMatchObject({ phase: 'backfill', cursor: '999', status: 'running' })
+  expect(store.call('checkpoint', { accountId: 'a' })).toMatchObject({ cursor: '999', hasMore: true })
+  expect(store.call('query', query).total).toBe(2)
 })

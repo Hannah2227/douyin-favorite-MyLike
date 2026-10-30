@@ -1206,6 +1206,15 @@ h1 {
 }
 .favorites-toolbar .panel-actions {
   margin: 0 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.favorites-toolbar .panel-actions button {
+  font-size: 12px;
+  padding: 8px 11px;
+}
+.favorites-toolbar .favorite-update-actions {
+  display: contents;
 }
 .favorites-toolbar .select-trigger {
   min-width: 180px;
