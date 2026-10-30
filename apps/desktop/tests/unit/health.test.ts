@@ -86,3 +86,17 @@ it('distinguishes a withheld bare payload from an explicit risk refusal without 
   h.observe('b', 'favorites', 'UPSTREAM_RISK_CONTROL', undefined, false, 'envelope.risk_code')
   expect(h.snapshot('b').status).toBe('abnormal')
 })
+
+it('does not let expired optional folder-item success override fresh required checks, but retains failures', () => {
+  const h = new HealthMonitor()
+  let now = 10000
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  h.observe('a', 'folderItems')
+  now += HEALTH_MAX_AGE + 1
+  for (const op of ['self', 'likes', 'favorites', 'folders']) h.observe('a', op)
+  expect(h.snapshot('a').status).toBe('normal')
+  h.observe('a', 'folderItems', 'INVALID_RESPONSE')
+  expect(h.snapshot('a').status).toBe('uncertain')
+  h.observe('a', 'folderItems', 'RATE_LIMITED')
+  expect(h.snapshot('a').status).toBe('abnormal')
+})

@@ -31,7 +31,8 @@ export function HealthPanel({
       ? '异常'
       : (ops[0] === 'likes' ? ['likes'] : ['favorites', 'folders']).some(
             (op) => !group.some((e) => e.operation === op)
-          ) || group.some((e) => e.status !== 'normal' || now - e.at >= 600000)
+          ) ||
+          group.some((e) => e.status !== 'normal' || (e.operation !== 'folderItems' && now - e.at >= 600000))
         ? '不明确'
         : '正常'
   }

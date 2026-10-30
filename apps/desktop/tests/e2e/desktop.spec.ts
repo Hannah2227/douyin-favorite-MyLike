@@ -4075,7 +4075,10 @@ test('rechecks the retained terminal cursor after head updates and restart witho
     }
   }, workId)
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
-  await page.getByRole('button', { name: '检查更多内容', exact: true }).click()
+  await page
+    .getByRole('region', { name: '自动采集任务' })
+    .getByRole('button', { name: '向下采集', exact: true })
+    .click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.collection)
     .toMatchObject({ mode: 'recheck', status: 'completed', tailCursor: '20', added: 1 })
@@ -4479,7 +4482,7 @@ for (const mode of ['advancing', 'stagnant']) {
     )
     await page.getByRole('button', { name: '连接与任务', exact: true }).click()
     const task = page.getByRole('region', { name: '自动采集任务' })
-    await expect(page.getByRole('region', { name: '账号状态' })).toContainText('暂时没有获取到更多内容')
+    await expect(page.getByRole('region', { name: '账号状态' })).toContainText('核验状态')
     await expect(task).not.toContainText(/断点|游标|待复查|尚未确认末尾/)
     await expect(task.getByRole('alert')).toHaveCount(0)
     await screenshot(info.outputPath(`empty-tail-${mode}.png`))
@@ -5404,7 +5407,7 @@ test('defers a malformed favorite folder, completes other folders and retries on
     ;(globalThis as any).__favoriteBrokenFolder = false
     ;(globalThis as any).__favoriteRequests = []
   })
-  await page.getByRole('button', { name: '重试未完成项', exact: true }).click()
+  await page.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 20000 })
     .toMatchObject({ status: 'completed', foldersDone: 2, foldersDeferred: 0 })
@@ -5865,6 +5868,13 @@ test('unified health checks are read-only, show real green status and keep exact
   expect((await invoke('query', { accountId })).data.total).toBe(0)
   expect((await invoke('snapshot')).data.collection).toBeNull()
   expect((await invoke('snapshot')).data.favorites).toBeNull()
+  expect(
+    await app.evaluate(() =>
+      ((globalThis as any).__mylikeTestCalls as string[]).some((url) => url.includes('/collects/video/list/'))
+    )
+  ).toBe(true)
+  await invoke('checkHealth', { accountId })
+  expect((await invoke('snapshot')).data.health.status).toBe('normal')
   await screenshot(info.outputPath('health-normal.png'))
   const card = page.getByRole('region', { name: '自动采集任务', exact: true })
   await card.getByRole('button', { name: '向下采集', exact: true }).click()

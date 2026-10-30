@@ -106,7 +106,9 @@ export function FavoritesPanel({
             ? '进行中'
             : progress.status === 'completed'
               ? '已完成'
-              : '已停止') +
+              : progress.status === 'partial'
+                ? '部分完成'
+                : '已停止') +
             ' · 本次新增 ' +
             progress.added +
             ' 条' +

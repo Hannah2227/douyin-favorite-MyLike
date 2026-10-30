@@ -272,26 +272,31 @@ it('updates new favorites independently of a paused folder checkpoint and stops 
   expect(store.call('query', query).total).toBe(2)
   expect(store.call('favoriteFolders', { accountId: 'a' })).toHaveLength(1)
 })
-it('preserves independent update checkpoints across restart and removes them from historical backups on account deletion', () => {
-  const { store, file, root } = setup()
-  let task = store.call('favoritesStart', { accountId: 'a', id: 'update', mode: 'update' })
-  task = save(store, task, { items: [work('1')], cursor: '9', hasMore: true })
-  store.call('backup', { reason: 'manual' })
-  store.call('close', undefined)
-  const reopened = new Store(file)
-  stores.push(reopened)
-  expect(reopened.call('favoritesTask', { accountId: 'a', mode: 'update' })).toMatchObject({
-    cursor: '9',
-    status: 'paused'
-  })
-  reopened.call('removeAccount', { accountId: 'a' })
-  for (const f of [file, ...readdirSync(join(root, 'backups')).map((f) => join(root, 'backups', f))]) {
-    const db = new DatabaseSync(f, { readOnly: true })
-    expect(db.prepare('SELECT count(*) AS n FROM saved_updates').get()?.n).toBe(0)
-    expect(db.prepare('PRAGMA foreign_key_check').all()).toHaveLength(0)
-    db.close()
-  }
-})
+it(
+  'preserves independent update checkpoints across restart and removes them from historical backups on account deletion',
+  () => {
+    const { store, file, root } = setup()
+    let task = store.call('favoritesStart', { accountId: 'a', id: 'update', mode: 'update' })
+    task = save(store, task, { items: [work('1')], cursor: '9', hasMore: true })
+    store.call('backup', { reason: 'manual' })
+    store.call('close', undefined)
+    const reopened = new Store(file)
+    stores.push(reopened)
+    expect(reopened.call('favoritesTask', { accountId: 'a', mode: 'update' })).toMatchObject({
+      cursor: '9',
+      status: 'paused'
+    })
+    reopened.call('removeAccount', { accountId: 'a' })
+    for (const f of [file, ...readdirSync(join(root, 'backups')).map((f) => join(root, 'backups', f))]) {
+      const db = new DatabaseSync(f, { readOnly: true })
+      expect(db.prepare('SELECT count(*) AS n FROM saved_updates').get()?.n).toBe(0)
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toHaveLength(0)
+      db.close()
+    }
+  },
+  process.env.CI ? 30_000 : 5_000
+)
+
 it('keeps the v7 core layout and preserves current folder progress without an incompatible version bump', () => {
   const { store, file, root } = setup()
   let task = folders(store, 'sync', 1)

@@ -407,6 +407,17 @@ export class Application {
                   : target.operation === 'folders'
                     ? parseFavoriteFolders(data, { allowEmpty: true })
                     : parseFavoritesPage(data, { allowEmpty: true })
+              // Refresh folder-item evidence even after a completed sync. Otherwise
+              // its old successful entry expires while the manual check never revisits it.
+              if (
+                'folders' in page &&
+                page.folders.length &&
+                !targets.some((t) => t.operation === 'folderItems')
+              )
+                targets.push({
+                  operation: 'folderItems',
+                  parameters: { collects_id: page.folders[0]!.id, cursor: '0', count: '20' }
+                })
               if (page.hasMore && ('folders' in page ? !page.folders.length : !page.items.length))
                 throw new AppError('EMPTY_PAGE', '暂时未能取得可用内容，请稍后核验。')
               check()

@@ -26,5 +26,9 @@ export function healthStatus(entries: readonly HealthEntry[], now = Date.now()):
   if (entries.some((e) => e.status === 'abnormal')) return 'abnormal'
   if (['self', 'likes', 'favorites', 'folders'].some((op) => !entries.some((e) => e.operation === op)))
     return 'uncertain'
-  return entries.every((e) => e.status === 'normal' && now - e.at < HEALTH_MAX_AGE) ? 'normal' : 'uncertain'
+  return entries.every(
+    (e) => e.status === 'normal' && (e.operation === 'folderItems' || now - e.at < HEALTH_MAX_AGE)
+  )
+    ? 'normal'
+    : 'uncertain'
 }
