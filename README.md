@@ -25,11 +25,11 @@
 
 ### 喜欢的内容
 
-![喜欢的内容](assets/readme/likes.png)
+![喜欢的内容](assets/readme/likes-preview.png)
 
 ### 仪表盘
 
-![仪表盘](assets/readme/dashboard.png)
+![仪表盘](assets/readme/dashboard-preview.png)
 
 ## 下载
 

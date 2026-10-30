@@ -1,5 +1,7 @@
-# 日志
+# 日志与 Windows 缓存
 *.log
+Thumbs.db
+desktop.ini
 
 # Electron
 node_modules/
@@ -11,7 +13,7 @@ apps/desktop/test-results-*/
 apps/desktop/playwright-report/
 *.tsbuildinfo
 
-# Local development notes and evidence
+# 本地开发记录与诊断文件
 docs/
 *.md
 !/README.md

@@ -1,6 +1,10 @@
+# .NET build and test output
 bin/
 obj/
 artifacts/
+TestResults/
+
+# Visual Studio local state
 .vs/
 *.user
 *.suo

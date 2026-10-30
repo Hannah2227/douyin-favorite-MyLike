@@ -1,5 +1,13 @@
+# Application source and repository configuration
 apps/desktop/** text=auto eol=lf
-.github/workflows/desktop.yml text eol=lf
+.github/** text=auto eol=lf
+/.gitattributes text eol=lf
+/.gitignore text eol=lf
+/README.md text eol=lf
+/LICENSE text eol=lf
+legacy/.gitignore text eol=lf
+
+# Binary application assets and media fixtures
 *.png binary
 *.ico binary
 *.mp4 binary
