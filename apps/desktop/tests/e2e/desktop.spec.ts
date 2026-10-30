@@ -39,9 +39,13 @@ const workId = '7381234567890123456'
 
 async function launch(heading = '喜欢的内容') {
   app = await electron.launch({
-    ...(process.env.MYLIKE_EXECUTABLE
-      ? { executablePath: process.env.MYLIKE_EXECUTABLE, args: [] }
-      : { args: [process.cwd()] }),
+    ...(process.env.MYLIKE_EXECUTABLE ? { executablePath: process.env.MYLIKE_EXECUTABLE } : {}),
+    args: [
+      ...(process.env.MYLIKE_EXECUTABLE ? [] : [process.cwd()]),
+      ...(process.env.MYLIKE_TEST_DEVICE_SCALE_FACTOR
+        ? ['--force-device-scale-factor=' + process.env.MYLIKE_TEST_DEVICE_SCALE_FACTOR]
+        : [])
+    ],
     env: { ...process.env, MYLIKE_HEADLESS: '1', MYLIKE_USER_DATA: profile },
     timeout: testTimeout(30_000)
   })
@@ -5110,6 +5114,18 @@ for (const kind of ['video', 'live'] as const) {
   test(`keeps ${kind} clean screen free of controls and restores the same frame by keyboard across zoom and prepared playback`, async ({}, info) => {
     test.setTimeout(testTimeout(120000))
     await prepareQueue(3, kind === 'live')
+    writeFileSync(
+      info.outputPath('graphics.json'),
+      JSON.stringify(
+        await app.evaluate(({ app }) => ({
+          hardwareAcceleration: app.isHardwareAccelerationEnabled(),
+          directCompositionDisabled: app.commandLine.hasSwitch('disable-direct-composition'),
+          featureStatus: app.getGPUFeatureStatus()
+        })),
+        null,
+        2
+      )
+    )
     const preferences = (await invoke('snapshot')).data.playbackPreferences
     await invoke('playbackPreferences', {
       preferences: { ...preferences, continuous: false }
@@ -5223,10 +5239,31 @@ for (const kind of ['video', 'live'] as const) {
       await page.getByRole('button', { name: '下一条', exact: true }).click()
       await readyVideo(1)
       await expect(page.locator('.prepared-video')).toBeVisible()
-      const original = await bounds()
-      await page.keyboard.press('h')
-      await page.keyboard.press('Escape')
-      await expect.poll(bounds).toEqual(original)
+      for (const zoom of [1, 1.25, 1.5]) {
+        await app.evaluate(
+          ({ BrowserWindow }, zoom) =>
+            BrowserWindow.getAllWindows()
+              .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+              .webContents.setZoomFactor(zoom),
+          zoom
+        )
+        await expect
+          .poll(async () => {
+            const b = await bounds()
+            return Math.abs(b.width - b.stage.width) < 1 && Math.abs(b.height - b.stage.height) < 1
+          })
+          .toBe(true)
+        const original = await bounds()
+        const node = await media.elementHandle()
+        for (let round = 0; round < 4; round++) {
+          await page.keyboard.press('h')
+          await page.keyboard.press('Escape')
+          await expect.poll(bounds).toEqual(original)
+          expect(await node!.evaluate((video) => video === document.querySelector('video'))).toBe(true)
+        }
+        await node?.dispose()
+        await screenshot(info.outputPath('prepared-clean-' + zoom + '.png'))
+      }
     }
   })
 }

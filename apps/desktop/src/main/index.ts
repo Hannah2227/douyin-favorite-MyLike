@@ -15,6 +15,10 @@ import { restoreWindowState } from './window-state'
 protocol.registerSchemesAsPrivileged([
   { scheme: 'mylike', privileges: { standard: true, secure: true, supportFetchAPI: true } }
 ])
+// DComp can retain a stale video presentation rectangle after clean-mode
+// relayout on Windows; resizing the native window clears it. Use Chromium's
+// regular presentation path while retaining GPU rendering and video decoding.
+if (process.platform === 'win32') app.commandLine.appendSwitch('disable-direct-composition')
 app.setName('MyLike')
 const data = process.env.MYLIKE_USER_DATA
 if (data && isAbsolute(data)) app.setPath('userData', data)
