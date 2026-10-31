@@ -4,9 +4,9 @@
 
 # MyLike
 
-**把喜欢留下来，让回看更简单。**
+**把喜欢，再喜欢一遍。**
 
-一个整理、搜索和回看抖音喜欢与收藏的 Windows 桌面应用。
+一个回看抖音喜欢与收藏的 Windows 桌面应用。
 
 [![Release](https://img.shields.io/github/v/release/Hannah2227/douyin-favorite-MyLike?style=flat-square&color=ff5c8a)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
 [![Windows x64](https://img.shields.io/badge/Windows-x64-5865f2?style=flat-square)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
