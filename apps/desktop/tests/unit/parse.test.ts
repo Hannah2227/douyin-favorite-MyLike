@@ -7,6 +7,7 @@ import {
   parseLikedPage,
   parseMedia,
   parseFavoriteState,
+  parseWork,
   parseResponse,
   safeMediaUrl
 } from '../../src/main/douyin/parse'
@@ -72,6 +73,33 @@ describe('platform responses', () => {
     const page = parseLikedPage(data)
     expect(page.items[0]?.id).toBe('7381234567890123456')
     expect(page.cursor).toBe('7381234567890123457')
+  })
+  it('extracts captions from article metadata and rich-text values', () => {
+    expect(
+      parseWork({
+        aweme_id: '7702225379020499323',
+        desc: '',
+        article_info: JSON.stringify({
+          article_title: '我不觉得我如今的下场有什么好遗憾的',
+          article_content: JSON.stringify({ markdown: '正文内容' })
+        })
+      }).title
+    ).toBe('我不觉得我如今的下场有什么好遗憾的')
+    expect(parseWork({ aweme_id: '123', desc: [{ text: '第一段' }, { text: '第二段' }] }).title).toBe(
+      '第一段第二段'
+    )
+    expect(parseWork({ aweme_id: '124', share_info: { share_title: '分享标题' } }).title).toBe('分享标题')
+    expect(
+      parseMedia({
+        aweme_detail: {
+          aweme_id: '7702225379020499323',
+          article_info: JSON.stringify({
+            article_title: '标题',
+            article_content: JSON.stringify({ markdown: '第一段\n\n第二段' })
+          })
+        }
+      }).caption
+    ).toBe('第一段\n\n第二段')
   })
   it('rejects a success-looking HTTP response with an API error or missing paging evidence', () => {
     expect(() => parseResponse('{"status_code":8}', 200)).toThrow()

@@ -132,6 +132,37 @@ export function SeekBar({
   )
 }
 
+export function GalleryProgress({
+  count,
+  active,
+  progress,
+  select
+}: {
+  count: number
+  active: number
+  progress: number
+  select: (index: number) => void
+}) {
+  return (
+    <div className="gallery-progress" role="tablist" aria-label="图集进度">
+      {Array.from({ length: count }, (_, index) => {
+        const value = index < active ? 100 : index === active ? progress * 100 : 0
+        return (
+          <button
+            key={index}
+            className="gallery-progress-segment"
+            role="tab"
+            aria-label={`第 ${index + 1} 张`}
+            aria-selected={index === active}
+            style={{ '--segment-progress': `${Math.max(0, Math.min(100, value))}%` } as CSSProperties}
+            onClick={() => select(index)}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
 export function MediaCaption({
   author,
   title,

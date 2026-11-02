@@ -8,7 +8,8 @@ import {
   Plus,
   Shuffle,
   CalendarDays,
-  TrendingUp
+  TrendingUp,
+  FileText
 } from 'lucide-react'
 import type { Account, LibraryOverview, Snapshot, Work } from '../../shared/contracts'
 import './dashboard.css'
@@ -211,6 +212,8 @@ export function Dashboard({ account, snapshot, overview, busy, browse, add, play
                 <span className="recent-cover">
                   {work.coverUrl ? (
                     <img src={work.coverUrl} alt="" loading="lazy" />
+                  ) : work.mediaType === 'text' ? (
+                    <FileText size={22} />
                   ) : work.mediaType === 'gallery' ? (
                     <ImageIcon size={22} />
                   ) : (

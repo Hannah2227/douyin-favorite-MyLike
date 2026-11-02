@@ -460,7 +460,14 @@ export class DouyinEngine {
       this.requestGeneration = generation
       this.operation = operation
       timer = setTimeout(() => {
-        this.cancelRequest?.(new AppError('TIMEOUT', '接口响应超时，请检查登录、网络或人工验证。'))
+        this.cancelRequest?.(
+          new AppError(
+            'TIMEOUT',
+            operation === 'self'
+              ? '登录核验超时：抖音身份接口在 12 秒内没有响应，请确认已登录、完成验证并检查网络。'
+              : '接口响应超时，请检查登录、网络或人工验证。'
+          )
+        )
       }, timeoutMs + 1500)
       const reply = await Promise.race([
         this.executeInPage<PageReply>(

@@ -1,5 +1,6 @@
 import { CollectionActions } from './CollectionActions'
 import { useEffect, useState } from 'react'
+import { Sparkles, ScanSearch } from 'lucide-react'
 import type { FavoriteFolder, FavoritesTask, Snapshot } from '../../shared/contracts'
 import type { RecoveryState } from '../../shared/recovery-state'
 import { taskRecovery } from '../../shared/task-recovery'
@@ -62,7 +63,8 @@ export function FavoritesPanel({
   setFolderId,
   error,
   compact = false,
-  snapshot
+  snapshot,
+  notice
 }: {
   snapshot: Snapshot | null
   accountId: string | null
@@ -79,6 +81,7 @@ export function FavoritesPanel({
   recovery?: readonly RecoveryState[]
   login?: () => void
   accessChecks?: readonly { accountId: string; operation: string; at: number }[]
+  notice?: (message: string) => void
 }) {
   const latest = snapshot?.favoritesUpdate
   const progress =
@@ -125,6 +128,41 @@ export function FavoritesPanel({
           busy={busy}
           perform={perform}
         />
+        <button
+          disabled={!accountId || busy}
+          onClick={() =>
+            void perform('AI 自动整理收藏', async () => {
+              const result = await call(window.mylike.invoke('aiClassifyFavorites', { accountId: accountId! }))
+              notice?.(
+                [
+                  `AI 分类完成：成功 ${result.classified} 条，失败 ${result.failed} 条，创建 ${result.foldersCreated} 个收藏夹，使用 ${result.foldersUsed} 个收藏夹。`,
+                  ...result.failedItems.map(
+                    (item) => `失败作品 ${item.workId}（${item.category}）：${item.reason}`
+                  )
+                ].join('\n')
+              )
+            })
+          }
+          title="使用语音转文字和 DeepSeek 自动分类默认收藏"
+        >
+          <Sparkles size={14} />
+          AI 自动分类
+        </button>
+        <button
+          disabled={!accountId || busy}
+          onClick={() =>
+            void perform('扫描文字作品', async () => {
+              const result = await call(
+                window.mylike.invoke('scanTextWorks', { accountId: accountId!, source: 'favorites' })
+              )
+              notice?.(`扫描完成：检查 ${result.scanned} 条，识别文字 ${result.text} 条，失败 ${result.failed} 条。`)
+            })
+          }
+          title="批量读取作品详情，识别文字作品"
+        >
+          <ScanSearch size={14} />
+          扫描文字作品
+        </button>
       </div>
       {error && (
         <p role="alert" className="task-error">

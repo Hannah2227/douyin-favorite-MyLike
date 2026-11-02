@@ -62,8 +62,34 @@ function pageCursor(value: unknown, hasMore: boolean, collection = false): strin
 function object(value: unknown): Obj {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : {}
 }
+function jsonObject(value: unknown): Obj {
+  if (typeof value !== 'string') return object(value)
+  try {
+    return object(JSONbig.parse(value))
+  } catch {
+    return {}
+  }
+}
 function text(value: unknown): string {
-  return typeof value === 'string' ? value : ''
+  if (typeof value === 'string') return value
+  if (Array.isArray(value))
+    return value
+      .map((item) => text(item))
+      .filter(Boolean)
+      .join('')
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entry = value as Obj
+    return text(entry.text ?? entry.content ?? entry.title ?? entry.desc)
+  }
+  return ''
+}
+function articleCaption(value: unknown): string {
+  const article = jsonObject(object(value).article_info ?? object(value).articleInfo),
+    content = jsonObject(article.article_content)
+  return text(content.markdown ?? content.content ?? content.text)
+    .replace(/\r\n/g, '\n')
+    .trim()
+    .slice(0, 20_000)
 }
 export function numericId(value: unknown): string {
   const id =
@@ -137,7 +163,14 @@ export function parseUnlikeResult(data: Obj): void {
   parseWriteResult(data)
 }
 export function parseWriteResult(data: Obj): void {
-  if (String(data.status_code) !== '0') throw new AppError('WRITE_UNCONFIRMED', '平台未返回明确的成功确认。')
+  if (String(data.status_code) !== '0') {
+    const reason = text(data.status_msg ?? data.message ?? data.msg ?? data.error)
+    const code = data.status_code == null ? '' : `（状态码 ${String(data.status_code)}）`
+    throw new AppError(
+      'WRITE_UNCONFIRMED',
+      reason ? `平台拒绝了请求${code}：${reason}` : `平台未返回明确的成功确认${code}。`
+    )
+  }
 }
 export function parseFavoriteState(
   data: Obj,
@@ -170,16 +203,30 @@ export function parseFavoriteFolder(value: unknown): Omit<FavoriteFolder, 'local
 export function parseWork(value: unknown): Work {
   const data = object(value),
     video = object(data.video),
-    author = object(data.author)
+    author = object(data.author),
+    article = jsonObject(data.article_info ?? data.articleInfo),
+    articleContent = jsonObject(article.article_content),
+    share = jsonObject(data.share_info ?? data.shareInfo),
+    title =
+      text(data.desc) ||
+      text(data.title) ||
+      text(data.article_title) ||
+      text(article.title) ||
+      text(article.article_title) ||
+      text(article.desc) ||
+      text(articleContent.title) ||
+      text(articleContent.markdown) ||
+      text(share.share_title)
   const images = Array.isArray(data.images) ? data.images : []
+  const isText = Object.keys(article).length > 0 && Object.keys(articleContent).length > 0
   return {
     id: numericId(data.aweme_id),
-    title: text(data.desc).slice(0, 20_000),
+    title: title.slice(0, 20_000),
     author: text(author.nickname).slice(0, 500),
     publishedAt: Number.isSafeInteger(data.create_time) ? data.create_time : 0,
     coverUrl:
       first(video.cover?.url_list) ?? first(video.origin_cover?.url_list) ?? first(images[0]?.url_list),
-    mediaType: images.length ? 'gallery' : 'video',
+    mediaType: isText ? 'text' : images.length ? 'gallery' : 'video',
     isLive: images.some((image: unknown) => !!(object(image).video || object(image).live_image))
   }
 }
@@ -313,6 +360,7 @@ export function parseMedia(data: Obj): Media {
   })
   return {
     work: parseWork(value),
+    ...(articleCaption(value) ? { caption: articleCaption(value) } : {}),
     videos,
     images,
     music:

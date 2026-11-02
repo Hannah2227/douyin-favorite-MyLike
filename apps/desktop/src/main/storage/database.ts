@@ -375,6 +375,21 @@ export class Store {
         return this.favorites.rememberFolder(input.accountId, input.remoteId, input.folder)
       case 'favoriteConfirm':
         return this.favorites.confirm(input)
+      case 'updateWork':
+        this.db
+          .prepare(
+            `UPDATE works SET title=?,author=?,publishedAt=?,coverUrl=?,mediaType=?,isLive=? WHERE id=?`
+          )
+          .run(
+            input.work.title,
+            input.work.author,
+            input.work.publishedAt,
+            input.work.coverUrl,
+            input.work.mediaType,
+            +input.work.isLive,
+            input.work.id
+          )
+        return null
       case 'favoritesStart':
         this.account(input.accountId)
         return this.favorites.start(input.accountId, input.id, input.mode)
@@ -724,8 +739,10 @@ export class Store {
     const clauses = ['a.accountId=?'],
       params: (string | number)[] = [query.accountId]
     if (query.search) {
-      clauses.push('(instr(lower(w.title),lower(?))>0 OR instr(lower(w.author),lower(?))>0)')
-      params.push(query.search, query.search)
+      clauses.push(
+        '(instr(lower(w.id),lower(?))>0 OR instr(lower(w.title),lower(?))>0 OR instr(lower(w.author),lower(?))>0)'
+      )
+      params.push(query.search, query.search, query.search)
     }
     if (query.mediaType !== 'all') {
       clauses.push('w.mediaType=?')

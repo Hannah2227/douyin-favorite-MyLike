@@ -27,6 +27,7 @@ export function App() {
   const [folderId, setFolderId] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const [operation, setOperation] = useState('')
+  const [textScanStatus, setTextScanStatus] = useState<'running' | 'completed' | undefined>()
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
@@ -82,6 +83,17 @@ export function App() {
     void perform('向下采集', () =>
       call(window.mylike.invoke('collectionAction', { accountId, source: 'favorites', action: 'down' }))
     )
+  const scanTextWorks = (source: 'likes' | 'favorites') => {
+    if (!accountId) return
+    setTextScanStatus('running')
+    void perform('扫描文字作品', async () => {
+      const result = await call(window.mylike.invoke('scanTextWorks', { accountId, source }))
+      setNotice(`扫描完成：检查 ${result.scanned} 条，识别文字 ${result.text} 条，失败 ${result.failed} 条。`)
+    }).then((success) => {
+      if (success) setTextScanStatus('completed')
+      else setTextScanStatus(undefined)
+    })
+  }
   const collecting =
     snapshot?.collection?.status === 'running' ||
     !!snapshot?.collectionActivity ||
@@ -143,9 +155,11 @@ export function App() {
     try {
       await fn()
       await refresh()
+      return true
     } catch (e) {
       const message = e instanceof Error ? e.message : '操作未完成'
       setError(message)
+      return false
     } finally {
       setOperation('')
     }
@@ -305,6 +319,7 @@ export function App() {
             error={favoriteFolders.error}
             folderId={folderId}
             setFolderId={setFolderId}
+            notice={setNotice}
           />
         )}
         {(tab === 'library' || tab === 'favorites') && (
@@ -323,6 +338,7 @@ export function App() {
                   : snapshot?.collection?.status === 'running' || !!snapshot?.collectionActivity,
               busy: busy || !!snapshot?.authentication
             }}
+            scanTextWorks={tab === 'library' ? () => scanTextWorks('likes') : undefined}
             play={(work) => startQueue('sequence', work)}
             playRange={startQueue}
             resume={snapshot?.playback && !snapshot.playback.completed ? snapshot.playback : null}
@@ -342,6 +358,11 @@ export function App() {
             login={login}
             setAdding={setAdding}
             selectAll={() => void perform('选择筛选结果', library.selection.all)}
+            copyAuthor={(author) => {
+              void call(window.mylike.invoke('copyText', { text: author }))
+                .then(() => setNotice(`作者“${author}”已复制。`))
+                .catch((e) => setError(`复制作者失败：${e instanceof Error ? e.message : String(e)}`))
+            }}
             unlike={() => {
               setError('')
               if (accountId)
@@ -366,6 +387,8 @@ export function App() {
             busy={busy}
             login={login}
             probe={probe}
+            scanTextWorks={scanTextWorks}
+            textScanStatus={textScanStatus}
             perform={perform}
           />
         )}
@@ -407,13 +430,13 @@ export function App() {
             login={login}
             unlikeBusy={!!operation || unliking}
             libraryRevision={snapshot?.libraryRevision ?? 0}
-            unlike={() => {
+            unlike={(source) => {
               setError('')
               if (playback.view)
                 setUnlikeTarget({
                   accountId: playback.view.queue.accountId,
                   ids: [playback.view.queue.work.id],
-                  source: playback.view.queue.source === 'favorites' ? 'favorites' : 'likes',
+                  source: source ?? (playback.view.queue.source === 'favorites' ? 'favorites' : 'likes'),
                   mode: 'single'
                 })
             }}

@@ -1,3 +1,4 @@
+import { ScanSearch } from 'lucide-react'
 import './tasks.css'
 import type { Snapshot } from '../../shared/contracts'
 import { CollectionActions } from './CollectionActions'
@@ -13,6 +14,8 @@ export function ConnectionPanel({
   operationBusy,
   login,
   probe,
+  scanTextWorks,
+  textScanStatus,
   perform
 }: {
   snapshot: Snapshot | null
@@ -21,6 +24,8 @@ export function ConnectionPanel({
   operationBusy: boolean
   login: () => void
   probe: () => void
+  scanTextWorks: (source: 'likes' | 'favorites') => void
+  textScanStatus?: 'running' | 'completed'
   perform: Perform
 }) {
   return (
@@ -75,6 +80,35 @@ export function ConnectionPanel({
               </section>
             )
           })}
+          <section className="simple-task" aria-label="扫描文字作品">
+            <div className="simple-task-heading">
+              <h2>扫描文字作品</h2>
+              <span className="task-badge">
+                {textScanStatus === 'running' ? '进行中' : textScanStatus === 'completed' ? '已完成' : '未开始'}
+              </span>
+            </div>
+            <div className="simple-task-body">
+              <div className="simple-task-copy">
+                <p>批量读取已保存作品详情，识别并标记文字作品</p>
+                {textScanStatus === 'running' && (
+                  <span className="task-activity">正在读取作品详情并识别文字内容</span>
+                )}
+              </div>
+              <div className="simple-task-actions">
+                <button disabled={!accountId || busy} onClick={() => scanTextWorks('likes')}>
+                  <ScanSearch size={15} />
+                  扫描喜欢
+                </button>
+                <button disabled={!accountId || busy} onClick={() => scanTextWorks('favorites')}>
+                  <ScanSearch size={15} />
+                  扫描收藏
+                </button>
+              </div>
+            </div>
+            {textScanStatus === 'running' && (
+              <div className="task-working" role="progressbar" aria-label="扫描文字作品进度" />
+            )}
+          </section>
         </div>
         <UnlikePanel
           key={accountId ?? 'no-account'}

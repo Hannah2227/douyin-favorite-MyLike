@@ -19,3 +19,6 @@ docs/
 !/README.md
 NVIDIA Corporation/
 
+
+.pnpm-store/
+.vscode/

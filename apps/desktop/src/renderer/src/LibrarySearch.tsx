@@ -8,7 +8,7 @@ export function LibrarySearch({ value, change }: { value: string; change: (value
         aria-label="搜索内容"
         type="search"
         value={value}
-        placeholder="搜索标题或作者"
+        placeholder="搜索标题、作者名字或作品 ID"
         onChange={(event) => change(event.target.value)}
       />
       {value && (

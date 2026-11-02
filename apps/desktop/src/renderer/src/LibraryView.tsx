@@ -11,7 +11,8 @@ import {
   X,
   CheckSquare,
   Trash2,
-  Shuffle
+  Shuffle,
+  FileText
 } from 'lucide-react'
 import { MAX_BATCH_SIZE, type Account, type Work, type QueueState } from '../../shared/contracts'
 import type { Library } from './useLibrary'
@@ -24,12 +25,14 @@ type Props = {
   busy: boolean
   mutationBusy: boolean
   collection: { start: () => void; running: boolean; busy: boolean }
+  scanTextWorks: (() => void) | undefined
   play: (work: Work) => void
   login: () => void
   setAdding: Dispatch<SetStateAction<boolean>>
   selectAll: () => void
   remove: () => void
   unlike: () => void
+  copyAuthor: (author: string) => void
   playRange: (mode: 'sequence' | 'shuffle') => void
   resume: QueueState | null
   continuePlayback: () => void
@@ -42,12 +45,14 @@ export function LibraryView({
   busy,
   mutationBusy,
   collection,
+  scanTextWorks,
   play,
   login,
   setAdding,
   selectAll,
   remove,
   unlike,
+  copyAuthor,
   playRange,
   resume,
   continuePlayback,
@@ -92,18 +97,23 @@ export function LibraryView({
       )}
       <div className="filter-bar">
         <div className="segmented">
-          {(['all', 'video', 'gallery'] as const).map((value, i) => (
+          {(['all', 'video', 'gallery', 'text'] as const).map((value, i) => (
             <button
               key={value}
               aria-pressed={type === value}
               className={type === value ? 'selected' : ''}
               onClick={() => setType(value)}
             >
-              {['全部内容', '视频', '图集'][i]}
+              {['全部内容', '视频', '图集', '文字'][i]}
             </button>
           ))}
         </div>
         <div className="range-play-actions">
+          {!readOnly && scanTextWorks && (
+            <button disabled={busy || !account} onClick={scanTextWorks} title="批量扫描喜欢内容中的文字作品">
+              扫描文字作品
+            </button>
+          )}
           <button disabled={!page.total || querying || busy} onClick={() => playRange('sequence')}>
             <Play size={14} />
             {selection.ids.size ? '播放所选' : '顺序播放'}
@@ -297,12 +307,20 @@ export function LibraryView({
                             <Heart size={36} />
                           )}
                           <span className="type-badge">
-                            {work.mediaType === 'gallery' ? (
+                            {work.mediaType === 'text' ? (
+                              <FileText size={12} />
+                            ) : work.mediaType === 'gallery' ? (
                               <ImageIcon size={12} />
                             ) : (
                               <Play size={11} fill="currentColor" />
                             )}
-                            {work.isLive ? '实况' : work.mediaType === 'gallery' ? '图集' : '视频'}
+                            {work.isLive
+                              ? '实况'
+                              : work.mediaType === 'text'
+                                ? '文字'
+                                : work.mediaType === 'gallery'
+                                  ? '图集'
+                                  : '视频'}
                           </span>
                           <span className="play-hover">
                             <Play size={24} fill="currentColor" />
@@ -310,7 +328,33 @@ export function LibraryView({
                         </div>
                         <h3>{work.title || '未命名作品'}</h3>
                         <p>
-                          <span>@{work.author || '未知作者'}</span>
+                          <span
+                            className={work.author ? 'copyable-author' : undefined}
+                            role={work.author ? 'button' : undefined}
+                            tabIndex={work.author ? 0 : undefined}
+                            aria-label={work.author ? `复制作者 ${work.author}` : undefined}
+                            onClick={
+                              work.author
+                                ? (event) => {
+                                    event.stopPropagation()
+                                    copyAuthor(work.author)
+                                  }
+                                : undefined
+                            }
+                            onKeyDown={
+                              work.author
+                                ? (event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      copyAuthor(work.author)
+                                    }
+                                  }
+                                : undefined
+                            }
+                          >
+                            @{work.author || '未知作者'}
+                          </span>
                           <time>
                             {work.publishedAt
                               ? new Date(work.publishedAt * 1000).toLocaleDateString('zh-CN')

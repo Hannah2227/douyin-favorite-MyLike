@@ -215,6 +215,7 @@ it('keeps update as the primary action while allowing an explicit retry of unfin
     retry,
     perform: async (_label, action) => {
       await action()
+      return true
     }
   })
   expect(buttons.map((button) => button.props.children)).toEqual(['查看更新', '重试'])
@@ -233,13 +234,13 @@ it('offers only the read-only check as the update fallback for an unknown write 
       resultCheckError: { code: 'UPSTREAM_CHANGED', at: now }
     }
   )
-  const buttons = recoveryButtons({ view, retry, checkResults, perform: async () => {} })
+  const buttons = recoveryButtons({ view, retry, checkResults, perform: async () => true })
   expect(buttons.map((button) => button.props.children)).toEqual(['查看更新', '检查结果'])
   buttons[1]!.props.onClick()
   expect(checkResults).toHaveBeenCalledOnce()
   expect(retry).not.toHaveBeenCalled()
   expect(
-    recoveryButtons({ view, retry, checkResults, busy: true, perform: async () => {} }).every(
+    recoveryButtons({ view, retry, checkResults, busy: true, perform: async () => true }).every(
       (button) => button.props.disabled
     )
   ).toBe(true)

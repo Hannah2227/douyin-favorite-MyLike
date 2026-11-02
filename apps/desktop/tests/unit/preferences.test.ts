@@ -70,7 +70,7 @@ it('adds clean screen to the focused shortcuts, upgrades defaults and preserves 
       sidebar: 'KeyB'
     }
   })
-  expect(Object.keys(value.shortcuts)).toHaveLength(14)
+  expect(Object.keys(value.shortcuts)).toHaveLength(15)
   expect(value.shortcuts).toMatchObject({
     previous: 'ArrowUp',
     next: 'ArrowDown',
@@ -125,7 +125,11 @@ it('persists application and playback preferences across restart without changin
     startupPage: 'dashboard',
     zoom: 1.1,
     motion: 'reduce',
-    rememberWindow: false
+    rememberWindow: false,
+    deepseekApiKey: '',
+    siliconFlowApiKey: '',
+    favoriteCategoryHints: '',
+    allowFavoriteFolderCreation: true
   })
   expect(next.call('playbackPreferences', {})).toMatchObject({
     autoplay: false,

@@ -27,6 +27,7 @@ export const shortcutActions = {
   continuous: { label: '切换连播', key: 'KeyA', group: '播放' },
   unlike: { label: '取消当前条目点赞', key: 'KeyZ', group: '作品' },
   favorite: { label: '收藏 / 取消收藏（当前作品）', key: 'KeyS', group: '作品' },
+  favoriteFolders: { label: '选择收藏夹（当前作品）', key: 'KeyD', group: '作品' },
   rateCycle: { label: '倍速循环（0.75x–2x）', key: 'None', group: '声音与倍速' },
   original: { label: '打开原页看评论', key: 'None', group: '作品' },
   queue: { label: '播放列表', key: 'KeyQ', group: '界面' },
@@ -103,14 +104,22 @@ export const appPreferencesSchema = z.object({
   startupPage: z.enum(['library', 'dashboard', 'favorites', 'tasks']).default('library'),
   zoom: z.union([z.literal(0.9), z.literal(1), z.literal(1.1), z.literal(1.25), z.literal(1.5)]).default(1),
   rememberWindow: z.boolean().default(true),
-  motion: z.enum(['system', 'reduce']).default('system')
+  motion: z.enum(['system', 'reduce']).default('system'),
+  deepseekApiKey: z.string().max(300).default(''),
+  siliconFlowApiKey: z.string().max(300).default(''),
+  favoriteCategoryHints: z.string().max(2000).default(''),
+  allowFavoriteFolderCreation: z.boolean().default(true)
 })
 export type AppPreferences = z.infer<typeof appPreferencesSchema>
 export const appPreferencesPatchSchema = z.object({
   startupPage: appPreferencesSchema.shape.startupPage.removeDefault().optional(),
   zoom: appPreferencesSchema.shape.zoom.removeDefault().optional(),
   rememberWindow: appPreferencesSchema.shape.rememberWindow.removeDefault().optional(),
-  motion: appPreferencesSchema.shape.motion.removeDefault().optional()
+  motion: appPreferencesSchema.shape.motion.removeDefault().optional(),
+  deepseekApiKey: appPreferencesSchema.shape.deepseekApiKey.removeDefault().optional(),
+  siliconFlowApiKey: appPreferencesSchema.shape.siliconFlowApiKey.removeDefault().optional(),
+  favoriteCategoryHints: appPreferencesSchema.shape.favoriteCategoryHints.removeDefault().optional(),
+  allowFavoriteFolderCreation: appPreferencesSchema.shape.allowFavoriteFolderCreation.removeDefault().optional()
 })
 export interface WindowState {
   x: number

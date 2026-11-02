@@ -52,6 +52,7 @@ export interface Inputs {
   favoriteWriteGuard: { accountId: string; workId: string }
   favoriteRememberFolder: { accountId: string; remoteId: string; folder: FavoriteFolder }
   favoriteConfirm: { accountId: string; remoteId: string; work: Work; folder?: FavoriteFolder }
+  updateWork: { work: Work }
   accounts: undefined
   createAccount: { id: string; name: string }
   bindAccount: { accountId: string; remoteId: string; nickname: string; avatarUrl: string | null }
@@ -152,6 +153,7 @@ export interface Replies {
   favoriteWriteGuard: null
   favoriteRememberFolder: FavoriteFolder
   favoriteConfirm: null
+  updateWork: null
   accounts: Account[]
   createAccount: Account
   bindAccount: Account

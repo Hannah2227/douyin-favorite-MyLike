@@ -334,6 +334,32 @@ describe('SQLite transactions and account ownership', () => {
       })
     )
   }, 20000)
+  it('finds a work by its platform ID', () => {
+    const { store } = setup()
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      items: [item('7672255161846976246')],
+      cursor: '0',
+      hasMore: false
+    })
+    expect(store.call('query', { ...query, search: '7672255161846976246' }).items.map((work) => work.id)).toEqual([
+      '7672255161846976246'
+    ])
+  })
+  it('finds a work by its author name', () => {
+    const { store } = setup()
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      items: [item('7672255161846976246')],
+      cursor: '0',
+      hasMore: false
+    })
+    expect(store.call('query', { ...query, search: '作者' }).items.map((work) => work.id)).toEqual([
+      '7672255161846976246'
+    ])
+  })
 })
 
 it('preserves an interrupted head and deep cursor when switching to downward collection without a schema upgrade', () => {

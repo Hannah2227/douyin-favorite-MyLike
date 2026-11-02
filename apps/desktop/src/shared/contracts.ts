@@ -11,7 +11,7 @@ export const workIdSchema = z.string().regex(/^\d{1,30}$/)
 export const filterSchema = z.object({
   accountId: idSchema,
   search: z.string().max(200).default(''),
-  mediaType: z.enum(['all', 'video', 'gallery']).default('all'),
+  mediaType: z.enum(['all', 'video', 'gallery', 'text']).default('all'),
   year: z.number().int().min(2000).max(2200).nullable().default(null),
   month: z.number().int().min(1).max(12).nullable().default(null),
   sort: z.enum(['published', 'collected']).default('published'),
@@ -86,6 +86,9 @@ export const commands = {
     name: z.string().trim().min(1).max(30),
     private: z.boolean()
   }),
+  aiClassifyFavorites: z.object({ accountId: idSchema }),
+  scanTextWorks: z.object({ accountId: idSchema, source: z.enum(['likes', 'favorites']) }),
+  aiTestConnection: z.object({ provider: z.enum(['deepseek', 'siliconflow']) }),
   collectionControl: z.object({
     accountId: idSchema,
     taskId: idSchema,
@@ -141,6 +144,7 @@ export const commands = {
   playbackPreferences: z.object({ preferences: playbackPreferencesSchema }),
   appPreferences: z.object({ preferences: appPreferencesPatchSchema }),
   checkDatabase: z.object({}),
+  copyText: z.object({ text: z.string().max(1024) }),
   copyDiagnostics: z.object({}),
   openReleases: z.object({}),
   backup: z.object({}),
@@ -194,11 +198,12 @@ export interface Work {
   author: string
   publishedAt: number
   coverUrl: string | null
-  mediaType: 'video' | 'gallery'
+  mediaType: 'video' | 'gallery' | 'text'
   isLive: boolean
 }
 export interface Media {
   work: Work
+  caption?: string
   videos: string[]
   images: { url: string; liveUrl: string | null }[]
   music: string | null
@@ -354,6 +359,7 @@ export interface FavoritesTask {
 export interface Outputs {
   appPreferences: AppPreferences
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }
+  copyText: null
   copyDiagnostics: null
   openReleases: null
   favoritesStart: FavoritesTask
@@ -366,6 +372,15 @@ export interface Outputs {
   favoriteCreateFolder: FavoriteFolder
   checkHealth: HealthSnapshot
   collectionAction: null
+  aiClassifyFavorites: {
+    classified: number
+    failed: number
+    failedItems: { workId: string; category: string; reason: string }[]
+    foldersCreated: number
+    foldersUsed: number
+  }
+  scanTextWorks: { scanned: number; text: number; failed: number }
+  aiTestConnection: null
   snapshot: Snapshot
   createAccount: Account
   switchAccount: null

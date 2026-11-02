@@ -26,6 +26,7 @@ import { DataMaintenance } from './data-maintenance'
 import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
 import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
+import { AiClassifier } from './ai-classifier'
 
 export class Application {
   private readonly health = new HealthMonitor()
@@ -50,6 +51,7 @@ export class Application {
   private readonly lane = new RequestLane()
   private readonly favorites: FavoritesService
   private readonly favoriteActions: FavoriteActions
+  private readonly aiClassifier: AiClassifier
   private readonly collection: CollectionService
   private readonly unlike: UnlikeService
   private readonly authentication: Authentication
@@ -123,6 +125,16 @@ export class Application {
         changed()
       }
     )
+    this.aiClassifier = new AiClassifier(
+      database,
+      engine,
+      this.run.bind(this),
+      this.identity.bind(this),
+      () => {
+        this.libraryRevision++
+        changed()
+      }
+    )
     this.accounts = new AccountService(
       database,
       engine,
@@ -139,7 +151,7 @@ export class Application {
         this.health.observe(accountId, event.operation, event.code, undefined, false, event.rule)
       this.changed()
     }
-    if (this.closing || !runtimeEventCategory(event)) return
+    if (this.closing || (!runtimeEventCategory(event) && event.operation !== 'textScan')) return
     void this.database
       .call('appendRuntimeEvent', { accountId, event })
       .then(() => this.changed())
@@ -592,7 +604,8 @@ export class Application {
         'collectPage',
         'favoriteEditor',
         'favoriteSave',
-        'favoriteCreateFolder'
+        'favoriteCreateFolder',
+        'aiClassifyFavorites'
       ].includes(command) ||
       (['collectionControl', 'favoritesControl', 'unlikeControl'].includes(command) &&
         input.action === 'resume')
@@ -628,6 +641,7 @@ export class Application {
         'favoriteEditor',
         'favoriteSave',
         'favoriteCreateFolder',
+        'aiClassifyFavorites',
         'unlikeVerify'
       ].includes(command)
     )
@@ -641,6 +655,9 @@ export class Application {
       }
       case 'checkDatabase':
         return this.database.call('checkDatabase', {})
+      case 'copyText':
+        clipboard.writeText(input.text)
+        return null
       case 'copyDiagnostics': {
         const diagnostic = await this.execute('diagnostics', {})
         await clipboard.writeText(
@@ -852,6 +869,101 @@ export class Application {
         this.assertAvailable(input.accountId, ['favoriteFolderCreate'])
         await this.favorites.pause()
         return this.favoriteActions.createFolder(input.accountId, input.token, input.name, input.private)
+      case 'aiClassifyFavorites':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.aiClassifier.runClassification(input.accountId)
+      case 'scanTextWorks':
+        return this.run(input.accountId, async (check) => {
+          await this.favorites.pause()
+          await this.collection.pause()
+          await this.identity(input.accountId, check)
+          this.record(input.accountId, {
+            kind: 'task',
+            operation: 'textScan',
+            message: `开始扫描${input.source === 'likes' ? '喜欢' : '收藏'}内容中的文字作品。`
+          })
+          const works: import('../shared/contracts').Work[] = []
+          const seen = new Set<string>()
+          for (let offset = 0; ; offset += 120) {
+            check()
+            const page = await this.database.call('query', {
+              accountId: input.accountId,
+              source: input.source,
+              folderId: null,
+              search: '',
+              mediaType: 'all',
+              year: null,
+              month: null,
+              sort: 'collected',
+              offset,
+              limit: 120
+            })
+            for (const work of page.items) {
+              if (!seen.has(work.id)) {
+                seen.add(work.id)
+                works.push(work)
+              }
+            }
+            if (!page.items.length || works.length >= page.total) break
+          }
+          let text = 0
+          let failed = 0
+          for (const [index, work] of works.entries()) {
+            try {
+              check()
+              const media = parseMedia(
+                await this.engine.request(input.accountId, 'detail', {
+                  aweme_id: work.id,
+                  publish_video_strategy_type: '2',
+                  pc_client_type: '1'
+                })
+              )
+              check()
+              if (media.work.id !== work.id) throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
+              await this.database.call('updateWork', { work: media.work })
+              if (media.work.mediaType === 'text') text++
+              if ((index + 1) % 10 === 0 || index + 1 === works.length)
+                this.record(input.accountId, {
+                  kind: 'task',
+                  operation: 'textScan',
+                  message: `扫描进度：${index + 1}/${works.length}，已识别文字 ${text} 条。`,
+                  count: text
+                })
+            } catch (error) {
+              if (error instanceof AppError && error.code === 'CANCELLED') throw error
+              failed++
+              if (error instanceof AppError && error.code === 'EMPTY_RESPONSE') {
+                this.record(input.accountId, {
+                  kind: 'task',
+                  operation: 'textScan',
+                  message: `作品 ${work.id} 返回空响应，已跳过，不会重试。`,
+                  code: error.code
+                })
+                continue
+              }
+              console.error(`[MyLike] 文字扫描失败：${work.id}`, error)
+              this.record(input.accountId, {
+                kind: 'task',
+                operation: 'textScan',
+                message: `作品 ${work.id} 扫描失败：${error instanceof Error ? error.message : String(error)}`,
+                code: 'TEXT_SCAN_FAILED'
+              })
+            }
+          }
+          this.record(input.accountId, {
+            kind: 'task',
+            operation: 'textScan',
+            message: `扫描完成：检查 ${works.length} 条，识别文字 ${text} 条，失败 ${failed} 条。`,
+            code: 'END_CONFIRMED',
+            count: text
+          })
+          this.libraryRevision++
+          this.changed()
+          return { scanned: works.length, text, failed }
+        })
+      case 'aiTestConnection':
+        return this.aiClassifier.testConnection(input.provider)
       case 'favoritesStart':
         return this.exclusive(async () => {
           await this.active(input.accountId)
@@ -1095,6 +1207,9 @@ export class Application {
             guard()
             if (media.work.id !== input.workId)
               throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
+            await this.database.call('updateWork', { work: media.work })
+            this.libraryRevision++
+            this.changed()
             await validateQueue()
             guard()
             return media

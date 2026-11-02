@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { QueueState, Work } from '../../shared/contracts'
 import { call } from './api'
-import { Film, ImageIcon, ListVideo, Play, X } from 'lucide-react'
+import { Film, FileText, ImageIcon, ListVideo, Play, X } from 'lucide-react'
 
 export function QueuePanel({
   queue,
@@ -112,6 +112,8 @@ export function QueuePanel({
                 <span className="queue-thumb">
                   {work?.coverUrl ? (
                     <img src={work.coverUrl} alt="" loading="lazy" />
+                  ) : work?.mediaType === 'text' ? (
+                    <FileText size={17} />
                   ) : work?.mediaType === 'gallery' ? (
                     <ImageIcon size={17} />
                   ) : (
@@ -125,7 +127,13 @@ export function QueuePanel({
                     {work && (
                       <span>
                         {' '}
-                        · {work.mediaType === 'gallery' ? (work.isLive ? '实况' : '图集') : '视频'}
+                        · {work.mediaType === 'text'
+                          ? '文字'
+                          : work.mediaType === 'gallery'
+                            ? work.isLive
+                              ? '实况'
+                              : '图集'
+                            : '视频'}
                       </span>
                     )}
                   </small>

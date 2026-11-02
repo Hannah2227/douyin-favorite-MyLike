@@ -2,7 +2,7 @@ import type { EngineStatus } from '../../shared/contracts'
 import { taskRecovery } from '../../shared/task-recovery'
 
 export type Tab = 'dashboard' | 'library' | 'favorites' | 'tasks' | 'settings' | 'faq' | 'guide'
-export type Perform = (label: string, action: () => Promise<unknown>) => Promise<void>
+export type Perform = (label: string, action: () => Promise<unknown>) => Promise<boolean>
 export const statusLabels: Record<EngineStatus, string> = {
   stopped: '需要时会自动连接',
   starting: '正在连接抖音',

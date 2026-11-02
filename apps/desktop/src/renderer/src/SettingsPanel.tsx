@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction, type ReactNode } from 'react'
+import { useEffect, useState, type Dispatch, type SetStateAction, type ReactNode } from 'react'
 import {
   Settings2,
   Play,
@@ -53,7 +53,7 @@ const groups = [
     id: 'general',
     title: '通用',
     icon: Settings2,
-    keywords: '通用 外观 主题 白天 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画'
+    keywords: '通用 外观 主题 白天 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画 AI DeepSeek SiliconFlow 收藏夹 分类'
   },
   {
     id: 'playback',
@@ -132,6 +132,18 @@ export function SettingsPanel({
     [active, setActive] = useState('general'),
     [reset, setReset] = useState<'general' | 'playback' | 'shortcuts' | null>(null)
   const application = snapshot?.appPreferences ?? appPreferencesSchema.parse({})
+  const [deepseekApiKey, setDeepseekApiKey] = useState('')
+  const [siliconFlowApiKey, setSiliconFlowApiKey] = useState('')
+  const [favoriteCategoryHints, setFavoriteCategoryHints] = useState('')
+  useEffect(() => {
+    setDeepseekApiKey(application.deepseekApiKey)
+    setSiliconFlowApiKey(application.siliconFlowApiKey)
+    setFavoriteCategoryHints(application.favoriteCategoryHints)
+  }, [
+    application.deepseekApiKey,
+    application.siliconFlowApiKey,
+    application.favoriteCategoryHints
+  ])
   const updateApplication = (patch: Partial<AppPreferences>) =>
     void perform('保存通用设置', () => call(window.mylike.invoke('appPreferences', { preferences: patch })))
   const visible = (id: string) =>
@@ -250,6 +262,77 @@ export function SettingsPanel({
                 onChange={(value) => updateApplication({ motion: value as AppPreferences['motion'] })}
               />
             </Row>
+            <Row label="DeepSeek API Key" description="用于自动分析和分类收藏内容，仅保存在本机">
+              <input
+                type="password"
+                aria-label="DeepSeek API Key"
+                value={deepseekApiKey}
+                placeholder="sk-..."
+                onChange={(event) => setDeepseekApiKey(event.target.value)}
+              />
+            </Row>
+            <Row label="SiliconFlow API Key" description="用于视频语音转文字，仅保存在本机">
+              <input
+                type="password"
+                aria-label="SiliconFlow API Key"
+                value={siliconFlowApiKey}
+                placeholder="请输入 API Key"
+                onChange={(event) => setSiliconFlowApiKey(event.target.value)}
+              />
+            </Row>
+            <Row
+              label="允许自动新建收藏夹"
+              description="关闭后只会写入已有收藏夹，不会创建新的收藏夹"
+            >
+              <Toggle
+                label="允许自动新建收藏夹"
+                value={application.allowFavoriteFolderCreation}
+                change={(allowFavoriteFolderCreation) => updateApplication({ allowFavoriteFolderCreation })}
+              />
+            </Row>
+            <Row label="优先使用的收藏夹名称" description="每行一个；AI 会优先使用这些名称，AI 新建分类自动加 AI- 前缀">
+              <textarea
+                aria-label="优先使用的收藏夹名称"
+                value={favoriteCategoryHints}
+                placeholder={'旅行\n音乐\n学习'}
+                rows={4}
+                onChange={(event) => setFavoriteCategoryHints(event.target.value)}
+              />
+            </Row>
+            <div className="panel-actions">
+              <button
+                onClick={() => {
+                  updateApplication({
+                    deepseekApiKey,
+                    siliconFlowApiKey,
+                    favoriteCategoryHints
+                  })
+                  notice('API 设置已保存。')
+                }}
+              >
+                保存 API 设置
+              </button>
+              <button
+                onClick={() =>
+                  void perform('测试 DeepSeek 连接', async () => {
+                    await call(window.mylike.invoke('aiTestConnection', { provider: 'deepseek' }))
+                    notice('DeepSeek 连接测试成功。')
+                  })
+                }
+              >
+                测试 DeepSeek
+              </button>
+              <button
+                onClick={() =>
+                  void perform('测试 SiliconFlow 连接', async () => {
+                    await call(window.mylike.invoke('aiTestConnection', { provider: 'siliconflow' }))
+                    notice('SiliconFlow 连接测试成功。')
+                  })
+                }
+              >
+                测试 SiliconFlow
+              </button>
+            </div>
           </section>
           <section id="settings-playback" className="panel settings-section" hidden={!visible('playback')}>
             <div className="settings-section-heading">

@@ -23,7 +23,7 @@ import {
 import type { PlaybackPosition, PlaybackPreferences } from '../../shared/contracts'
 import type { Playback } from './usePlayback'
 import { QueuePanel } from './QueuePanel'
-import { MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
+import { GalleryProgress, MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
 import { PreparedVideo } from './PreparedVideo'
 import './player.css'
 import { usePlayerShortcuts } from './usePlayerShortcuts'
@@ -38,7 +38,7 @@ type Props = {
   operationError: string
   clearError: () => void
   login: () => void
-  unlike: () => void
+  unlike: (source?: 'likes' | 'favorites') => void
   unlikeBusy: boolean
   libraryRevision: number
   queueOpen: boolean
@@ -86,6 +86,7 @@ export function Player({
     [ready, setReady] = useState(false),
     [musicTime, setMusicTime] = useState(0),
     [musicDuration, setMusicDuration] = useState(0),
+    [galleryElapsed, setGalleryElapsed] = useState(queue.position.seconds),
     [videoTime, setVideoTime] = useState(queue.position.seconds),
     [videoDuration, setVideoDuration] = useState(0),
     [musicWarning, setMusicWarning] = useState('')
@@ -117,9 +118,16 @@ export function Player({
   const disposed = useRef(new WeakSet<HTMLMediaElement>())
   playingRef.current = playing
   imageRef.current = image
-  const gallery = (media?.work.mediaType ?? work.mediaType) === 'gallery',
+  const mediaType = media?.work.mediaType ?? work.mediaType,
+    gallery = mediaType === 'gallery' || mediaType === 'text',
+    textual = mediaType === 'text',
     slide = media?.images[image],
-    source = gallery ? slide?.liveUrl : media?.videos[candidate]
+    source = gallery ? slide?.liveUrl : media?.videos[candidate],
+    coverUrl = media?.work.coverUrl || work.coverUrl,
+    textCover = textual && !slide ? coverUrl : null,
+    captionAuthor = media?.work.author || work.author,
+    captionTitle = media?.caption || media?.work.title || work.title,
+    captionPublishedAt = media?.work.publishedAt || work.publishedAt
   const position = (): PlaybackPosition => {
     if (!media) return queue.position
     return {
@@ -168,6 +176,7 @@ export function Player({
     liveHold.current = null
     setLiveStill(false)
     elapsed.current = 0
+    setGalleryElapsed(0)
     resumeVideo.current = 0
     setImage(index)
     imageRef.current = index
@@ -193,6 +202,7 @@ export function Player({
     musicEnded.current = false
     liveHold.current = null
     elapsed.current = queue.position.seconds
+    setGalleryElapsed(queue.position.seconds)
     resumeVideo.current = queue.position.seconds
     if (media) {
       const index = Math.min(queue.position.slide, Math.max(0, media.images.length - 1))
@@ -249,6 +259,7 @@ export function Player({
       const now = performance.now()
       const delta = (now - lastTick.current) / 1000
       if (!slidePinned) elapsed.current += delta
+      setGalleryElapsed(seconds(elapsed.current))
       lastTick.current = now
       playback.report(scope, positionRef.current())
       if (source) {
@@ -314,15 +325,15 @@ export function Player({
   }
   const openFavorite = () => {
     if (unlikeBusy || favoriteOpen) return
-    if (queue.source === 'favorites') {
-      if (collected) {
-        pause()
-        unlike()
-      }
+    if (collected) {
+      unlike('favorites')
       return
     }
     if (queue.source && queue.source !== 'likes') return
-    pause()
+    setFavoriteOpen(true)
+  }
+  const openFavoriteFolders = () => {
+    if (unlikeBusy || favoriteOpen) return
     setFavoriteOpen(true)
   }
   const retryMedia = () => {
@@ -348,6 +359,7 @@ export function Player({
     if (!slidePinned) setSlidePinned(true)
     else {
       elapsed.current = 0
+      setGalleryElapsed(0)
       lastTick.current = performance.now()
       setSlidePinned(false)
       play()
@@ -376,6 +388,7 @@ export function Player({
       mute: toggleMute,
       original: openOriginal,
       favorite: openFavorite,
+      favoriteFolders: openFavoriteFolders,
       unlike: () => {
         if ((!queue.source || queue.source === 'likes') && !unlikeBusy) {
           pause()
@@ -429,7 +442,7 @@ export function Player({
     node?.addEventListener('wheel', wheel, { passive: false })
     return () => node?.removeEventListener('wheel', wheel)
   }, [])
-  const hasContent = !!source || !!slide
+  const hasContent = !!source || !!slide || !!textCover
   return (
     <section
       ref={stage}
@@ -452,6 +465,9 @@ export function Player({
       )}
       <div className="player-body">
         <div className="stage">
+          {coverUrl && textual && (
+            <div className="player-backdrop" style={{ backgroundImage: `url("${coverUrl}")` }} aria-hidden />
+          )}
           {!media && !error && (
             <div className="stage-message">
               <LoaderCircle className="spin" size={30} />
@@ -567,6 +583,20 @@ export function Player({
               }}
             />
           )}
+          {textCover && (
+            <img
+              className="gallery-image text-cover-image"
+              src={textCover}
+              alt="文字作品封面"
+              onClick={() => (playingRef.current ? pause() : play())}
+              onDoubleClick={fullscreen}
+              onLoad={() => setReady(true)}
+              onError={() => {
+                setMediaError('文字作品封面未能加载，请刷新地址重试。')
+                pause()
+              }}
+            />
+          )}
           {!source && slide && (
             <img
               className="gallery-image"
@@ -652,9 +682,9 @@ export function Player({
           )}
           {media && hasContent && !mediaError && (
             <MediaCaption
-              author={work.author}
-              title={work.title}
-              publishedAt={work.publishedAt}
+              author={captionAuthor}
+              title={captionTitle}
+              publishedAt={captionPublishedAt}
               gallery={gallery}
               expanded={captionExpanded}
               toggle={() => setCaptionExpanded(!captionExpanded)}
@@ -677,6 +707,14 @@ export function Player({
         {queueOpen && <QueuePanel queue={queue} jump={move} close={() => setQueueOpen(false)} />}
       </div>
       <footer className="player-footer">
+        {gallery && media && media.images.length > 0 && (
+          <GalleryProgress
+            count={media.images.length}
+            active={image}
+            progress={galleryElapsed / 3}
+            select={(index) => changeSlide(index, true)}
+          />
+        )}
         {!gallery && (
           <SeekBar
             label="视频进度"
@@ -764,20 +802,25 @@ export function Player({
             {(!queue.source || queue.source === 'likes' || queue.source === 'favorites') && (
               <button
                 className={`favorite-control${collected ? ' is-collected' : ''}`}
-                aria-label={queue.source === 'favorites' ? '取消当前收藏' : '收藏当前作品'}
+                aria-label={collected ? '取消当前收藏' : '收藏当前作品'}
                 aria-pressed={collected}
                 title={hint(
                   'favorite',
-                  queue.source === 'favorites'
-                    ? collected
-                      ? '取消当前收藏（需确认）'
-                      : '已取消收藏'
-                    : collected
-                      ? '已收藏，添加至收藏夹'
-                      : '收藏 / 选择收藏夹'
+                  collected ? '左键取消当前收藏，右键选择收藏夹' : '左键收藏，右键选择收藏夹'
                 )}
-                disabled={unlikeBusy || (queue.source === 'favorites' && !collected)}
+                disabled={unlikeBusy || (!!queue.source && queue.source !== 'likes' && !collected)}
                 onClick={openFavorite}
+                onMouseDown={(event) => {
+                  if (event.button !== 2) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openFavoriteFolders()
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openFavoriteFolders()
+                }}
               >
                 <Star size={19} fill="currentColor" />
               </button>

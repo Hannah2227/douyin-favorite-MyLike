@@ -38,8 +38,7 @@ export class FavoriteActions {
       !queue ||
       queue.queueId !== scope.queueId ||
       queue.revision !== scope.revision ||
-      queue.work.id !== scope.workId ||
-      (queue.source && queue.source !== 'likes')
+      queue.work.id !== scope.workId
     )
       throw new AppError('QUEUE_CHANGED', '播放作品已变化，请为当前作品重新打开收藏。')
     await this.db.call('favoriteWriteGuard', { accountId: scope.accountId, workId: scope.workId })
