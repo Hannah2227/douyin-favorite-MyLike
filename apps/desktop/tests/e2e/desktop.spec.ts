@@ -1366,8 +1366,10 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
     .locator('.virtual-grid')
     .evaluate((node) => node.getBoundingClientRect().height)
   await scrollLibraryToEnd()
-  await expect(page.locator('.library-load-status')).toContainText('清空选择后继续加载')
-  await page.waitForTimeout(250)
+  const pager = page.getByRole('form', { name: '内容分页' })
+  await expect(pager).toBeInViewport()
+  await expect(pager.getByRole('spinbutton', { name: '页码' })).toHaveValue('1')
+  await expect(page.getByText('已选 1000 条', { exact: true })).toBeVisible()
   expect(await page.locator('.virtual-grid').evaluate((node) => node.getBoundingClientRect().height)).toBe(
     frozenHeight
   )
@@ -2747,7 +2749,8 @@ test('matches native caption colors to light mode and playback, scopes collectio
   await screenshot(info.outputPath('dashboard-usage-light.png'))
   await theme.click()
   await expect.poll(caption).toMatchObject({ color: '#000000', symbolColor: '#f2f2f2' })
-  await expect(page.locator('.dashboard-chart-card')).toHaveCSS('background-color', 'rgb(22, 22, 22)')
+  for (const name of ['作品年份分布', '作者收录排行'])
+    await expect(page.getByRole('region', { name })).toHaveCSS('background-color', 'rgb(22, 22, 22)')
   await theme.click()
   await expect.poll(caption).toMatchObject({ color: '#f7f8fb', symbolColor: '#202436' })
   await page.getByRole('button', { name: '喜欢', exact: true }).click()
@@ -5387,7 +5390,19 @@ for (const kind of ['video', 'live'] as const) {
         for (let round = 0; round < 4; round++) {
           await page.keyboard.press('h')
           await page.keyboard.press('Escape')
-          await expect.poll(bounds).toEqual(original)
+          // The hosted compositor can round the prepared video by 1/64 CSS pixel.
+          await expect
+            .poll(async () => {
+              const restored = await bounds()
+              return Math.max(
+                Math.abs(restored.x - original.x),
+                Math.abs(restored.y - original.y),
+                Math.abs(restored.width - original.width),
+                Math.abs(restored.height - original.height)
+              )
+            })
+            .toBeLessThan(0.1)
+          expect((await bounds()).stage).toEqual(original.stage)
           expect(await node!.evaluate((video) => video === document.querySelector('video'))).toBe(true)
         }
         await node?.dispose()
@@ -5814,7 +5829,8 @@ test('distinguishes rate limits, schema changes and risk responses in task recov
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites)
     .toMatchObject({ status: 'paused', errorCode: 'UPSTREAM_CHANGED' })
-  await expect(taskMessage(card)).toContainText('当前版本暂时无法读取')
+  await expect(taskMessage(card)).toContainText('收藏：不明确')
+  await expect(taskMessage(card)).toContainText('收藏采集已保留进度。请点击“核验状态”')
   await expect(page.getByRole('button', { name: '核验状态', exact: true })).toBeVisible()
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteMalformedList = false
