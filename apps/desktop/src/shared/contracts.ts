@@ -14,7 +14,7 @@ export const filterSchema = z.object({
   mediaType: z.enum(['all', 'video', 'gallery']).default('all'),
   year: z.number().int().min(2000).max(2200).nullable().default(null),
   month: z.number().int().min(1).max(12).nullable().default(null),
-  sort: z.enum(['published', 'collected']).default('published'),
+  sort: z.enum(['published', 'collected', 'liked']).default('published'),
   source: z.enum(['likes', 'favorites', 'all']).optional(),
   folderId: workIdSchema.nullable().optional()
 })
@@ -38,7 +38,7 @@ const queueSourceSchema = z.discriminatedUnion('type', [
     type: z.literal('ids'),
     source: z.enum(['likes', 'favorites']).optional(),
     ids: z.array(workIdSchema).min(1).max(100000),
-    sort: z.enum(['published', 'collected']).default('published')
+    sort: z.enum(['published', 'collected', 'liked']).default('published')
   })
 ])
 
@@ -59,7 +59,10 @@ export const commands = {
   probe: z.object({ accountId: idSchema }),
   releaseEngine: z.object({}),
   collectPage: z.object({ accountId: idSchema, continue: z.boolean() }),
-  collectionStart: z.object({ accountId: idSchema, mode: z.enum(['update', 'incremental', 'recheck']) }),
+  collectionStart: z.object({
+    accountId: idSchema,
+    mode: z.enum(['update', 'incremental', 'recheck', 'like-order'])
+  }),
   runtimeEvents: z.object({ accountId: idSchema }),
   favoritesStart: z.object({ accountId: idSchema, mode: z.enum(['sync', 'update']).optional() }),
   favoritesProbe: z.object({ accountId: idSchema }),
@@ -146,16 +149,17 @@ export const commands = {
   backup: z.object({}),
   dataInfo: z.object({ accountId: idSchema.nullable() }),
   openDataFolder: z.object({ target: z.enum(['data', 'backups']) }),
+  moveDataFolder: z.object({}),
   clearCache: z.object({ accountId: idSchema }),
   media: z.object({
     accountId: idSchema,
     workId: workIdSchema,
     playback: z.object({ queueId: idSchema, revision: z.number().int().min(0) }).optional()
   }),
-  original: z.object({
-    accountId: idSchema,
+  comments: playbackScopeSchema.extend({
     workId: workIdSchema,
-    playback: z.object({ queueId: idSchema, revision: z.number().int().min(0) }).optional()
+    commentId: workIdSchema.optional(),
+    cursor: workIdSchema.default('0')
   }),
   theme: z.object({ theme: z.enum(['dark', 'light']) }),
   windowPresentation: z.object({ player: z.boolean() }),
@@ -207,6 +211,8 @@ export interface LibraryPage {
   items: Work[]
   total: number
   years: number[]
+  yearsUnavailable?: boolean
+  unrankedLikes?: number
 }
 export interface LibraryOverview {
   metadataBytes: number
@@ -215,12 +221,12 @@ export interface LibraryOverview {
   videos: number
   galleries: number
   live: number
-  recent: Work[]
   likes: number
   favorites: number
   overlap: number
   folders: number
   years: { year: number | null; count: number }[]
+  authors: { nickname: string; count: number }[]
 }
 export type EngineStatus = 'stopped' | 'starting' | 'ready' | 'visible' | 'failed'
 export interface CollectionTask {
@@ -310,9 +316,25 @@ export interface Diagnostics {
 }
 export interface DataInfo {
   folder: string
+  warning?: string
   metadataBytes: number
   backupsBytes: number
   backupsCount: number
+}
+export type CommentMediaSource = { url: string; type: 'image' | 'video' }
+export interface WorkComment {
+  id: string
+  text: string
+  author: string
+  avatarUrl: string | null
+  attachments: CommentMediaSource[][]
+  publishedAt: number | null
+  likes: number
+  replies: number
+}
+export interface CommentPage {
+  items: WorkComment[]
+  nextCursor: string | null
 }
 export interface FavoriteFolder {
   id: string
@@ -402,9 +424,10 @@ export interface Outputs {
   backup: { fileName: string }
   dataInfo: DataInfo
   openDataFolder: null
+  moveDataFolder: null
   clearCache: null
   media: Media
-  original: null
+  comments: CommentPage
   theme: null
   windowPresentation: null
   openProject: null

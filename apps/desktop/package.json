@@ -1,6 +1,6 @@
 {
   "name": "mylike-desktop",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "MyLike Electron desktop application",
   "author": "MyLike contributors",
   "license": "MIT",
@@ -18,10 +18,11 @@
     "format:check": "prettier --check src tests tools *.ts *.json *.yml",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:storage": "node tests/sqlite-temp-smoke.mjs",
     "licenses:build": "node tools/licenses.mjs",
     "build": "pnpm typecheck && electron-vite build && pnpm licenses:build",
     "package:dir": "pnpm build && electron-builder --dir --win --x64 --publish never",
-    "package:win": "pnpm build && electron-builder --win portable zip --x64 --publish never"
+    "package:win": "pnpm build && node tools/build-installer-ui.mjs && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.21",

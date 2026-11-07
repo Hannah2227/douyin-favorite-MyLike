@@ -118,7 +118,7 @@ test('removes import and export controls and rejects the retired IPC commands wi
       error: { code: 'INVALID_COMMAND' }
     })
   expect((await invoke('query', { accountId })).data.total).toBe(2)
-  await expect(page.getByRole('button', { name: '打开备份目录', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '更改目录', exact: true })).toBeEnabled()
 })
 
 test('renames, clears cache without login loss, logs out only one session, and purges current data and backup records when deleting that account', async () => {
@@ -149,9 +149,8 @@ test('renames, clears cache without login loss, logs out only one session, and p
       a
     )
   ).toBe(1)
-  await page.getByRole('button', { name: '退出当前登录', exact: true }).click()
-  await page.getByRole('button', { name: '确认退出登录', exact: true }).click()
-  await expect(page.getByRole('dialog')).not.toBeVisible()
+  await expect(page.getByRole('button', { name: '退出当前登录', exact: true })).toHaveCount(0)
+  expect((await invoke('logoutAccount', { accountId: a })).ok).toBe(true)
   expect(
     await app.evaluate(
       async ({ session }, { a, b }) =>
@@ -210,7 +209,7 @@ test('requires explicit batch confirmation, persists unknown results, verifies r
   expect(await app.evaluate(() => (globalThis as any).__writeCalls.length)).toBe(0)
   await page.getByRole('button', { name: '取消抖音点赞', exact: true }).click()
   await modal.getByRole('button', { name: '确认取消抖音点赞', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '连接与任务' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible()
   await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('paused')
   const task = (await invoke('snapshot')).data.unlike
   expect(task).toMatchObject({ unknown: 1, pending: 1, success: 0 })
@@ -232,7 +231,7 @@ test('requires explicit batch confirmation, persists unknown results, verifies r
   await app.evaluate(() => {
     ;(globalThis as any).__likeFlag = 0
   })
-  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  await page.getByRole('button', { name: '任务', exact: true }).click()
   await page
     .getByRole('region', { name: '取消点赞任务', exact: true })
     .locator('.simple-task-actions')

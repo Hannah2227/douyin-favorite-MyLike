@@ -56,15 +56,14 @@ afterEach(() => {
 })
 
 describe('SQLite transactions and account ownership', () => {
-  it('aggregates account-wide dashboard counts with bounded recent items and no cross-account rows', () => {
+  it('aggregates account-wide dashboard counts without cross-account rows', () => {
     const { store } = setup()
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     expect(store.call('libraryOverview', { accountId: 'a' })).toMatchObject({
       total: 0,
       videos: 0,
       galleries: 0,
-      live: 0,
-      recent: []
+      live: 0
     })
     store.call('savePage', {
       accountId: 'a',
@@ -90,7 +89,6 @@ describe('SQLite transactions and account ownership', () => {
     })
     const summary = store.call('libraryOverview', { accountId: 'a' })
     expect(summary).toMatchObject({ accountId: 'a', total: 5, videos: 3, galleries: 2, live: 1 })
-    expect(summary.recent.map((work) => work.id)).toEqual(['5', '4', '3', '2'])
     store.call('deleteLocal', { accountId: 'a', workIds: ['1', '3'] })
     expect(store.call('libraryOverview', { accountId: 'a' })).toMatchObject({
       total: 3,
@@ -104,6 +102,23 @@ describe('SQLite transactions and account ownership', () => {
       galleries: 0,
       live: 0
     })
+  })
+  it('ranks up to six stored author names by work count and excludes missing names', () => {
+    const { store } = setup()
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: ['B', 'A', 'A', 'C', 'D', 'E', 'F', 'G', '', '   '].map((author, index) => ({
+        ...item(String(index + 1)),
+        author
+      }))
+    })
+    expect(store.call('libraryOverview', { accountId: 'a' }).authors).toEqual([
+      { nickname: 'A', count: 2 },
+      ...['B', 'C', 'D', 'E', 'F'].map((nickname) => ({ nickname, count: 1 }))
+    ])
   })
   it('persists page and cursor together, is idempotent, and survives reopening', () => {
     const { store, file } = setup()
@@ -376,4 +391,61 @@ it('preserves an interrupted head and deep cursor when switching to downward col
   expect(task).toMatchObject({ phase: 'backfill', cursor: '999', status: 'running' })
   expect(store.call('checkpoint', { accountId: 'a' })).toMatchObject({ cursor: '999', hasMore: true })
   expect(store.call('query', query).total).toBe(2)
+})
+
+it('backfills platform like order in page order, resumes after restart and moves newer likes to the front', () => {
+  const { file, store } = setup()
+  const account = { accountId: 'a', remoteId: 'remote-a' }
+  const liked = { ...query, sort: 'liked' as const }
+  store.call('savePage', {
+    ...account,
+    items: [item('99'), item('7'), item('2'), item('8')],
+    cursor: '0',
+    hasMore: false
+  })
+  expect(store.call('query', liked).unrankedLikes).toBe(4)
+  const task = store.call('startCollection', { accountId: 'a', id: 'rank', mode: 'full' })
+  store.call('saveCollectionPage', {
+    ...account,
+    taskId: task.id,
+    requestCursor: '0',
+    items: [item('7'), item('2')],
+    cursor: '10',
+    hasMore: true
+  })
+  store.call('close', undefined)
+  const resumed = new Store(file)
+  stores.push(resumed)
+  resumed.call('updateCollection', { accountId: 'a', taskId: task.id, status: 'running', reason: null })
+  resumed.call('saveCollectionPage', {
+    ...account,
+    taskId: task.id,
+    requestCursor: '10',
+    items: [item('8'), item('2')],
+    cursor: '0',
+    hasMore: false
+  })
+  expect(resumed.call('query', liked).items.map((work) => work.id)).toEqual(['7', '2', '8', '99'])
+  expect(resumed.call('query', liked).unrankedLikes).toBe(1)
+  expect(resumed.call('query', { ...liked, offset: 1, limit: 2 }).items.map((work) => work.id)).toEqual([
+    '2',
+    '8'
+  ])
+  const head = resumed.call('startCollection', { accountId: 'a', id: 'head', mode: 'incremental' })
+  resumed.call('saveCollectionPage', {
+    ...account,
+    taskId: head.id,
+    requestCursor: '0',
+    items: [item('8'), item('7')],
+    cursor: '0',
+    hasMore: false
+  })
+  expect(resumed.call('matchingIds', liked)).toEqual(['8', '7', '2', '99'])
+  const queue = resumed.call('queueCreate', {
+    accountId: 'a',
+    mode: 'sequence',
+    source: { type: 'ids', ids: ['99', '2', '7', '8'], sort: 'liked' }
+  })
+  expect(queue.work.id).toBe('8')
+  expect(queue.next?.id).toBe('7')
 })

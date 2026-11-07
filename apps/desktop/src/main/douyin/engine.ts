@@ -8,13 +8,14 @@ import {
   parseIdentity,
   parseLikedPage,
   parseFavoritesPage,
-  parseFavoriteFolders
+  parseFavoriteFolders,
+  parseCommentPage
 } from './parse'
 import { quietMediaScript } from './page-media'
 import { pageStateScript, type AccessEvent, type AccessTarget, type PageState } from './page-state'
 import type { RuntimeEventInput } from '../../shared/runtime-events'
 import { responseSummary } from './response-summary'
-import { failureResponseType, failureRule } from './response-policy'
+import { commentRead, failureResponseType, failureRule } from './response-policy'
 import { RecoveryGate } from '../recovery'
 import type { RecoveryState } from '../../shared/recovery-state'
 
@@ -406,7 +407,7 @@ export class DouyinEngine {
     accountId: string,
     operation: Operation,
     parameters: Record<string, string> = {},
-    options: { recovery?: boolean; loginCheck?: boolean } = {}
+    options: { recovery?: boolean; loginCheck?: boolean; allowNullFavoritePage?: boolean } = {}
   ): Promise<Record<string, any>> {
     // Refusing a local early retry does not load a page, observe a new failure,
     // or extend the original waiting period.
@@ -486,7 +487,10 @@ export class DouyinEngine {
         throw new AppError('INVALID_RESPONSE', '接口响应格式不正确。')
       status = reply.status
       summary = responseSummary(reply.body, reply.status, operation)
-      const data = parseResponse(reply.body, reply.status, { operation, workId: parameters.aweme_id })
+      const data = parseResponse(reply.body, reply.status, {
+        operation,
+        workId: parameters.aweme_id ?? parameters.item_id
+      })
       if (operation === 'self') parseIdentity(data)
       // Preserve a confirmed write promptly. A challenge detected afterward
       // affects subsequent operations, not this response's known outcome.
@@ -504,9 +508,11 @@ export class DouyinEngine {
       }
       // JSON alone is not proof that the original collection endpoint recovered.
       if (operation === 'likes') parseLikedPage(data, { allowEmpty: true })
-      if (operation === 'favorites' || operation === 'folderItems')
-        parseFavoritesPage(data, { allowEmpty: true })
-      if (operation === 'folders') parseFavoriteFolders(data, { allowEmpty: true })
+      const favoriteOptions = { allowEmpty: true, allowNullPage: options.allowNullFavoritePage }
+      if (operation === 'favorites' || operation === 'folderItems') parseFavoritesPage(data, favoriteOptions)
+      if (operation === 'folders') parseFavoriteFolders(data, favoriteOptions)
+      if (commentRead(operation))
+        parseCommentPage(data, parameters.aweme_id ?? parameters.item_id!, parameters.cursor ?? '0')
       if (!options.recovery && this.failedTarget?.operation === operation) this.failedTarget = null
       this.recoveryGate.success(accountId, operation)
       return data

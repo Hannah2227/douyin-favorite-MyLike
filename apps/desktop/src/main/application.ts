@@ -1,10 +1,10 @@
 import { HealthMonitor } from './health'
-import type { HealthSnapshot } from '../shared/health'
-import { FavoritesService } from './favorites'
+import { healthStatus, type HealthSnapshot } from '../shared/health'
+import { blockedFavoriteTask, favoriteOperation, FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
 import { app, shell, clipboard, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
-import type { Account, Command, Diagnostics, Query, Snapshot } from '../shared/contracts'
+import type { Account, Command, Diagnostics, FavoritesTask, Query, Snapshot } from '../shared/contracts'
 import { Database } from './storage/client'
 import { DouyinEngine } from './douyin/engine'
 import {
@@ -12,7 +12,8 @@ import {
   parseLikedPage,
   parseMedia,
   parseFavoriteFolders,
-  parseFavoritesPage
+  parseFavoritesPage,
+  parseCommentPage
 } from './douyin/parse'
 import { Authentication } from './authentication'
 import type { AccessTarget } from './douyin/page-state'
@@ -37,6 +38,7 @@ export class Application {
   private epoch = 0
   private libraryRevision = 0
   private mediaEpoch = 0
+  private activeComments: { queueId: string; revision: number; cancelled: boolean } | null = null
   private activeMedia: {
     accountId: string
     workId: string
@@ -58,7 +60,8 @@ export class Application {
     readonly database: Database,
     readonly engine: DouyinEngine,
     private readonly changed: () => void,
-    private readonly parent: () => BrowserWindow | null = () => null
+    private readonly parent: () => BrowserWindow | null = () => null,
+    storageWarning: () => string | undefined = () => undefined
   ) {
     engine.setObserver((accountId, event) => this.record(accountId, event))
     this.authentication = new Authentication(
@@ -131,10 +134,10 @@ export class Application {
       this.quiesce.bind(this),
       changed
     )
-    this.maintenance = new DataMaintenance()
+    this.maintenance = new DataMaintenance(storageWarning)
   }
   private record(accountId: string, event: RuntimeEventInput) {
-    if (!this.closing && event.operation) {
+    if (!this.closing && event.operation && event.code !== 'FAVORITE_PAGE_SKIPPED') {
       if (event.operation !== 'self' || event.code)
         this.health.observe(accountId, event.operation, event.code, undefined, false, event.rule)
       this.changed()
@@ -150,13 +153,21 @@ export class Application {
     const active = await this.database.call('setting', { key: 'activeAccount' })
     const theme = await this.database.call('setting', { key: 'theme' })
     const activeAccountId = accounts.some((a) => a.id === active) ? active : (accounts[0]?.id ?? null)
+    const favorites = activeAccountId
+      ? await this.database.call('favoritesTask', { accountId: activeAccountId })
+      : null
+    const favoritesUpdate = activeAccountId
+      ? await this.database.call('favoritesTask', { accountId: activeAccountId, mode: 'update' })
+      : null
     return {
       accounts,
       activeAccountId,
       theme: theme === 'light' ? 'light' : 'dark',
       engine: this.engine.snapshot(),
       authentication: this.authentication.snapshot(),
-      health: activeAccountId ? this.health.snapshot(activeAccountId) : null,
+      health: activeAccountId
+        ? this.healthWithFavoriteCheckpoint(activeAccountId, favorites, favoritesUpdate)
+        : null,
       busy: this.busy,
       collection: activeAccountId
         ? await this.database.call('collection', { accountId: activeAccountId })
@@ -165,13 +176,9 @@ export class Application {
       accessChecks: [...this.accessChecks.values()].filter((item) => item.accountId === activeAccountId),
       collectionActivity: this.collection.activity,
       unlike: activeAccountId ? await this.database.call('unlikeTask', { accountId: activeAccountId }) : null,
-      favorites: activeAccountId
-        ? await this.database.call('favoritesTask', { accountId: activeAccountId })
-        : null,
+      favorites,
       favoritesActivity: this.favorites.activity,
-      favoritesUpdate: activeAccountId
-        ? await this.database.call('favoritesTask', { accountId: activeAccountId, mode: 'update' })
-        : null,
+      favoritesUpdate,
       libraryRevision: this.libraryRevision,
       playback: activeAccountId
         ? await this.database.call('queueState', { accountId: activeAccountId })
@@ -184,12 +191,16 @@ export class Application {
   async applyAppearance(theme?: 'dark' | 'light'): Promise<void> {
     const value = theme ?? (await this.database.call('setting', { key: 'theme' }))
     const light = value === 'light' && !this.playerVisible
-    const color = this.playerVisible ? '#111113' : light ? '#f7f8fb' : '#101014'
+    const color = this.playerVisible ? '#111113' : light ? '#f7f8fb' : '#000000'
     const win = this.parent()
     if (!win || win.isDestroyed()) return
     win.setBackgroundColor(color)
     if (process.platform === 'win32')
-      win.setTitleBarOverlay({ color, symbolColor: light ? '#202436' : '#ececf2', height: 30 })
+      win.setTitleBarOverlay({
+        color,
+        symbolColor: this.playerVisible ? '#ececf2' : light ? '#202436' : '#f2f2f2',
+        height: 30
+      })
   }
   private async exclusive<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.admission
@@ -315,7 +326,88 @@ export class Application {
       this.accessChecks.set(JSON.stringify([accountId, operation]), { accountId, operation, at })
     return bound
   }
-  private async checkHealth(accountId: string): Promise<HealthSnapshot> {
+  private healthWithFavoriteCheckpoint(
+    accountId: string,
+    sync: FavoritesTask | null,
+    update: FavoritesTask | null
+  ) {
+    const state = this.health.snapshot(accountId)
+    const task = blockedFavoriteTask(sync, update)
+    if (!task) return state
+    const operation = favoriteOperation(task)
+    const checkpoint = this.favorites.checkpointHealth(
+      task,
+      state.entries.find((entry) => entry.operation === operation)
+    )
+    const entries = [...state.entries.filter((entry) => entry.operation !== operation), checkpoint]
+    return { ...state, entries, status: healthStatus(entries) }
+  }
+  private async verifyFavoriteCheckpoint(accountId: string): Promise<boolean> {
+    const pending = await this.exclusive(async () => {
+      if (
+        this.closing ||
+        this.accountAction ||
+        this.collection.running ||
+        this.unlike.running ||
+        this.favorites.running
+      )
+        return null
+      const sync = await this.database.call('favoritesTask', { accountId })
+      const update = await this.database.call('favoritesTask', { accountId, mode: 'update' })
+      const task = blockedFavoriteTask(sync, update)
+      if (!task) return null
+      const result = this.favorites.verifyCheckpoint(
+        task,
+        (check) => this.verifyAccess(accountId, null, check, true),
+        () => {
+          this.healthAfterAuth.delete(accountId)
+          this.engine.hide(accountId)
+          this.authentication.stop()
+        }
+      )
+      return { task, result }
+    })
+    if (!pending) return false
+    const { task, result } = pending
+    const operation = favoriteOperation(task)
+    try {
+      await result
+      this.health.observe(accountId, operation)
+    } catch (error) {
+      if (
+        !(error instanceof AppError) ||
+        ['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING', 'BUSY', 'TASK_CHANGED'].includes(error.code)
+      )
+        throw error
+      const checkpoint = this.favorites.checkpointHealth(task)
+      if (
+        [
+          'AUTH_REQUIRED',
+          'LOGIN_PENDING',
+          'IDENTITY_MISMATCH',
+          'DUPLICATE_ACCOUNT',
+          'VERIFICATION_REQUIRED'
+        ].includes(error.code)
+      ) {
+        this.healthAfterAuth.add(accountId)
+        this.engine.requireAttention(
+          accountId,
+          error.code === 'VERIFICATION_REQUIRED' ? 'verification' : 'login',
+          {
+            operation,
+            parameters: {
+              cursor: task.cursor,
+              count: '20',
+              ...(task.folderId ? { collects_id: task.folderId } : {})
+            }
+          }
+        )
+      }
+      if (checkpoint.code !== error.code && !error.retryAt) throw error
+    }
+    return true
+  }
+  private async checkHealth(accountId: string, recoverFavorites = false): Promise<HealthSnapshot> {
     const existing = this.healthRuns.get(accountId)
     if (existing) return existing
     const run = (async () => {
@@ -325,6 +417,10 @@ export class Application {
       this.changed()
       let completed = false
       try {
+        if (recoverFavorites && (await this.verifyFavoriteCheckpoint(accountId))) {
+          completed = true
+          return
+        }
         await this.run(accountId, async (check) => {
           const identityWaiting = this.engine.recovery(accountId).some((r) => r.operation === 'self')
           let identity: Account
@@ -466,7 +562,7 @@ export class Application {
       } catch (error) {
         if (
           error instanceof AppError &&
-          ['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING', 'BUSY'].includes(error.code)
+          ['CANCELLED', 'ACCOUNT_CHANGED', 'CLOSING', 'BUSY', 'TASK_CHANGED'].includes(error.code)
         )
           throw error
         const failure =
@@ -485,7 +581,13 @@ export class Application {
         this.changed()
       }
     })()
-    const result = run.then(() => this.health.snapshot(accountId))
+    const result = run.then(async () =>
+      this.healthWithFavoriteCheckpoint(
+        accountId,
+        await this.database.call('favoritesTask', { accountId }),
+        await this.database.call('favoritesTask', { accountId, mode: 'update' })
+      )
+    )
     this.healthRuns.set(accountId, result)
     try {
       return await result
@@ -742,7 +844,7 @@ export class Application {
         }
       }
       case 'checkHealth':
-        return this.checkHealth(input.accountId)
+        return this.checkHealth(input.accountId, true)
       case 'collectionAction': {
         try {
           await this.collectionAction(input.accountId, input.source, input.action)
@@ -890,7 +992,7 @@ export class Application {
           this.assertAvailable(input.accountId, ['likes'])
           if (this.unlike.running || this.favorites.running)
             throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务。')
-          return this.collection.start(input.accountId, input.mode)
+          return this.collection.start(input.accountId, input.mode === 'like-order' ? 'full' : input.mode)
         })
       case 'collectionControl':
         await this.active(input.accountId)
@@ -995,6 +1097,16 @@ export class Application {
           const result = await this.database.call(command, input)
           if (command !== 'queueProgress') {
             if (['queueCreate', 'queueDismiss'].includes(command)) this.mediaEpoch++
+            const comments = this.activeComments
+            if (
+              comments &&
+              (comments.queueId !== result.queueId ||
+                comments.revision !== result.revision ||
+                command === 'queueDismiss')
+            ) {
+              comments.cancelled = true
+              this.engine.cancel()
+            }
             const active = this.activeMedia
             // A prefetched next item becomes the current item when advancing.
             // Keep that read alive; unrelated targets still cancel immediately.
@@ -1024,7 +1136,8 @@ export class Application {
           if (!queue || queue.queueId !== input.queueId || queue.revision !== input.revision)
             throw new AppError('QUEUE_CHANGED', '播放会话已变化。')
           this.mediaEpoch++
-          if (this.activeMedia) this.engine.cancel()
+          if (this.activeComments) this.activeComments.cancelled = true
+          if (this.activeMedia || this.activeComments) this.engine.cancel()
           return null
         })
       case 'playbackPreferences': {
@@ -1103,26 +1216,48 @@ export class Application {
           }
         })
       }
-      case 'original': {
-        const epoch = this.epoch
-        await this.active(input.accountId)
-        if (input.playback) {
-          const queue = await this.database.call('queueState', { accountId: input.accountId })
-          if (
-            !queue ||
-            queue.queueId !== input.playback.queueId ||
-            queue.revision !== input.playback.revision ||
-            queue.work.id !== input.workId
-          )
-            throw new AppError('QUEUE_CHANGED', '播放目标已变化，请重新打开原页。')
-        }
-        if (epoch !== this.epoch) throw new AppError('ACCOUNT_CHANGED', '当前账号已变化，请重新打开原页。')
-        try {
-          await shell.openExternal(`https://www.douyin.com/video/${input.workId}`)
-        } catch {
-          throw new AppError('OPEN_BROWSER_FAILED', '无法打开系统默认浏览器，请检查默认浏览器设置后重试。')
-        }
-        return null
+      case 'comments': {
+        const { accountId, workId, queueId, revision, commentId, cursor } = input
+        const operation = commentId ? 'commentReplies' : 'comments'
+        return this.run(accountId, async (check) => {
+          const request = { queueId, revision, cancelled: false }
+          const assertScope = async () => {
+            const queue = await this.database.call('queueState', { accountId })
+            check()
+            if (
+              request.cancelled ||
+              !queue ||
+              queue.queueId !== queueId ||
+              queue.revision !== revision ||
+              queue.work.id !== workId
+            )
+              throw new AppError('QUEUE_CHANGED', '作品已切换，请重新打开评论。')
+          }
+          await assertScope()
+          this.engine.assertAvailable(accountId, operation)
+          this.activeComments = request
+          try {
+            await this.identity(accountId, check)
+            await assertScope()
+            const parameters: Record<string, string> = { cursor, count: '20', item_type: '0' }
+            if (commentId) {
+              parameters.item_id = workId
+              parameters.comment_id = commentId
+            } else
+              Object.assign(parameters, {
+                aweme_id: workId,
+                insert_ids: '',
+                whale_cut_token: '',
+                cut_version: '1',
+                rcFT: ''
+              })
+            const data = await this.engine.request(accountId, operation, parameters)
+            await assertScope()
+            return parseCommentPage(data, workId, cursor)
+          } finally {
+            this.activeComments = null
+          }
+        })
       }
       case 'theme':
         await this.database.call('setting', { key: 'theme', value: input.theme })

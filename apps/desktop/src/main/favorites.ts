@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, FavoritesTask, Snapshot } from '../shared/contracts'
+import type { HealthEntry } from '../shared/health'
 import type { Database } from './storage/client'
 import type { DouyinEngine } from './douyin/engine'
 import { parseFavoriteFolders, parseFavoritesPage } from './douyin/parse'
@@ -8,6 +9,45 @@ import { PageProgress, EndConfirmation, EmptyPageTraversal } from './read-recove
 import { collectionPolicy as policy } from './collection-policy'
 import { readRecovery } from './recovery'
 import type { RuntimeEventInput } from '../shared/runtime-events'
+
+const definiteCheckpointErrors = new Set([
+  'AUTH_REQUIRED',
+  'LOGIN_PENDING',
+  'IDENTITY_MISMATCH',
+  'DUPLICATE_ACCOUNT',
+  'VERIFICATION_REQUIRED',
+  'RATE_LIMITED',
+  'API_REJECTED'
+])
+const uncertainCheckpointErrors = new Set([
+  'FAVORITE_EMPTY_PAGE',
+  'UPSTREAM_CHANGED',
+  'UPSTREAM_RISK_CONTROL',
+  'INVALID_RESPONSE',
+  'EMPTY_RESPONSE',
+  'EMPTY_PAGE',
+  'EMPTY_PAGE_LIMIT',
+  'CURSOR_STALLED',
+  'END_UNCONFIRMED',
+  'NETWORK_ERROR',
+  'TIMEOUT',
+  'BROWSER_NOT_READY',
+  'BROWSER_CRASHED',
+  'PAGE_CHANGED'
+])
+export function blockedFavoriteTask(...tasks: (FavoritesTask | null)[]) {
+  return (
+    tasks.find(
+      (task) =>
+        task?.status === 'paused' &&
+        task.errorCode &&
+        (definiteCheckpointErrors.has(task.errorCode) || uncertainCheckpointErrors.has(task.errorCode))
+    ) ?? null
+  )
+}
+export function favoriteOperation(task: FavoritesTask): 'favorites' | 'folders' | 'folderItems' {
+  return task.stage === 'all' ? 'favorites' : task.stage === 'folders' ? 'folders' : 'folderItems'
+}
 
 type Runner = <T>(
   accountId: string,
@@ -18,6 +58,7 @@ export class FavoritesService {
   private loop: Promise<void> | null = null
   private controller: AbortController | null = null
   private current: FavoritesTask | null = null
+  private readonly checkpointChecks = new Map<string, { target: string; entry: HealthEntry }>()
   activity: Snapshot['favoritesActivity'] = null
   constructor(
     private readonly db: Pick<Database, 'call'>,
@@ -56,6 +97,11 @@ export class FavoritesService {
     if (owns && action !== 'resume') {
       this.controller?.abort()
       if (this.activity === 'requesting') this.engine.cancel()
+    }
+    if (owns && this.current?.status === 'paused' && action === 'pause') {
+      await this.loop
+      const paused = await this.db.call('favoritesTask', { accountId, mode })
+      if (paused?.id === taskId && paused.status !== 'running') return paused
     }
     const task = await this.db.call('favoritesUpdate', {
       accountId,
@@ -128,18 +174,213 @@ export class FavoritesService {
       ...(folderId ? { collects_id: folderId } : {})
     }
   }
-  private launch(task: FavoritesTask) {
+  private checkKey(task: FavoritesTask) {
+    return JSON.stringify([task.accountId, task.mode])
+  }
+  private checkTarget(task: FavoritesTask) {
+    return JSON.stringify([task.id, task.stage, task.folderId, task.cursor])
+  }
+  checkpointHealth(task: FavoritesTask, evidence?: HealthEntry): HealthEntry {
+    const last = this.checkpointChecks.get(this.checkKey(task))
+    if (last?.target === this.checkTarget(task)) return last.entry
+    const code = task.errorCode
+    const rule = evidence?.code === code ? evidence.rule : undefined
+    return {
+      operation: favoriteOperation(task),
+      status:
+        definiteCheckpointErrors.has(code ?? '') || rule === 'envelope.risk_code' ? 'abnormal' : 'uncertain',
+      code,
+      rule,
+      at: task.updatedAt,
+      failures: 0,
+      favoriteCheckpoint: true
+    }
+  }
+  verifyCheckpoint(
+    task: FavoritesTask,
+    verifyIdentity: (check: () => void) => Promise<Account>,
+    onVerified: () => void
+  ): Promise<FavoritesTask> {
+    if (this.loop) throw new AppError('BUSY', '收藏同步正在进行，请稍后再核验。')
+    return this.launch(task, { verifyIdentity, onVerified })
+  }
+  private async readCheckpoint(
+    task: FavoritesTask,
+    signal: AbortSignal,
+    verifyIdentity: (check: () => void) => Promise<Account>
+  ) {
+    const { accountId, cursor } = task
+    const operation = favoriteOperation(task)
+    let attempted = false
+    const guard = () => {
+      if (signal.aborted) throw new AppError('CANCELLED', '收藏核验已停止。')
+    }
+    const read = (position: string) => {
+      attempted = false
+      return this.run(
+        accountId,
+        async (check) => {
+          const valid = () => {
+            check()
+            guard()
+          }
+          valid()
+          this.engine.assertAvailable?.(accountId, operation)
+          this.activity = 'requesting'
+          try {
+            const account = await verifyIdentity(valid)
+            valid()
+            attempted = true
+            const response = await this.engine.request(
+              accountId,
+              operation,
+              this.parameters(position, task.folderId),
+              {
+                recovery: true,
+                allowNullFavoritePage: true
+              }
+            )
+            valid()
+            const options = { allowEmpty: true, allowNullPage: true }
+            const page =
+              operation === 'folders'
+                ? parseFavoriteFolders(response, options)
+                : parseFavoritesPage(response, options)
+            return { page, remoteId: account.remoteId! }
+          } finally {
+            this.activity = 'waiting'
+          }
+        },
+        true
+      )
+    }
+    const ids = (page: Awaited<ReturnType<typeof read>>['page']) =>
+      'folders' in page ? page.folders.map((folder) => folder.id) : page.items.map((item) => item.id)
+    const empty = (page: Awaited<ReturnType<typeof read>>['page']) =>
+      'folders' in page ? page.folders.length === 0 : page.received === 0
+    const unavailable = () => new AppError('FAVORITE_EMPTY_PAGE', '抖音暂未返回这一页内容，已保留进度。')
+    try {
+      let position = cursor
+      let result = await read(cursor)
+      if (result.page.hasMore && empty(result.page)) {
+        const next = result.page.cursor
+        if (next === cursor) throw unavailable()
+        await this.wait(this.timing.retry, signal)
+        result = await read(cursor)
+        if (result.page.hasMore && empty(result.page)) {
+          if (result.page.cursor !== next) throw unavailable()
+          position = next
+          await this.wait(this.timing.interval, signal)
+          result = await read(position)
+          if (!ids(result.page).length) throw unavailable()
+        }
+      }
+      if (!result.page.hasMore) {
+        const ending = new EndConfirmation()
+        ending.check(position, ids(result.page), false)
+        await this.wait(this.timing.retry, signal)
+        result = await read(position)
+        if ((result.page.hasMore || position !== cursor) && !ids(result.page).length) throw unavailable()
+        if (!ending.check(position, ids(result.page), result.page.hasMore))
+          throw new AppError('END_UNCONFIRMED', '收藏末页尚未确认，已保留进度。')
+      }
+      const skipped = position !== cursor
+      const saved = await this.run(
+        accountId,
+        async (check) => {
+          check()
+          guard()
+          return this.db.call('favoritesSave', {
+            ...result.page,
+            accountId,
+            remoteId: result.remoteId,
+            taskId: task.id,
+            mode: task.mode,
+            stage: task.stage,
+            folderId: task.folderId,
+            requestCursor: position,
+            checkpointCursor: cursor,
+            traversedCursors: skipped ? [cursor, position] : [cursor],
+            incomplete: skipped && task.stage !== 'all',
+            resumePausedAt: task.updatedAt
+          })
+        },
+        true
+      )
+      this.checkpointChecks.delete(this.checkKey(task))
+      if (skipped)
+        this.report(accountId, {
+          kind: 'task',
+          operation,
+          code: 'FAVORITE_PAGE_SKIPPED',
+          message: '原页持续为空，已确认下一页可读，跳过一页并继续收藏采集。'
+        })
+      this.changed(true)
+      return saved
+    } catch (error) {
+      guard()
+      if (
+        !(error instanceof AppError) ||
+        (!definiteCheckpointErrors.has(error.code) && !uncertainCheckpointErrors.has(error.code))
+      )
+        throw error
+      if (!attempted && error.retryAt !== undefined) throw error
+      const prior = this.checkpointHealth(task)
+      const rule = error.rule ?? (error.code === prior.code ? prior.rule : undefined)
+      const definite = definiteCheckpointErrors.has(error.code) || rule === 'envelope.risk_code'
+      const beforeRequest = ['BROWSER_NOT_READY', 'BROWSER_CRASHED', 'PAGE_CHANGED'].includes(error.code)
+      const failures = prior.failures + Number(attempted && !definite && !beforeRequest)
+      this.checkpointChecks.set(this.checkKey(task), {
+        target: this.checkTarget(task),
+        entry: {
+          operation,
+          code: error.code,
+          rule,
+          retryAt: error.retryAt,
+          at: Date.now(),
+          failures,
+          status: definite || failures >= 5 ? 'abnormal' : 'uncertain',
+          favoriteCheckpoint: true
+        }
+      })
+      throw error
+    }
+  }
+  private launch(
+    task: FavoritesTask,
+    verification?: {
+      verifyIdentity: (check: () => void) => Promise<Account>
+      onVerified: () => void
+    }
+  ) {
     this.current = task
     const controller = new AbortController()
     this.controller = controller
-    this.loop = this.collect(task, controller.signal).finally(() => {
-      this.loop = null
-      this.controller = null
-      this.activity = null
-      this.changed()
-    })
+    const ready = verification
+      ? this.readCheckpoint(task, controller.signal, verification.verifyIdentity)
+      : Promise.resolve(task)
+    this.loop = ready
+      .then(
+        async (saved) => {
+          this.current = saved
+          if (controller.signal.aborted) return
+          verification?.onVerified()
+          if (saved.status === 'running') {
+            if (verification) await this.wait(this.timing.interval, controller.signal)
+            await this.collect(saved, controller.signal)
+          }
+        },
+        () => {}
+      )
+      .finally(() => {
+        this.loop = null
+        this.controller = null
+        this.activity = null
+        this.changed()
+      })
     void this.loop.catch(() => console.error('[MyLike] Favorites task could not persist its state.'))
     this.changed()
+    return ready
   }
   private async wait(ms: number, signal: AbortSignal) {
     if (signal.aborted) return
@@ -264,6 +505,7 @@ export class FavoritesService {
             !saved.issues?.some((i) => i.folderId === task.folderId)
           )
             folderFailures = 0
+          this.checkpointChecks.delete(this.checkKey(task))
           task = saved
           retries = 0
           traversal = new EmptyPageTraversal(task.cursor)

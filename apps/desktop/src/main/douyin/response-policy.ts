@@ -9,7 +9,9 @@ export type ResponseContext = { operation?: Operation; workId?: string }
 const riskCodes = new Set(['8', '2154', '2156', '10000', '10001'])
 const envelopeKeys = new Set(['status_code', 'status_msg', 'message', 'extra', 'log_pb', 'logid', 'log_id'])
 export const contentRead = (operation?: Operation) =>
-  operation === 'likes' || operation === 'detail' || collectionRead(operation)
+  operation === 'likes' || operation === 'detail' || commentRead(operation) || collectionRead(operation)
+export const commentRead = (operation?: Operation) =>
+  operation === 'comments' || operation === 'commentReplies'
 export function bareEnvelope(data: Payload, operation?: Operation): boolean {
   const keys = Object.keys(data)
   return contentRead(operation) && keys.length > 0 && keys.every((key) => envelopeKeys.has(key))
@@ -47,7 +49,11 @@ export function assertBusinessResponse(data: Payload, context: ResponseContext =
       'envelope.verification'
     )
   // An explicit business rejection of a write is known, unlike a missing reply.
-  if (code === '2053' && context.workId && ['detail', 'favoriteRemove'].includes(context.operation ?? ''))
+  if (
+    code === '2053' &&
+    context.workId &&
+    (commentRead(context.operation) || ['detail', 'favoriteRemove'].includes(context.operation ?? ''))
+  )
     throw new AppError('CONTENT_UNAVAILABLE', '平台明确返回此作品当前不可访问。', 'envelope.business_code')
   if (riskCodes.has(code ?? '') && context.operation !== 'self')
     throw new AppError(
@@ -142,6 +148,7 @@ export function failureResponseType(code?: string): string | undefined {
     {
       CONTENT_UNAVAILABLE: 'content-unavailable',
       UPSTREAM_CHANGED: 'schema-changed',
+      FAVORITE_EMPTY_PAGE: 'empty-list',
       UPSTREAM_RISK_CONTROL: 'risk-control'
     } as Record<string, string>
   )[code ?? '']

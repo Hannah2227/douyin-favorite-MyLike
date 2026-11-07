@@ -1,36 +1,52 @@
-import {
-  ArrowRight,
-  Film,
-  Heart,
-  ImageIcon,
-  Database,
-  Play,
-  Plus,
-  Shuffle,
-  CalendarDays,
-  TrendingUp
-} from 'lucide-react'
-import type { Account, LibraryOverview, Snapshot, Work } from '../../shared/contracts'
+import { Film, Heart, ImageIcon, Database, Plus, CalendarDays, TrendingUp, Users } from 'lucide-react'
+import type { Account, LibraryOverview } from '../../shared/contracts'
 import './dashboard.css'
 import './dashboard-extra.css'
-import { formatBytes as size } from './format'
 import { BrandMark } from './BrandMark'
 
 type Props = {
   account: Account | undefined
-  snapshot: Snapshot | null
   overview: { data: LibraryOverview | null; error: string; retry: () => void }
-  busy: boolean
-  browse: () => void
   add: () => void
-  play: (work?: Work) => void
-  resume: () => void
 }
-const number = (value: number | undefined) => (value === undefined ? '—' : value.toLocaleString('zh-CN'))
+const number = (value: number | undefined) => (value === undefined ? '—' : String(value))
 
-export function Dashboard({ account, snapshot, overview, busy, browse, add, play, resume }: Props) {
+function DashboardBars({
+  items,
+  empty
+}: {
+  items: { label: string; count: number }[] | undefined
+  empty: string
+}) {
+  if (!items) return <div className="dashboard-empty">正在读取收录记录…</div>
+  if (!items.length) return <div className="dashboard-empty">{empty}</div>
+  const max = Math.max(...items.map((item) => item.count))
+  return (
+    <div
+      className="collection-chart"
+      role="img"
+      aria-label={items.map((item) => item.label + '：' + item.count + ' 条').join('，')}
+    >
+      {items.map((item) => (
+        <div
+          className="chart-column"
+          key={item.label}
+          tabIndex={0}
+          title={item.label + ' · ' + item.count + ' 条'}
+        >
+          <strong>{item.count}</strong>
+          <div>
+            <i style={{ height: Math.max(4, (100 * item.count) / max) + '%' }} />
+          </div>
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function Dashboard({ account, overview, add }: Props) {
   const data = overview.data
-  const playback = snapshot?.playback && !snapshot.playback.completed ? snapshot.playback : null
   if (!account)
     return (
       <div className="dashboard-scroll">
@@ -80,7 +96,7 @@ export function Dashboard({ account, snapshot, overview, busy, browse, add, play
           { label: '图集', value: data?.galleries, icon: ImageIcon },
           {
             label: '数据占用',
-            value: data ? size(data.metadataBytes) : '—',
+            value: data ? `${Math.round(data.metadataBytes / 1_000_000)} MB` : '—',
             icon: Database,
             title: '本机全部账号的元数据数据库及日志，不含媒体缓存和备份'
           }
@@ -100,133 +116,30 @@ export function Dashboard({ account, snapshot, overview, busy, browse, add, play
           </div>
         ))}
       </section>
-      <div className="dashboard-middle">
-        <section className="dashboard-play-card">
-          <div className="dashboard-section-title">
-            <Play size={15} />
-            <h2>{playback ? '继续回看' : '开始回看'}</h2>
-          </div>
-          {playback ? (
-            <div className="dashboard-resume">
-              <div className="resume-cover">
-                {playback.work.coverUrl ? <img src={playback.work.coverUrl} alt="" /> : <Play size={26} />}
-              </div>
-              <div>
-                <h3>{playback.work.title || '未命名作品'}</h3>
-                <p>@{playback.work.author || '未知作者'}</p>
-                <span>
-                  第 {playback.index + 1} / {number(playback.total)} 条
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div className="dashboard-play-empty">
-              <div className="play-orbit">
-                <Shuffle size={27} />
-              </div>
-              <h3>{data?.total ? '从喜欢的内容开始' : '内容库还没有作品'}</h3>
-              <p>{data?.total ? '洗牌回看，或进入内容库挑选。' : '到“喜欢的内容”采集作品。'}</p>
-            </div>
-          )}
-          <div className="dashboard-play-actions">
-            {playback && (
-              <button className="primary" disabled={busy} onClick={resume}>
-                <Play size={15} />
-                继续播放
-              </button>
-            )}
-            <button
-              className={playback ? '' : 'primary'}
-              disabled={busy || !data?.total}
-              onClick={() => play()}
-            >
-              <Shuffle size={15} />
-              洗牌回看
-            </button>
-            <button className="text-action" onClick={browse}>
-              浏览内容
-              <ArrowRight size={15} />
-            </button>
-          </div>
-        </section>
-        <section className="dashboard-chart-card" aria-label="作品年份分布">
-          <div className="dashboard-section-title">
-            <TrendingUp size={16} />
-            <h2>收录足迹</h2>
-            <span>按作品发布年份</span>
-          </div>
-          {data ? (
-            <div
-              className="collection-chart"
-              role="img"
-              aria-label={
-                data.years.length
-                  ? data.years.map((item) => `${item.year ?? '未知年份'}：${item.count} 条`).join('，')
-                  : '暂无收录作品'
-              }
-            >
-              {data.years.map((item) => (
-                <div
-                  className="chart-column"
-                  key={item.year ?? 'unknown'}
-                  tabIndex={0}
-                  title={`${item.year ?? '未知年份'} · ${item.count} 条`}
-                >
-                  <strong>{number(item.count)}</strong>
-                  <div>
-                    <i
-                      style={{
-                        height: `${Math.max(4, (100 * item.count) / Math.max(1, ...data.years.map((v) => v.count)))}%`
-                      }}
-                    />
-                  </div>
-                  <span>{item.year ?? '未知'}</span>
-                </div>
-              ))}
-              {!data.years.length && <div className="recent-empty">暂无收录作品</div>}
-            </div>
-          ) : (
-            <div className="recent-empty">正在读取收录记录…</div>
-          )}
-        </section>
-      </div>
-      <section className="dashboard-recent">
+      <section className="dashboard-chart-card" aria-label="作品年份分布">
         <div className="dashboard-section-title">
-          <h2>最近收录</h2>
-          <button className="text-action" onClick={browse}>
-            查看全部
-            <ArrowRight size={14} />
-          </button>
+          <TrendingUp size={16} />
+          <h2>收录足迹</h2>
+          <span>按作品发布年份</span>
         </div>
-        {data?.recent.length ? (
-          <div className="recent-grid">
-            {data.recent.map((work) => (
-              <button
-                className="recent-work"
-                key={work.id}
-                disabled={busy}
-                onClick={() => play(work)}
-                title={work.title}
-              >
-                <span className="recent-cover">
-                  {work.coverUrl ? (
-                    <img src={work.coverUrl} alt="" loading="lazy" />
-                  ) : work.mediaType === 'gallery' ? (
-                    <ImageIcon size={22} />
-                  ) : (
-                    <Film size={22} />
-                  )}
-                </span>
-                <span className="recent-work-text">
-                  <strong>{work.title || '未命名作品'}</strong>
-                  <small>@{work.author || '未知作者'}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="recent-empty">{data ? '采集后，最近收录的作品会显示在这里。' : '正在读取…'}</div>
-        )}
+        <DashboardBars
+          items={data?.years.map(({ year, count }) => ({
+            label: year === null ? '未知年份' : String(year),
+            count
+          }))}
+          empty="暂无收录作品"
+        />
+      </section>
+      <section className="dashboard-chart-card" aria-label="作者收录排行">
+        <div className="dashboard-section-title">
+          <Users size={16} />
+          <h2>作者榜</h2>
+          <span>按作者昵称</span>
+        </div>
+        <DashboardBars
+          items={data?.authors.map(({ nickname, count }) => ({ label: nickname, count }))}
+          empty="暂无作者统计"
+        />
       </section>
     </div>
   )

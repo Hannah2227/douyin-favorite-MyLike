@@ -1,20 +1,8 @@
-import { useState, type Dispatch, type SetStateAction, type ReactNode } from 'react'
-import {
-  Settings2,
-  Play,
-  Keyboard,
-  User,
-  Database,
-  Info,
-  Search,
-  RotateCcw,
-  Copy,
-  ExternalLink
-} from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Settings2, Play, Keyboard, User, Database, Search, RotateCcw } from 'lucide-react'
 import {
   playbackPreferencesSchema,
   type Account,
-  type Diagnostics,
   type Snapshot,
   type PlaybackPreferences
 } from '../../shared/contracts'
@@ -23,7 +11,6 @@ import {
   shortcutKeys,
   shortcutActions,
   keyLabel,
-  playbackRates,
   type AppPreferences,
   type ShortcutAction
 } from '../../shared/preferences'
@@ -32,20 +19,15 @@ import { AccountPanel } from './AccountPanel'
 import { DataPanel } from './DataPanel'
 import { Select } from './Select'
 import { ConfirmDialog } from './ConfirmDialog'
-import { BrandMark, GitHubMark } from './BrandMark'
 import './settings.css'
 
 type Props = {
   snapshot: Snapshot | null
-  diagnostics: Diagnostics | null
-  setDiagnostics: Dispatch<SetStateAction<Diagnostics | null>>
   perform: Perform
   preferences: PlaybackPreferences
   updatePreferences: (patch: Partial<PlaybackPreferences>) => void
   account: Account | undefined
   busy: boolean
-  login: () => void
-  probe: () => void
   notice: (message: string) => void
 }
 const groups = [
@@ -59,7 +41,7 @@ const groups = [
     id: 'playback',
     title: '播放',
     icon: Play,
-    keywords: '播放 自动 连播 音量 倍速 失焦 暂停 滚轮 快进 后退 图集 实况'
+    keywords: '播放 自动 连播 失焦 暂停 滚轮 快进 后退'
   },
   {
     id: 'shortcuts',
@@ -71,18 +53,12 @@ const groups = [
         .map((a) => a.label)
         .join(' ')
   },
-  { id: 'account', title: '账号', icon: User, keywords: '账号 登录 抖音 核验 名称 改名 删除 退出' },
+  { id: 'account', title: '账号', icon: User, keywords: '账号 抖音 名称 改名 删除' },
   {
     id: 'storage',
     title: '数据与存储',
     icon: Database,
     keywords: '数据 存储 备份 元数据 目录 路径 占用'
-  },
-  {
-    id: 'about',
-    title: '关于',
-    icon: Info,
-    keywords: '关于 版本 诊断 运行 环境 Electron Chromium Node SQLite 项目 GitHub 发布 更新'
   }
 ] as const
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
@@ -117,15 +93,11 @@ function Toggle({
 }
 export function SettingsPanel({
   snapshot,
-  diagnostics,
-  setDiagnostics,
   perform,
   preferences,
   updatePreferences,
   account,
   busy,
-  login,
-  probe,
   notice
 }: Props) {
   const [search, setSearch] = useState(''),
@@ -217,7 +189,7 @@ export function SettingsPanel({
                   { value: 'library', label: '喜欢的内容' },
                   { value: 'dashboard', label: '仪表盘' },
                   { value: 'favorites', label: '收藏的内容' },
-                  { value: 'tasks', label: '连接与任务' }
+                  { value: 'tasks', label: '任务' }
                 ]}
               />
             </Row>
@@ -296,34 +268,6 @@ export function SettingsPanel({
                 options={[5, 10, 15, 30, 60].map((v) => ({ value: String(v), label: `${v} 秒` }))}
               />
             </Row>
-            <Row label="播放倍速">
-              <Select
-                label="默认播放倍速"
-                value={String(preferences.speed)}
-                onChange={(value) => updatePreferences({ speed: Number(value) })}
-                options={[...new Set([...playbackRates, preferences.speed])]
-                  .sort((a, b) => a - b)
-                  .map((v) => ({ value: String(v), label: `${v}x` }))}
-              />
-            </Row>
-            <Row label="播放音量">
-              <input
-                aria-label="默认音量"
-                type="range"
-                min="0"
-                max="1"
-                step=".05"
-                value={preferences.volume}
-                onChange={(e) => updatePreferences({ volume: Number(e.target.value) })}
-              />
-              <span className="setting-number">{Math.round(preferences.volume * 100)}%</span>
-            </Row>
-            <Row
-              label="图集轮播"
-              description="静态图 3 秒，实况播完显示照片 2 秒；手动翻图后停留，可恢复轮播"
-            >
-              <span className="setting-tag">自动保存播放进度</span>
-            </Row>
           </section>
           <section id="settings-shortcuts" className="panel settings-section" hidden={!visible('shortcuts')}>
             <div className="settings-section-heading">
@@ -369,88 +313,11 @@ export function SettingsPanel({
             ))}
           </section>
           <div id="settings-account" className="settings-section" hidden={!visible('account')}>
-            <AccountPanel
-              account={account}
-              busy={busy}
-              perform={perform}
-              login={login}
-              probe={probe}
-              notice={notice}
-            />
+            <AccountPanel account={account} busy={busy} perform={perform} notice={notice} />
           </div>
           <div id="settings-storage" className="settings-section" hidden={!visible('storage')}>
             <DataPanel accountId={account?.id ?? null} perform={perform} />
           </div>
-          <section id="settings-about" className="panel settings-section" hidden={!visible('about')}>
-            <div className="settings-about-brand">
-              <BrandMark size={70} />
-              <div>
-                <h2>MyLike</h2>
-                <p>版本 {snapshot?.version ?? '—'} · Windows x64</p>
-              </div>
-            </div>
-            <p className="settings-description">
-              喜欢与收藏的本地整理工具。内容和会话保存在本机，播放依赖网络；应用不收集遥测数据。
-            </p>
-            <Row label="项目与版本">
-              <button
-                onClick={() =>
-                  void perform('打开项目地址', () => call(window.mylike.invoke('openProject', {})))
-                }
-              >
-                <GitHubMark size={15} />
-                项目地址
-              </button>
-              <button
-                onClick={() =>
-                  void perform('查看发布记录', () => call(window.mylike.invoke('openReleases', {})))
-                }
-              >
-                <ExternalLink size={14} />
-                查看发布记录
-              </button>
-            </Row>
-            <Row label="运行环境" description="诊断仅含版本与进程占用，不含账号、登录凭据或媒体地址">
-              <button
-                onClick={() =>
-                  void perform('读取诊断', async () =>
-                    setDiagnostics(await call(window.mylike.invoke('diagnostics', {})))
-                  )
-                }
-              >
-                查看诊断
-              </button>
-              <button
-                onClick={() =>
-                  void perform('复制脱敏诊断', async () => {
-                    await call(window.mylike.invoke('copyDiagnostics', {}))
-                    notice('脱敏诊断已复制。')
-                  })
-                }
-              >
-                <Copy size={14} />
-                复制诊断信息
-              </button>
-            </Row>
-            {diagnostics && (
-              <dl className="diagnostics">
-                <dt>Electron / Chromium</dt>
-                <dd>
-                  {diagnostics.electron} / {diagnostics.chromium}
-                </dd>
-                <dt>Node / SQLite</dt>
-                <dd>
-                  {diagnostics.node} / {diagnostics.sqlite}
-                </dd>
-                <dt>运行方式</dt>
-                <dd>{diagnostics.packaged ? '生产包' : '开发构建'}</dd>
-                <dt>进程工作集之和</dt>
-                <dd>
-                  {diagnostics.processes.reduce((sum, p) => sum + p.memoryMB, 0)} MB（共享页可能重复计入）
-                </dd>
-              </dl>
-            )}
-          </section>
           {search && !groups.some((g) => visible(g.id)) && (
             <div className="settings-no-results">
               <Search size={27} />

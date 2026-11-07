@@ -39,27 +39,29 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm package:win
+      - name: Test SQLite without a writable system temp directory
+        if: matrix.shard == 1
+        run: pnpm test:storage
       - name: Test packaged application
         run: |
           $env:MYLIKE_EXECUTABLE = Join-Path $PWD 'dist/win-unpacked/MyLike.exe'
           pnpm test:e2e --fully-parallel --shard=${{ matrix.shard }}/4
-      - name: Test portable launcher
+      - name: Test Windows installation and removal
         if: matrix.shard == 1
-        run: node tests/portable-smoke.mjs
+        run: node tests/installer-smoke.mjs --fresh-user
       - name: Create checksums
         if: matrix.shard == 1
         run: |
-          $files = Get-ChildItem dist/*.exe, dist/*.zip | Sort-Object Name
-          if ($files.Count -ne 2) { throw 'Expected one portable EXE and one ZIP.' }
-          $lines = $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = Get-Item "dist/MyLike-$version-win-x64-setup.exe" -ErrorAction Stop
+          $lines = '{0}  {1}' -f (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $installer.Name
           ($lines -join "`n") + "`n" | Set-Content dist/SHA256SUMS.txt -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v7
         if: matrix.shard == 1
         with:
           name: MyLike-Windows-x64
           path: |
-            apps/desktop/dist/*.exe
-            apps/desktop/dist/*.zip
+            apps/desktop/dist/*-win-x64-setup.exe
             apps/desktop/dist/SHA256SUMS.txt
           if-no-files-found: error
       - uses: actions/upload-artifact@v7

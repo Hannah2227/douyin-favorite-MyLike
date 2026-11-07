@@ -8,6 +8,7 @@ export interface HealthEntry {
   failures: number
   rule?: string
   retryAt?: number
+  favoriteCheckpoint?: boolean
 }
 export interface HealthSnapshot {
   accountId: string

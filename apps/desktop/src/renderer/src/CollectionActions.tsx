@@ -76,7 +76,7 @@ export function CollectionActions({
       </div>
       {blocked && !running && (
         <small className="collection-blocked" role="status">
-          任务受阻，进度已保存。请到“连接与任务”核验状态。
+          任务受阻，进度已保存。请到“任务”核验状态。
         </small>
       )}
     </div>

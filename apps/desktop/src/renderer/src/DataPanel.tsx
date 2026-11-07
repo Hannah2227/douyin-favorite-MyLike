@@ -41,6 +41,7 @@ export function DataPanel({ accountId, perform }: { accountId: string | null; pe
           </dd>
         </dl>
       )}
+      {info?.warning && <p role="status">{info.warning}</p>}
       {error && (
         <p role="alert" className="task-error">
           {error}
@@ -48,24 +49,11 @@ export function DataPanel({ accountId, perform }: { accountId: string | null; pe
       )}
       <div className="panel-actions">
         <button
-          onClick={() =>
-            void perform('打开数据目录', () =>
-              call(window.mylike.invoke('openDataFolder', { target: 'data' }))
-            )
-          }
+          disabled={!info}
+          onClick={() => void perform('更改目录', () => call(window.mylike.invoke('moveDataFolder', {})))}
         >
-          打开数据目录
+          更改目录
         </button>
-        <button
-          onClick={() =>
-            void perform('打开备份目录', () =>
-              call(window.mylike.invoke('openDataFolder', { target: 'backups' }))
-            )
-          }
-        >
-          打开备份目录
-        </button>
-        <button onClick={() => void refresh()}>刷新占用</button>
       </div>
     </section>
   )

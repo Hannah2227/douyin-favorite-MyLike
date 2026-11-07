@@ -1,17 +1,17 @@
 :root {
   font-family: Inter, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-  color: #ececf2;
-  background: #0d1018;
+  color: var(--text);
+  background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --bg: #101014;
-  --sidebar: #141419;
-  --surface: #19191f;
-  --surface2: #222229;
-  --line: #2c2c35;
-  --text: #ececf2;
-  --muted: #9999aa;
-  --subtle: #747485;
+  --bg: #000000;
+  --sidebar: #0a0a0a;
+  --surface: #161616;
+  --surface2: #202020;
+  --line: #2a2a2a;
+  --text: #f2f2f2;
+  --muted: #ababab;
+  --subtle: #858585;
   --accent: #ff6488;
   --soft: #ff648812;
   --shadow: 0 20px 70px #0005;
@@ -663,24 +663,6 @@ h1 {
 .help-questions p {
   margin: 12px 0 0;
 }
-.help-steps {
-  padding-left: 24px;
-  margin-top: 24px;
-}
-.help-steps li {
-  padding: 0 0 26px 12px;
-}
-.help-steps li::marker {
-  color: var(--accent);
-  font-weight: 600;
-}
-.help-steps h3 {
-  font-size: 15px;
-  font-weight: 500;
-}
-.help-steps p {
-  margin-top: 8px;
-}
 .list-caption {
   display: flex;
   justify-content: space-between;
@@ -694,8 +676,47 @@ h1 {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 24px 16px;
+  position: relative;
   scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+}
+.library-scroll > * {
+  flex-shrink: 0;
+}
+.library-grid-area {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 0 24px 16px;
+}
+.library-grid-area .empty-state {
+  flex: 1;
+  height: auto;
+}
+.library-pagination {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+}
+.library-pagination button {
+  padding: 3px 7px;
+}
+.library-pagination input {
+  width: 44px;
+  margin: 0 3px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
 }
 .virtual-grid {
   position: relative;
@@ -800,15 +821,6 @@ h1 {
 .work-card time {
   flex-shrink: 0;
   color: var(--subtle);
-}
-.library-load-status {
-  min-height: 54px;
-  padding: 16px 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--muted);
 }
 .library-load-error {
   display: flex;

@@ -1,4 +1,6 @@
+import { configureTemporaryStorage, recoverableYearFailure, sqliteFailure } from './sqlite-policy'
 import { FavoritesStore, favoritesMigration } from './favorites'
+import { likedOrderJoin, likedOrderSchema, likedOrderSort, recordLikedOrder } from './liked-order'
 import { FavoriteState, favoriteStateSchema } from './favorite-state'
 import { RuntimeEventsStore } from './runtime-events'
 import { purgeAccountRows, purgeAccountBackups } from './account-purge'
@@ -24,6 +26,7 @@ export class Store {
     this.db = new DatabaseSync(file)
     this.events = new RuntimeEventsStore(this.db)
     try {
+      configureTemporaryStorage(this.db)
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
       if (version.user_version > 7) throw new Error('Database version is newer than this application')
@@ -93,7 +96,7 @@ export class Store {
         this.db.exec(
           "BEGIN IMMEDIATE; ALTER TABLE unlike_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'likes' CHECK(source IN ('likes','favorites')); PRAGMA user_version=7; COMMIT;"
         )
-      this.db.exec('BEGIN IMMEDIATE; ' + favoriteStateSchema + ' COMMIT;')
+      this.db.exec('BEGIN IMMEDIATE; ' + favoriteStateSchema + likedOrderSchema + ' COMMIT;')
       const favoriteState = new FavoriteState(this.db)
       const favoriteTasks = this.db.prepare('SELECT id FROM saved_tasks').all()
       for (const task of favoriteTasks) favoriteState.ensure(String(task.id))
@@ -575,6 +578,7 @@ export class Store {
             ...input,
             preserveCheckpoint: task.phase === 'head' && (input.hasMore || task.backfillCursor !== null)
           })
+          recordLikedOrder(this.db, task, input.items)
           let phase = task.phase,
             cursor = input.cursor,
             status: CollectionTask['status'] = 'running',
@@ -638,7 +642,7 @@ export class Store {
           mediaType: 'all',
           year: null,
           month: null,
-          sort: 'collected',
+          sort: 'published',
           source: 'all'
         })
         const counts = this.db
@@ -646,10 +650,6 @@ export class Store {
             `SELECT count(*) AS total,coalesce(sum(w.mediaType='video'),0) AS videos,coalesce(sum(w.mediaType='gallery'),0) AS galleries,coalesce(sum(w.mediaType='gallery' AND w.isLive=1),0) AS live ${scope.from}`
           )
           .get(...scope.params)!
-        const recent = this.db
-          .prepare(`SELECT w.* ${scope.from} ${scope.order} LIMIT 4`)
-          .all(...scope.params)
-          .map((row) => ({ ...row, isLive: !!row.isLive }))
         const sources = this.db
           .prepare(
             `SELECT
@@ -665,7 +665,13 @@ export class Store {
             count(*) AS count ${scope.from} GROUP BY year ORDER BY year DESC`
           )
           .all(...scope.params)
-        return { accountId: input.accountId, ...counts, ...sources, years, recent }
+        const authors = this.db
+          .prepare(
+            `SELECT trim(w.author) AS nickname,count(*) AS count ${scope.from}
+             AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 6`
+          )
+          .all(...scope.params)
+        return { accountId: input.accountId, ...counts, ...sources, years, authors }
       }
       case 'matchingIds': {
         this.account(input.accountId)
@@ -720,7 +726,12 @@ export class Store {
         return this.unlike.call(method, input)
     }
   }
-  private filter(query: Filter): { from: string; params: (string | number)[]; order: string } {
+  private filter(query: Filter): {
+    from: string
+    params: (string | number)[]
+    order: string
+    liked: boolean
+  } {
     const clauses = ['a.accountId=?'],
       params: (string | number)[] = [query.accountId]
     if (query.search) {
@@ -754,31 +765,82 @@ export class Store {
         : query.source === 'all'
           ? '(SELECT accountId,workId,max(firstSeen) AS firstSeen FROM (SELECT accountId,workId,firstSeen FROM account_items UNION ALL SELECT accountId,workId,firstSeen FROM saved_items) GROUP BY accountId,workId)'
           : 'account_items'
-    const from = `FROM works w JOIN ${table} a ON a.workId=w.id WHERE ${clauses.join(' AND ')}`
+    const liked = query.sort === 'liked' && (!query.source || query.source === 'likes')
+    const from = `FROM works w JOIN ${table} a ON a.workId=w.id ${liked ? likedOrderJoin : ''} WHERE ${clauses.join(' AND ')}`
     return {
       from,
       params,
-      order:
-        query.sort === 'collected'
+      liked,
+      order: liked
+        ? likedOrderSort
+        : query.sort === 'collected'
           ? 'ORDER BY a.firstSeen DESC,w.id DESC'
           : 'ORDER BY w.publishedAt DESC,w.id DESC'
     }
   }
+  recordStorageFailure(accountId: unknown, method: string, error: unknown): void {
+    const failure = sqliteFailure(error)
+    if (!failure) return
+    const diagnostic = { operation: method, code: failure.code, sqliteCode: failure.sqliteCode }
+    console.error('[MyLike:database] Operation failed.', diagnostic)
+    if (typeof accountId !== 'string') return
+    try {
+      this.events.append(accountId, {
+        kind: 'task',
+        operation: 'storage',
+        code: failure.code,
+        responseType: 'sqlite-error',
+        message: failure.message,
+        shape: '操作：' + method + '；SQLite 扩展码：' + failure.sqliteCode
+      })
+    } catch {
+      // A full or unwritable database must not replace the original failure with a logging failure.
+      console.error('[MyLike:database] Diagnostic could not be saved.', diagnostic)
+    }
+  }
   private query(query: Query): Replies['query'] {
-    const { from, params, order } = this.filter(query)
-    const total = (this.db.prepare(`SELECT count(*) AS n ${from}`).get(...params) as { n: number }).n
+    const { from, params, order, liked } = this.filter(query)
+    const counts = this.db
+      .prepare(`SELECT count(*) AS n${liked ? ',count(l.workId) AS ranked' : ''} ${from}`)
+      .get(...params) as { n: number; ranked?: number }
+    const total = counts.n
+    const orderInfo = counts.ranked === undefined ? {} : { unrankedLikes: total - counts.ranked }
     const items = this.db
       .prepare(`SELECT w.* ${from} ${order} LIMIT ? OFFSET ?`)
       .all(...params, query.limit, query.offset)
       .map((row) => ({ ...row, isLive: !!row.isLive }))
-    const yearScope = this.filter({ ...query, search: '', mediaType: 'all', year: null, month: null })
-    const years = this.db
+    try {
+      return { items, total, ...orderInfo, years: this.years(query) } as Replies['query']
+    } catch (error) {
+      if (!recoverableYearFailure(error)) throw error
+      this.recordStorageFailure(query.accountId, 'query-years', error)
+      return {
+        items,
+        total,
+        ...orderInfo,
+        years: query.year === null ? [] : [query.year],
+        yearsUnavailable: true
+      } as Replies['query']
+    }
+  }
+  private years(query: Query): number[] {
+    const yearScope = this.filter({
+      ...query,
+      search: '',
+      mediaType: 'all',
+      year: null,
+      month: null,
+      sort: 'published'
+    })
+    // Only the small set of distinct years is sorted; sorting every matching row
+    // inside SQLite can spill to the system temp directory even for a 60-row page.
+    return this.db
       .prepare(
-        `SELECT DISTINCT cast(strftime('%Y',w.publishedAt,'unixepoch','localtime') AS INTEGER) AS year ${yearScope.from} ORDER BY year DESC`
+        `SELECT DISTINCT cast(strftime('%Y',w.publishedAt,'unixepoch','localtime') AS INTEGER) AS year ${yearScope.from}`
       )
       .all(...yearScope.params)
       .map((row) => Number(row.year))
       .filter((year) => year >= 2000)
-    return { items, total, years } as Replies['query']
+      .sort((a, b) => b - a)
   }
 }

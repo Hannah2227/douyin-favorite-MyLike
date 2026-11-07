@@ -36,14 +36,23 @@ export function HealthPanel({
         ? '不明确'
         : '正常'
   }
+  const checkpointReason = (entry: (typeof entries)[number]) => {
+    const recovery = taskRecovery(entry.code)
+    if (
+      !entry.favoriteCheckpoint ||
+      ['login', 'verify'].includes(recovery?.action ?? '') ||
+      entry.code === 'RATE_LIMITED' ||
+      entry.rule === 'envelope.risk_code'
+    )
+      return recovery?.message
+    if (entry.failures >= 5) return '多次核验未能继续收藏采集。已保留进度，建议明天再试。'
+    return '收藏采集已保留进度。请点击“核验状态”，恢复后将自动继续。'
+  }
   const attention = snapshot?.authentication
   const reasons = attention
     ? [attention.kind === 'verification' ? '请在抖音窗口完成验证。' : '请在抖音窗口完成登录。']
     : bad.length
-      ? [...new Set(bad.map((e) => taskRecovery(e.code)?.message ?? '暂时无法完成核验，请稍后再试。'))].slice(
-          0,
-          3
-        )
+      ? [...new Set(bad.map((e) => checkpointReason(e) ?? '暂时无法完成核验，请稍后再试。'))].slice(0, 3)
       : [status === 'normal' ? '本次核验通过，可继续采集。' : '尚未取得完整结果，请点击核验状态。']
   const remaining = Math.max(
     0,
@@ -65,7 +74,10 @@ export function HealthPanel({
         {account && (
           <p>
             {health?.checking
-              ? '正在核验登录、喜欢与收藏，请稍候…'
+              ? entries.some((entry) => entry.favoriteCheckpoint) ||
+                snapshot?.favoritesActivity === 'requesting'
+                ? '正在核验状态，请稍候…'
+                : '正在核验登录、喜欢与收藏，请稍候…'
               : '喜欢：' +
                 describe(['likes']) +
                 ' · 收藏：' +

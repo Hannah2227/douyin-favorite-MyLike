@@ -14,10 +14,13 @@ asar: true
 npmRebuild: false
 win:
   icon: assets/icon.ico
-  target:
-    - portable
-    - zip
+  target: nsis
   signExecutable: false
-portable:
-  artifactName: MyLike-${version}-win-${arch}-portable.exe
-artifactName: MyLike-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  installerLanguages: [zh_CN]
+  uninstallerSidebar: build/installerSidebar.bmp
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: false
+  deleteAppDataOnUninstall: false
+  artifactName: MyLike-${version}-win-${arch}-setup.exe

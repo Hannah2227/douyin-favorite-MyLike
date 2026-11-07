@@ -65,6 +65,13 @@ export function taskRecovery(code?: string | null, unknown = false): TaskRecover
         action: 'retry',
         actionLabel: '重试'
       }
+    case 'FAVORITE_EMPTY_PAGE':
+      return {
+        title: '暂时无法继续收藏采集',
+        message: '抖音暂未返回这一页收藏，已保留进度。请点击“核验状态”。',
+        action: 'retry',
+        actionLabel: '核验状态'
+      }
     case 'EMPTY_RESPONSE':
     case 'EMPTY_PAGE':
     case 'EMPTY_PAGE_LIMIT':

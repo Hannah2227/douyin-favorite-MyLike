@@ -1,5 +1,12 @@
 import JSONbigFactory from 'json-bigint'
-import type { Media, Work, FavoriteFolder } from '../../shared/contracts'
+import type {
+  Media,
+  Work,
+  FavoriteFolder,
+  CommentPage,
+  WorkComment,
+  CommentMediaSource
+} from '../../shared/contracts'
 import { AppError } from '../errors'
 import {
   assertBusinessResponse,
@@ -124,6 +131,100 @@ export function parseResponse(body: string, status: number, context: ResponseCon
   return data
 }
 
+function commentAttachments(row: Obj): CommentMediaSource[][] {
+  const imageList = Array.isArray(row.image_list) ? row.image_list.slice(0, 9) : []
+  const stickers = [
+    row.sticker,
+    row.sticker_info,
+    row.emoji,
+    row.emoji_info,
+    row.sticker_list,
+    row.emoji_detail_list
+  ].flatMap((value: unknown) => (Array.isArray(value) ? value.slice(0, 9) : [value]))
+  const attachments = new Map<string, CommentMediaSource[]>()
+  const mediaUrls = (value: unknown) => {
+    const candidate = object(value)
+    const list = Array.isArray(value)
+      ? value
+      : [value, candidate.url, ...(Array.isArray(candidate.url_list) ? candidate.url_list : [])]
+    return urls(list.slice(0, 8))
+  }
+  for (const value of [...imageList, ...stickers]) {
+    const item = object(value)
+    const video = object(item.video)
+    const images = [
+      item.animated_url,
+      item.animation_url,
+      item.animate_url,
+      item.dynamic_url,
+      item.gif_url,
+      item.origin_url,
+      item.sticker_url,
+      item.emoji_url,
+      item.image_url,
+      item.url_list,
+      value,
+      item.display_image,
+      item.static_url,
+      item.thumb_url,
+      item.thumbnail
+    ]
+    const videoUrls = [item.video_url, item.play_addr, video.play_addr, video.download_addr].flatMap(
+      mediaUrls
+    )
+    const sources = new Map<string, CommentMediaSource>()
+    for (const url of [...videoUrls, ...images.flatMap(mediaUrls)]) {
+      const type =
+        videoUrls.includes(url) || /\.(?:mp4|webm)(?:[?#]|$)|[?&]mime_type=video[_%/]/i.test(url)
+          ? 'video'
+          : 'image'
+      sources.set(url, { url, type })
+    }
+    const candidates = [...sources.values()].slice(0, 8)
+    if (candidates.length) attachments.set(candidates[0]!.url, candidates)
+  }
+  return [...attachments.values()].slice(0, 9)
+}
+
+export function parseCommentPage(data: Obj, workId: string, requestedCursor: string): CommentPage {
+  const fail = () =>
+    new AppError('INVALID_RESPONSE', '抖音未返回有效的评论列表，请稍后重试。', 'payload.schema')
+  const more = [1, true, '1'].includes(data.has_more)
+  if (!more && ![0, false, '0'].includes(data.has_more)) throw fail()
+  const rows = data.comments === null && !more && String(data.status_code) === '0' ? [] : data.comments
+  if (!Array.isArray(rows)) throw fail()
+  const items = new Map<string, WorkComment>()
+  const count = (value: unknown) => {
+    const parsed =
+      typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value)) ? Number(value) : 0
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
+  }
+  for (const value of rows) {
+    const row = object(value)
+    const cid = text(row.cid) || (Number.isSafeInteger(row.cid) ? String(row.cid) : '')
+    if (!/^\d{1,30}$/.test(cid) || /^0+$/.test(cid)) continue
+    if (row.aweme_id != null && String(row.aweme_id) !== workId)
+      throw new AppError('INVALID_RESPONSE', '评论与当前作品不一致，请重试。', 'payload.target_mismatch')
+    const user = object(row.user)
+    const timestamp = count(row.create_time)
+    items.set(cid, {
+      id: cid,
+      text: text(row.text).slice(0, 4000),
+      author: text(user.nickname).slice(0, 100) || '抖音用户',
+      avatarUrl: first(object(user.avatar_thumb).url_list),
+      attachments: commentAttachments(row),
+      publishedAt: timestamp > 0 && timestamp < 32_503_680_000 ? timestamp : null,
+      likes: count(row.digg_count),
+      replies: count(row.reply_comment_total)
+    })
+  }
+  if (rows.length && !items.size) throw fail()
+  if (more && !items.size) throw fail()
+  const nextCursor = more ? pageCursor(data.cursor, true) : null
+  if (nextCursor === requestedCursor) throw new AppError('CURSOR_STALLED', '评论分页没有推进，请重试。')
+  return { items: [...items.values()], nextCursor }
+}
+
 export function parseLikeState(data: Obj, workId: string): boolean {
   assertDetailResponse(data, workId)
   const detail = object(data.aweme_detail)
@@ -223,9 +324,11 @@ export interface CollectionPage {
   skipped: { position: number; workId?: string }[]
   received: number
 }
-export function parseFavoritesPage(data: Obj, options: { allowEmpty?: boolean } = {}): CollectionPage {
+type FavoritePageOptions = { allowEmpty?: boolean; allowNullPage?: boolean }
+
+export function parseFavoritesPage(data: Obj, options: FavoritePageOptions = {}): CollectionPage {
   assertBusinessResponse(data, { operation: 'favorites' })
-  const list = collectionList(data, 'aweme_list', '收藏作品')
+  const list = collectionList(data, 'aweme_list', '收藏作品', options.allowNullPage)
   if (![0, 1, false, true, '0', '1'].includes(data.has_more))
     throw new AppError('UPSTREAM_CHANGED', '收藏接口缺少可信的分页结束标记。')
   const hasMore = [1, true, '1'].includes(data.has_more)
@@ -248,18 +351,23 @@ export function parseFavoritesPage(data: Obj, options: { allowEmpty?: boolean } 
   }
   return { items, cursor, hasMore, skipped, received: list.length }
 }
-function collectionList(data: Obj, field: string, label: string): unknown[] {
+function collectionList(data: Obj, field: string, label: string, allowNullPage = false): unknown[] {
   if (Array.isArray(data[field])) return data[field]
   // Empty collection endpoints can omit their array or return null. This is
   // only a candidate end when both business success and has_more=0 are explicit;
   // the collector still confirms it twice and the store protects nonempty folders.
   if (data[field] == null && String(data.status_code) === '0' && [0, false, '0'].includes(data.has_more))
     return []
+  if (data[field] == null && String(data.status_code) === '0' && [1, true, '1'].includes(data.has_more)) {
+    if (allowNullPage) return []
+    if (data[field] === null)
+      throw new AppError('FAVORITE_EMPTY_PAGE', '抖音暂未返回这一页内容，请点击核验状态。')
+  }
   throw new AppError('UPSTREAM_CHANGED', `${label}列表缺少有效的作品或收藏夹数组，进度未推进。`)
 }
 export function parseFavoriteFolders(
   data: Obj,
-  options: { allowEmpty?: boolean } = {}
+  options: FavoritePageOptions = {}
 ): {
   folders: Omit<FavoriteFolder, 'localCount'>[]
   cursor: string
@@ -268,7 +376,7 @@ export function parseFavoriteFolders(
   assertBusinessResponse(data, { operation: 'folders' })
   if (![0, 1, false, true, '0', '1'].includes(data.has_more))
     throw new AppError('UPSTREAM_CHANGED', '收藏夹接口缺少可信的列表或结束标记。')
-  const list = collectionList(data, 'collects_list', '收藏夹')
+  const list = collectionList(data, 'collects_list', '收藏夹', options.allowNullPage)
   const hasMore = [1, true, '1'].includes(data.has_more)
   if (hasMore && !list.length && !options.allowEmpty)
     throw new AppError('EMPTY_PAGE', '收藏夹返回空列表但仍标记更多，断点未推进。')

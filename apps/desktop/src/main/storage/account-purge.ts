@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { configureTemporaryStorage } from './sqlite-policy'
 import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, unlinkSync } from 'node:fs'
 import { join, relative, isAbsolute, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -60,6 +61,7 @@ export function purgeAccountBackups(root: string, accountId: string): void {
       const source = new DatabaseSync(original, { readOnly: true })
       const temporary = join(folder, `.account-purge-${randomUUID()}.tmp`)
       try {
+        configureTemporaryStorage(source)
         if (source.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok')
           throw new Error('Invalid backup')
         const version = Number(source.prepare('PRAGMA user_version').get()?.user_version)
@@ -72,6 +74,7 @@ export function purgeAccountBackups(root: string, accountId: string): void {
       }
       const redacted = new DatabaseSync(temporary)
       try {
+        configureTemporaryStorage(redacted)
         redacted.exec('PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; BEGIN IMMEDIATE;')
         purgeAccountRows(redacted, accountId)
         if (redacted.prepare('PRAGMA foreign_key_check').all().length)

@@ -179,6 +179,7 @@ it('counts publication years once per account work across likes and favorites, i
     { year: null, count: 1 }
   ])
   expect(overview.years.reduce((sum, item) => sum + item.count, 0)).toBe(overview.total)
+  expect(overview.authors).toEqual([{ nickname: '作者', count: 3 }])
   expect(store.call('libraryOverview', { accountId: 'b' }).years).toEqual([
     { year: 2023, count: 2 },
     { year: 2020, count: 1 }

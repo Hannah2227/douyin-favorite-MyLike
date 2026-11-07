@@ -2,7 +2,7 @@ import { CollectionActions } from './CollectionActions'
 import { FavoritesPanel, useFavoriteFolders } from './FavoritesPanel'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { Diagnostics, Snapshot, Work } from '../../shared/contracts'
+import type { Snapshot, Work } from '../../shared/contracts'
 import { Player } from './Player'
 
 import { call, type Tab } from './api'
@@ -32,7 +32,6 @@ export function App() {
   const [adding, setAdding] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const [name, setName] = useState('')
-  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ accountId: string; ids: string[] } | null>(null)
   const [unlikeTarget, setUnlikeTarget] = useState<{
     accountId: string
@@ -56,17 +55,15 @@ export function App() {
   const likesLibrary = useLibrary(
     accountId,
     (!playback.view || presentation.leaving) && tab === 'library',
-    revision,
-    setError
+    revision
   )
   const favoritesLibrary = useLibrary(
     accountId,
     (!playback.view || presentation.leaving) && tab === 'favorites',
     revision,
-    setError,
     { source: 'favorites', folderId }
   )
-  const favoriteFolders = useFavoriteFolders(accountId, revision)
+  const favoriteFolders = useFavoriteFolders(tab === 'favorites' ? accountId : null, revision)
   const library = tab === 'favorites' ? favoritesLibrary : likesLibrary
   useEffect(() => setFolderId(null), [accountId])
   useEffect(() => {
@@ -186,23 +183,81 @@ export function App() {
       )
     )
   }
-  const startFromDashboard = (work?: Work) => {
-    presentation.rememberFocus()
-    void perform('准备播放队列', () =>
-      playback.start(
-        {
-          type: 'filter',
-          filter: { search: '', mediaType: 'all', year: null, month: null, sort: 'published', source: 'all' }
-        },
-        work ? 'sequence' : 'shuffle',
-        work?.id
-      )
-    )
-  }
   const resumePlayback = () => {
     presentation.rememberFocus()
     if (snapshot?.playback) void perform('恢复播放', () => playback.resume(snapshot.playback!))
   }
+  const heading = (
+    <>
+      <header className="page-header">
+        <h1>
+          {
+            {
+              dashboard: '仪表盘',
+              library: '喜欢的内容',
+              favorites: '收藏的内容',
+              tasks: '任务',
+              settings: '应用设置',
+              faq: '常见问题'
+            }[tab]
+          }
+        </h1>
+        {(tab === 'library' || tab === 'favorites') && (
+          <LibrarySearch value={library.search} change={library.setSearch} />
+        )}
+        {tab === 'library' && (
+          <div className="header-actions">
+            <CollectionActions
+              snapshot={snapshot}
+              accountId={accountId}
+              source="likes"
+              busy={busy}
+              perform={perform}
+            />
+          </div>
+        )}
+      </header>
+      {(error || notice) && (
+        <div className={`notice ${error ? 'error' : 'success toast'}`} role={error ? 'alert' : 'status'}>
+          <span>{error || notice}</span>
+          <button
+            aria-label="关闭提示"
+            onClick={() => {
+              setError('')
+              setNotice('')
+            }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+    </>
+  )
+  const favoriteControls =
+    tab === 'favorites' ? (
+      <FavoritesPanel
+        snapshot={snapshot}
+        compact
+        accountId={accountId}
+        task={snapshot?.favorites ?? null}
+        recovery={snapshot?.recovery}
+        accessChecks={snapshot?.accessChecks}
+        login={login}
+        updateTask={snapshot?.favoritesUpdate ?? null}
+        busy={
+          !!operation ||
+          !!snapshot?.busy ||
+          (collecting && snapshot?.favorites?.status !== 'running') ||
+          !!unliking
+        }
+        perform={perform}
+        start={startFavorites}
+        folders={favoriteFolders.folders}
+        error={favoriteFolders.error}
+        folderId={folderId}
+        setFolderId={setFolderId}
+      />
+    ) : null
   return (
     <div
       className={`app-shell${playback.view && !presentation.leaving ? ' player-mode sidebar-collapsed' : ''}`}
@@ -227,89 +282,29 @@ export function App() {
         <div className="window-bar">
           <span className="window-drag-space" />
         </div>
-        <header className="page-header">
-          <h1>
-            {
-              {
-                dashboard: '仪表盘',
-                library: '喜欢的内容',
-                favorites: '收藏的内容',
-                tasks: '连接与任务',
-                settings: '应用设置',
-                faq: '常见问题',
-                guide: '使用教程'
-              }[tab]
-            }
-          </h1>
-          {(tab === 'library' || tab === 'favorites') && (
-            <LibrarySearch value={library.search} change={library.setSearch} />
-          )}
-          {tab === 'library' && (
-            <div className="header-actions">
-              <CollectionActions
-                snapshot={snapshot}
-                accountId={accountId}
-                source="likes"
-                busy={busy}
-                perform={perform}
-              />
-            </div>
-          )}
-        </header>
-        {(error || notice) && (
-          <div className={`notice ${error ? 'error' : 'success toast'}`} role={error ? 'alert' : 'status'}>
-            <span>{error || notice}</span>
-            <button
-              aria-label="关闭提示"
-              onClick={() => {
-                setError('')
-                setNotice('')
-              }}
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
+        {tab !== 'library' && tab !== 'favorites' && heading}
         {tab === 'dashboard' && (
-          <Dashboard
-            account={account}
-            snapshot={snapshot}
-            overview={overview}
-            busy={!!operation}
-            browse={() => setTab('library')}
-            add={() => setAdding(true)}
-            play={startFromDashboard}
-            resume={resumePlayback}
-          />
+          <Dashboard account={account} overview={overview} add={() => setAdding(true)} />
         )}
-        {(tab === 'faq' || tab === 'guide') && <HelpPage kind={tab} />}
-        {tab === 'favorites' && (
-          <FavoritesPanel
-            snapshot={snapshot}
-            compact
-            accountId={accountId}
-            task={snapshot?.favorites ?? null}
-            recovery={snapshot?.recovery}
-            accessChecks={snapshot?.accessChecks}
-            login={login}
-            updateTask={snapshot?.favoritesUpdate ?? null}
-            busy={
-              !!operation ||
-              !!snapshot?.busy ||
-              (collecting && snapshot?.favorites?.status !== 'running') ||
-              !!unliking
-            }
-            perform={perform}
-            start={startFavorites}
-            folders={favoriteFolders.folders}
-            error={favoriteFolders.error}
-            folderId={folderId}
-            setFolderId={setFolderId}
-          />
-        )}
+        {tab === 'faq' && <HelpPage />}
         {(tab === 'library' || tab === 'favorites') && (
           <LibraryView
             key={tab}
+            header={
+              <>
+                {heading}
+                {favoriteControls}
+              </>
+            }
+            rebuildLikedOrder={
+              accountId && tab === 'library'
+                ? () =>
+                    void perform('补齐点赞顺序', () =>
+                      call(window.mylike.invoke('collectionStart', { accountId, mode: 'like-order' }))
+                    )
+                : undefined
+            }
+            rebuildBusy={busy}
             readOnly={tab === 'favorites'}
             library={library}
             account={account}
@@ -372,15 +367,11 @@ export function App() {
         {tab === 'settings' && (
           <SettingsPanel
             snapshot={snapshot}
-            diagnostics={diagnostics}
-            setDiagnostics={setDiagnostics}
             perform={perform}
             preferences={preferences.value}
             updatePreferences={preferences.update}
             account={account}
             busy={!!operation}
-            login={login}
-            probe={probe}
             notice={setNotice}
           />
         )}

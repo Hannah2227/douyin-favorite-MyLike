@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session, screen } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { resolve, join, sep, isAbsolute } from 'node:path'
+import { resolve, join, sep, isAbsolute, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { commands, type Command } from '../shared/contracts'
 import { CHANNEL, CHANGED, BEFORE_QUIT, QUIT_READY } from '../shared/channels'
@@ -11,6 +11,7 @@ import { safeMediaUrl } from './douyin/parse'
 import { Application } from './application'
 import { AppError, publicError } from './errors'
 import { restoreWindowState } from './window-state'
+import { StorageLocation } from './storage-location'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'mylike', privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -20,12 +21,20 @@ protocol.registerSchemesAsPrivileged([
 // regular presentation path while retaining GPU rendering and video decoding.
 if (process.platform === 'win32') app.commandLine.appendSwitch('disable-direct-composition')
 app.setName('MyLike')
-const data = process.env.MYLIKE_USER_DATA
-if (data && isAbsolute(data)) app.setPath('userData', data)
-else app.setPath('userData', join(app.getPath('appData'), 'MyLikeElectron'))
+const override = process.env.MYLIKE_USER_DATA
+const testDirectory = override && isAbsolute(override) ? override : undefined
+const installDirectory = app.isPackaged ? dirname(app.getPath('exe')) : undefined
+const storage = new StorageLocation(
+  testDirectory ?? join(app.getPath('appData'), 'MyLikeElectron'),
+  installDirectory,
+  installDirectory && !testDirectory ? installDirectory + ' 数据' : undefined
+)
+app.setPath('userData', storage.anchor)
 let mainWindow: BrowserWindow | null = null
 let service: Application | null = null
 let quitting = false
+let choosingStorage = false
+let nextStorage: string | undefined
 function isUiUrl(value: string): boolean {
   try {
     const url = new URL(value)
@@ -66,6 +75,36 @@ async function flushRenderer(): Promise<void> {
 }
 const changed = () => {
   if (!quitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(CHANGED)
+}
+
+async function chooseStorage(win: BrowserWindow): Promise<null> {
+  if (quitting || choosingStorage || nextStorage) throw new AppError('STORAGE_BUSY', '正在处理数据目录变更。')
+  choosingStorage = true
+  try {
+    const current = app.getPath('userData')
+    const selected = await dialog.showOpenDialog(win, {
+      title: '选择新的数据目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    const path = selected.filePaths[0]
+    if (selected.canceled || !path || quitting) return null
+    const target = storage.check(current, path)
+    const choice = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['取消', '迁移并重启'],
+      defaultId: 1,
+      cancelId: 0,
+      message: '要移动 MyLike 的数据吗？',
+      detail: `新位置：${target}\n\n应用将关闭并重新打开。数据库、备份和登录态会一起迁移，校验成功后才清理旧数据。迁移期间请保持目标磁盘连接。`
+    })
+    if (choice.response === 1 && !quitting) {
+      nextStorage = target
+      setImmediate(() => app.quit())
+    }
+    return null
+  } finally {
+    choosingStorage = false
+  }
 }
 
 async function bootstrap(): Promise<void> {
@@ -126,11 +165,11 @@ async function bootstrap(): Promise<void> {
     show: false,
     title: 'MyLike',
     icon: join(app.getAppPath(), 'assets/icon.png'),
-    backgroundColor: '#0d1018',
+    backgroundColor: '#000000',
     ...(process.platform === 'win32'
       ? {
           titleBarStyle: 'hidden' as const,
-          titleBarOverlay: { color: '#0d1018', symbolColor: '#c7cad3', height: 30 }
+          titleBarOverlay: { color: '#000000', symbolColor: '#f2f2f2', height: 30 }
         }
       : {}),
     webPreferences: {
@@ -155,7 +194,13 @@ async function bootstrap(): Promise<void> {
   win.on('closed', () => {
     mainWindow = null
   })
-  service = new Application(db, new DouyinEngine(changed, () => mainWindow), changed, () => mainWindow)
+  service = new Application(
+    db,
+    new DouyinEngine(changed, () => mainWindow),
+    changed,
+    () => mainWindow,
+    () => storage.warning
+  )
   ipcMain.handle(CHANNEL, async (event, command: unknown, input: unknown) => {
     try {
       const frameUrl = event.senderFrame?.url
@@ -166,6 +211,7 @@ async function bootstrap(): Promise<void> {
         throw new AppError('INVALID_COMMAND', '不支持的操作。')
       const parsed = commands[command as Command].safeParse(input)
       if (!parsed.success) throw new AppError('INVALID_INPUT', '操作参数无效。')
+      if (command === 'moveDataFolder') return { ok: true, data: await chooseStorage(win) }
       return { ok: true, data: await service!.execute(command as Command, parsed.data) }
     } catch (error) {
       return { ok: false, error: publicError(error) }
@@ -181,6 +227,15 @@ async function bootstrap(): Promise<void> {
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
+  let storageError: unknown
+  try {
+    mkdirSync(storage.anchor, { recursive: true })
+    const directory = storage.prepare()
+    app.setPath('userData', directory)
+    app.setPath('sessionData', directory)
+  } catch (error) {
+    storageError = error
+  }
   app.on('second-instance', () => {
     mainWindow?.show()
     mainWindow?.focus()
@@ -188,14 +243,25 @@ else {
   void app
     .whenReady()
     .then(() => {
-      mkdirSync(app.getPath('userData'), { recursive: true })
+      if (storageError) throw storageError
       return bootstrap()
     })
+    .then(() => storage.finish())
     .catch((error) => {
+      let restored = false
+      try {
+        restored = storage.restorePrevious()
+      } catch {
+        // The active path may be unavailable. Keep the recorded location.
+      }
       if (process.env.MYLIKE_HEADLESS !== '1')
         dialog.showErrorBox(
           'MyLike 未能启动',
-          '无法加载应用资源或数据库。原数据未重置，请检查文件权限、磁盘与版本。'
+          restored
+            ? '新数据位置未能启动，已恢复原位置。请重新打开 MyLike。'
+            : error instanceof AppError
+              ? error.message
+              : '无法加载应用资源或数据库。原数据未重置，请检查文件权限、磁盘与版本。'
         )
       console.error(
         '[MyLike] Startup failed; user data was not reset.',
@@ -210,7 +276,19 @@ else {
     quitting = true
     void flushRenderer()
       .then(() => service?.close())
-      .catch(() => console.error('[MyLike] Shutdown persistence failure.'))
+      .then(() => {
+        if (!nextStorage) return
+        storage.schedule(app.getPath('userData'), nextStorage)
+        app.relaunch()
+      })
+      .catch((error: unknown) => {
+        if (nextStorage && process.env.MYLIKE_HEADLESS !== '1')
+          dialog.showErrorBox(
+            '未能移动数据',
+            error instanceof AppError ? error.message : '原数据仍在原位置，请重新打开 MyLike。'
+          )
+        console.error('[MyLike] Shutdown or storage relocation failed.')
+      })
       .finally(() => app.quit())
   })
 }

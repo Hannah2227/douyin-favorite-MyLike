@@ -1,0 +1,158 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="MyLike 安装" Language="zh-CN" Width="560" Height="405"
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanMinimize"
+        Background="White" FontFamily="Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI"
+        FontSize="14" Foreground="#232029" UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="0"
+                        GlassFrameThickness="0" CornerRadius="12" />
+  </shell:WindowChrome.WindowChrome>
+  <Window.Resources>
+    <SolidColorBrush x:Key="Accent" Color="#D93160" />
+    <Style x:Key="FlatButton" TargetType="Button">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#504958" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Surface" CornerRadius="6" Background="{TemplateBinding Background}"
+                    BorderBrush="Transparent" BorderThickness="1" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Surface" Property="Background" Value="#F5EEF2" />
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Surface" Property="Background" Value="#F0E3EA" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value=".45" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource FlatButton}">
+      <Setter Property="Background" Value="{StaticResource Accent}" />
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="FontSize" Value="16" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Surface" CornerRadius="8" Background="{TemplateBinding Background}"
+                    BorderBrush="Transparent" BorderThickness="2">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Surface" Property="Background" Value="#C52853" />
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Surface" Property="Background" Value="#AC2248" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="#70223A" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CheckStyle" TargetType="CheckBox">
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="FocusRing" CornerRadius="5" BorderThickness="1"
+                    BorderBrush="Transparent" Background="Transparent" Padding="6,4">
+              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Border x:Name="Box" Width="17" Height="17" CornerRadius="4" BorderThickness="1"
+                        BorderBrush="#B9AFB8" Background="White" Margin="0,0,8,0">
+                  <Path x:Name="Tick" Data="M3,8 L6,11 L12,4" Stroke="White" StrokeThickness="1.7"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed" />
+                </Border>
+                <ContentPresenter VerticalAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource Accent}" />
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Accent}" />
+                <Setter TargetName="Tick" Property="Visibility" Value="Visible" />
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="FocusRing" Property="Background" Value="#FAF3F6" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusRing" Property="BorderBrush" Value="{StaticResource Accent}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Grid Background="White">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="44" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,12,0">
+      <Button x:Name="MinimizeButton" Width="34" Height="30" Style="{StaticResource FlatButton}"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="最小化"
+              ToolTip="最小化">
+        <Path Data="M0,0 L10,0" Stroke="#665D69" StrokeThickness="1.2" />
+      </Button>
+      <Button x:Name="CloseButton" Width="34" Height="30" Style="{StaticResource FlatButton}"
+              shell:WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="关闭"
+              ToolTip="关闭">
+        <Path Data="M0,0 L10,10 M10,0 L0,10" Stroke="#665D69" StrokeThickness="1.2" />
+      </Button>
+    </StackPanel>
+
+    <StackPanel Grid.Row="1" Width="326" HorizontalAlignment="Center" Margin="0,9,0,0">
+      <Image x:Name="Logo" Width="92" Height="92" RenderOptions.BitmapScalingMode="HighQuality"
+             AutomationProperties.Name="MyLike" />
+      <TextBlock x:Name="Heading" Text="MyLike" FontSize="29" FontWeight="SemiBold"
+                 TextAlignment="Center" Margin="0,-2,0,0" />
+      <Button x:Name="Primary" Content="立即安装" Width="152" Height="39" Margin="0,16,0,0"
+              IsDefault="True" Style="{StaticResource PrimaryButton}" />
+
+      <StackPanel x:Name="Options" Margin="0,15,0,0">
+        <Border x:Name="PathPanel" CornerRadius="7" BorderThickness="1" BorderBrush="#DED6DF"
+                Background="#FBF9FB" Height="35" Visibility="Collapsed" Margin="0,0,0,9">
+          <DockPanel LastChildFill="True">
+            <Button x:Name="Browse" DockPanel.Dock="Right" Width="64" Margin="3"
+                    Style="{StaticResource FlatButton}" Content="浏览…" />
+            <TextBox x:Name="Folder" VerticalContentAlignment="Center" Padding="12,0,2,0"
+                     BorderThickness="0" Background="Transparent" Foreground="#28242D"
+                     AutomationProperties.Name="安装地址" />
+          </DockPanel>
+        </Border>
+        <CheckBox x:Name="Shortcut" Content="创建桌面快捷方式" HorizontalAlignment="Center"
+                  Style="{StaticResource CheckStyle}" />
+        <Button x:Name="TogglePath" Content="自定义安装地址  ⌄" Margin="0,7,0,0"
+                Style="{StaticResource FlatButton}" Foreground="{StaticResource Accent}"
+                HorizontalAlignment="Center" AutomationProperties.Name="自定义安装地址" />
+      </StackPanel>
+
+      <ProgressBar x:Name="Progress" Margin="24,23,24,0" Height="4" IsIndeterminate="True"
+                   Foreground="{StaticResource Accent}" Background="#F9E9EF" BorderThickness="0"
+                   Visibility="Collapsed" AutomationProperties.Name="安装进度" />
+      <TextBlock x:Name="Status" Margin="0,9,0,0" TextAlignment="Center"
+                 TextWrapping="Wrap" Foreground="#675D6B" />
+    </StackPanel>
+  </Grid>
+</Window>

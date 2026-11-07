@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { likedOrderJoin } from './liked-order'
 import { randomInt, randomUUID } from 'node:crypto'
 import { playbackPreferencesSchema, type Filter, type QueueState, type Work } from '../../shared/contracts'
 import { readPlaybackPreferences } from '../../shared/preferences'
@@ -107,19 +108,31 @@ export class PlaybackStore {
             .map((row) => String(row.id))
         } else {
           const table = input.source.source === 'favorites' ? 'saved_items' : 'account_items'
+          const liked = input.source.sort === 'liked' && table === 'account_items'
           const find = this.db.prepare(
-            `SELECT w.id,w.publishedAt,a.firstSeen FROM works w JOIN ${table} a ON a.workId=w.id WHERE a.accountId=? AND w.id=?`
+            `SELECT w.id,w.publishedAt,a.firstSeen${liked ? ',l.generation,l.position' : ''} FROM works w JOIN ${table} a ON a.workId=w.id ${liked ? likedOrderJoin : ''} WHERE a.accountId=? AND w.id=?`
           )
           const rows = [...new Set<string>(input.source.ids)].map((id) => {
             const row = find.get(input.accountId, id)
             if (!row) throw new AppError('WORK_NOT_FOUND', '部分条目已不在当前账号列表，请刷新选择。')
-            return row as { id: string; publishedAt: number; firstSeen: number }
+            return row as {
+              id: string
+              publishedAt: number
+              firstSeen: number
+              generation?: number | null
+              position?: number | null
+            }
           })
           rows.sort(
             (a, b) =>
+              (liked
+                ? (b.generation ?? -Infinity) - (a.generation ?? -Infinity) ||
+                  (a.position ?? 0) - (b.position ?? 0)
+                : 0) ||
               (input.source.sort === 'collected'
                 ? b.firstSeen - a.firstSeen
-                : b.publishedAt - a.publishedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+                : b.publishedAt - a.publishedAt) ||
+              (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
           )
           ids = rows.map((row) => row.id)
         }

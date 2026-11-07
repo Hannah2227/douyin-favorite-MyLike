@@ -55,6 +55,17 @@
   place-items: center;
   transform: rotate(9deg);
 }
+.dashboard-hero-art::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 50%, transparent), transparent 72%);
+  opacity: 0.28;
+}
+.dashboard-hero-art .brand-image {
+  position: relative;
+}
 .dashboard-hero-art i {
   position: absolute;
   inset: 4px;
@@ -68,7 +79,44 @@
   opacity: 0.55;
   transform: rotate(-13deg);
 }
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-motion='reduce']) .dashboard-hero-art::before {
+    animation: dashboard-glow 3.8s ease-in-out infinite;
+  }
+  :root:not([data-motion='reduce']) .dashboard-hero-art i {
+    animation: dashboard-rings 3.8s ease-in-out infinite;
+  }
+  :root:not([data-motion='reduce']) .dashboard-hero-art i:nth-child(2) {
+    animation-delay: -0.4s;
+  }
+  :root:not([data-motion='reduce']) .dashboard-hero-art .brand-image {
+    animation: dashboard-breathe 3.8s ease-in-out infinite;
+  }
+}
+@keyframes dashboard-breathe {
+  0%,
+  100% {
+    transform: scale(0.97) rotate(-4deg);
+  }
+  50% {
+    transform: scale(1.14) rotate(2deg);
+  }
+}
+@keyframes dashboard-glow {
+  50% {
+    opacity: 0.8;
+    scale: 1.24;
+  }
+}
+@keyframes dashboard-rings {
+  50% {
+    opacity: 0.82;
+    scale: 1.15;
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  }
+}
 .dashboard-chart-card {
+  margin-bottom: 26px;
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 20px;
@@ -130,6 +178,10 @@
   opacity: 1;
 }
 .chart-column > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 9px;
   color: var(--subtle);
 }

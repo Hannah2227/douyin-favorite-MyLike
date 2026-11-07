@@ -23,6 +23,7 @@ import {
 import type { PlaybackPosition, PlaybackPreferences } from '../../shared/contracts'
 import type { Playback } from './usePlayback'
 import { QueuePanel } from './QueuePanel'
+import { CommentsPanel } from './CommentsPanel'
 import { MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
 import { PreparedVideo } from './PreparedVideo'
 import './player.css'
@@ -90,6 +91,8 @@ export function Player({
     [videoDuration, setVideoDuration] = useState(0),
     [musicWarning, setMusicWarning] = useState('')
   const [captionExpanded, setCaptionExpanded] = useState(false)
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const commentsButton = useRef<HTMLButtonElement>(null)
   const [favoriteOpen, setFavoriteOpen] = useState(false),
     [collected, setCollected] = useState(false)
   useEffect(() => {
@@ -308,9 +311,26 @@ export function Player({
     pause()
     void playback.move(target)
   }
-  const openOriginal = () => {
-    pause()
-    void playback.original(scope).catch((e) => setMusicWarning(e.message))
+  const closeComments = () => {
+    setCommentsOpen(false)
+    commentsButton.current?.focus()
+  }
+  const toggleComments = () => {
+    if (clean || !playback.isCurrent(scope)) return
+    if (commentsOpen) {
+      closeComments()
+      return
+    }
+    setQueueOpen(false)
+    setCommentsOpen(true)
+  }
+  const toggleQueue = () => {
+    setCommentsOpen(false)
+    setQueueOpen(!queueOpen)
+  }
+  const changeClean = (value: boolean) => {
+    if (value) setCommentsOpen(false)
+    setClean(value)
   }
   const openFavorite = () => {
     if (unlikeBusy || favoriteOpen) return
@@ -369,12 +389,12 @@ export function Player({
           ? media && image + 1 < media.images.length && changeSlide(image + 1, true)
           : seek(preferences.seekStep),
       fullscreen,
-      queue: () => setQueueOpen(!queueOpen),
-      clean: () => setClean(!clean),
+      queue: toggleQueue,
+      clean: () => changeClean(!clean),
       continuous: () => updatePreferences({ continuous: !preferences.continuous }),
       rateCycle: cycleSpeed,
       mute: toggleMute,
-      original: openOriginal,
+      original: toggleComments,
       favorite: openFavorite,
       unlike: () => {
         if ((!queue.source || queue.source === 'likes') && !unlikeBusy) {
@@ -386,8 +406,9 @@ export function Player({
     stage,
     back,
     () => {
-      if (!clean) return false
-      setClean(false)
+      if (clean) setClean(false)
+      else if (commentsOpen) closeComments()
+      else return false
       return true
     }
   )
@@ -474,7 +495,7 @@ export function Player({
             <div className="stage-message">
               <ImageIcon size={30} />
               <h2>未取得可播放资源</h2>
-              <p>可以打开原页查看作品状态。</p>
+              <p>可以刷新地址，或切换到下一条作品。</p>
             </div>
           )}
           {source && !mediaError && (
@@ -542,7 +563,7 @@ export function Player({
                   setCandidate(candidate + 1)
                   setReady(false)
                 } else {
-                  setMediaError('媒体地址不可用或解码失败。请刷新地址或打开原页。')
+                  setMediaError('媒体地址不可用或解码失败。请刷新地址重试。')
                   pause()
                 }
               }}
@@ -675,6 +696,19 @@ export function Player({
           )}
         </div>
         {queueOpen && <QueuePanel queue={queue} jump={move} close={() => setQueueOpen(false)} />}
+        {commentsOpen && !clean && (
+          <CommentsPanel
+            scope={{
+              accountId: queue.accountId,
+              queueId: queue.queueId,
+              revision: queue.revision,
+              workId: work.id
+            }}
+            isCurrent={() => playback.isCurrent(scope)}
+            close={closeComments}
+            login={login}
+          />
+        )}
       </div>
       <footer className="player-footer">
         {!gallery && (
@@ -755,7 +789,7 @@ export function Player({
                 type="checkbox"
                 checked={clean}
                 onChange={(event) => {
-                  setClean(event.target.checked)
+                  changeClean(event.target.checked)
                   event.target.blur()
                 }}
               />
@@ -797,9 +831,11 @@ export function Player({
               </button>
             )}
             <button
-              aria-label="打开原页"
-              title={hint('original', '在系统浏览器打开原页看评论')}
-              onClick={openOriginal}
+              ref={commentsButton}
+              aria-label="查看评论"
+              aria-pressed={commentsOpen}
+              title={hint('original', '查看评论')}
+              onClick={toggleComments}
             >
               <MessageCircle size={19} />
             </button>
@@ -807,7 +843,7 @@ export function Player({
               aria-label="显示播放队列"
               title={hint('queue', '播放队列')}
               aria-pressed={queueOpen}
-              onClick={() => setQueueOpen(!queueOpen)}
+              onClick={toggleQueue}
             >
               <ListVideo size={19} />
             </button>

@@ -2,29 +2,23 @@ import { AccountManagementDialog } from './AccountManagementDialog'
 import { useEffect, useState } from 'react'
 import type { Account } from '../../shared/contracts'
 import { call, type Perform } from './api'
-import { ConfirmDialog } from './ConfirmDialog'
 
 export function AccountPanel({
   account,
   busy,
   perform,
-  login,
-  probe,
   notice
 }: {
   account: Account | undefined
   busy: boolean
   perform: Perform
-  login: () => void
-  probe: () => void
   notice: (message: string) => void
 }) {
   const [name, setName] = useState(account?.name ?? ''),
-    [confirm, setConfirm] = useState<'logout' | 'remove' | null>(null),
-    [error, setError] = useState('')
+    [confirmRemove, setConfirmRemove] = useState(false)
   useEffect(() => {
     setName(account?.name ?? '')
-    setConfirm(null)
+    setConfirmRemove(false)
   }, [account?.id, account?.name])
   if (!account)
     return (
@@ -66,70 +60,18 @@ export function AccountPanel({
           : '尚无最近检查记录；已有本地内容仍可浏览。'}
       </p>
       <div className="panel-actions">
-        <button disabled={busy} onClick={login}>
-          打开抖音登录
-        </button>
-        <button className="primary verify-login" disabled={busy} onClick={probe}>
-          核验状态
-        </button>
-        <button
-          disabled={busy}
-          onClick={() => {
-            setError('')
-            setConfirm('logout')
-          }}
-        >
-          退出当前登录
-        </button>
-        <button
-          className="danger-button"
-          disabled={busy}
-          onClick={() => {
-            setError('')
-            setConfirm('remove')
-          }}
-        >
+        <button className="danger-button" disabled={busy} onClick={() => setConfirmRemove(true)}>
           删除当前账号
         </button>
       </div>
-      {confirm === 'remove' && (
+      {confirmRemove && (
         <AccountManagementDialog
           account={account}
           mode="remove"
           busy={busy}
           perform={perform}
-          close={() => setConfirm(null)}
+          close={() => setConfirmRemove(false)}
         />
-      )}
-      {confirm === 'logout' && (
-        <ConfirmDialog
-          title="退出当前登录"
-          busy={busy}
-          cancel={() => setConfirm(null)}
-          confirmLabel="确认退出登录"
-          confirm={() =>
-            void perform('清理登录会话', async () => {
-              try {
-                await call(window.mylike.invoke('logoutAccount', { accountId: account.id }))
-                setConfirm(null)
-                notice('当前账号登录会话已清理，本地内容保留。')
-              } catch (error) {
-                setError(error instanceof Error ? error.message : '账号操作未完成。')
-                throw error
-              }
-            })
-          }
-        >
-          <p>
-            将停止“{account.name}
-            ”的页面请求并关闭抖音窗口，清理其登录会话。本地内容保留，下次连接时需要重新登录。
-          </p>
-          {error && (
-            <p className="task-error" role="alert">
-              {error}
-            </p>
-          )}
-        </ConfirmDialog>
       )}
     </section>
   )

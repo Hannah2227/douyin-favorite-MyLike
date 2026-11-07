@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { runInNewContext } from 'node:vm'
 import {
   parseIdentity,
+  parseCommentPage,
   parseFavoriteFolders,
   parseFavoritesPage,
   parseLikedPage,
@@ -13,6 +14,52 @@ import {
 import { buildPageScript } from '../../src/main/douyin/page-request'
 
 describe('platform responses', () => {
+  it('prefers animated comment attachments and preserves safe alternate sources', () => {
+    const origin = 'https://p3.douyinpic.com/photo.webp'
+    const alternate = 'https://p9.douyinpic.com/photo.webp'
+    const gif = 'https://p3.douyinpic.com/animation.gif'
+    const video = 'https://p3.douyinpic.com/animation?mime_type=video_mp4'
+    const data = {
+      has_more: 0,
+      comments: [
+        {
+          cid: '1',
+          image_list: [{ origin_url: { url_list: [origin, alternate, 'https://outside.example/a.gif'] } }],
+          sticker: { animate_url: { url_list: [gif, video] }, static_url: { url_list: [origin] } }
+        }
+      ]
+    }
+    expect(parseCommentPage(data, '123', '0').items[0]?.attachments).toEqual([
+      [
+        { url: origin, type: 'image' },
+        { url: alternate, type: 'image' }
+      ],
+      [
+        { url: gif, type: 'image' },
+        { url: video, type: 'video' },
+        { url: origin, type: 'image' }
+      ]
+    ])
+  })
+  it('preserves long comment IDs and cursors and accepts only confirmed empty comment pages', () => {
+    const raw =
+      '{"status_code":0,"has_more":1,"cursor":9007199254740993999,"comments":[{"cid":9007199254740993998,"aweme_id":"123","text":"正文","user":{"nickname":"作者","avatar_thumb":{"url_list":["https://outside.example/avatar.png"]}}}]}'
+    const data = parseResponse(raw, 200, { operation: 'comments', workId: '123' })
+    expect(parseCommentPage(data, '123', '0')).toMatchObject({
+      items: [{ id: '9007199254740993998', avatarUrl: null, text: '正文' }],
+      nextCursor: '9007199254740993999'
+    })
+    expect(() => parseCommentPage(data, '124', '0')).toThrow(/当前作品不一致/)
+    expect(() => parseCommentPage(data, '123', '9007199254740993999')).toThrow(/分页没有推进/)
+    expect(() =>
+      parseCommentPage({ status_code: 0, has_more: 1, comments: [], cursor: 20 }, '123', '0')
+    ).toThrow()
+    expect(() => parseCommentPage({ status_code: 0, has_more: 0 }, '123', '0')).toThrow()
+    expect(parseCommentPage({ status_code: 0, has_more: 0, comments: null }, '123', '0')).toEqual({
+      items: [],
+      nextCursor: null
+    })
+  })
   it('accepts null and omitted collection arrays only with explicit business success and an explicit terminal marker', () => {
     for (const value of [null, undefined]) {
       const data = { status_code: 0, has_more: 0, aweme_list: value, collects_list: value }

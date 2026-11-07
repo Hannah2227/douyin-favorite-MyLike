@@ -74,7 +74,7 @@ test('opens the same library in released v2.0.2 and the new package, preserving 
     app = undefined
     await launch(process.env.MYLIKE_EXECUTABLE!)
     await expect(page!.locator('.list-caption')).toContainText('2 条内容')
-    await page!.getByRole('button', { name: '收藏的内容', exact: true }).click()
+    await page!.getByRole('button', { name: '收藏', exact: true }).click()
     await expect(page!.locator('.list-caption')).toContainText('2 条内容')
     expect((await invoke('renameAccount', { accountId, name: '新版改名' })).ok).toBe(true)
     await app!.close()

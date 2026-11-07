@@ -117,6 +117,7 @@ export function runtimeEventCategory(event: RuntimeEventInput): 'exception' | 'e
   return null
 }
 export const responseLabels: Record<string, string> = {
+  'sqlite-error': '本地数据库错误',
   'content-unavailable': '作品明确不可访问',
   'schema-changed': '接口结构变化',
   'risk-control': '接口暂时受限',
@@ -135,6 +136,7 @@ export const responseLabels: Record<string, string> = {
 }
 
 export const operationLabels: Record<string, string> = {
+  storage: '本地数据',
   self: '身份核验',
   likes: '喜欢列表',
   favorites: '收藏作品',

@@ -149,12 +149,6 @@
 .setting-value > button {
   font-size: 11px;
 }
-.setting-number {
-  width: 35px;
-  font-size: 11px;
-  text-align: right;
-  color: var(--muted);
-}
 .setting-value input[type='range'] {
   accent-color: var(--accent);
   width: 120px;
@@ -191,31 +185,11 @@
 .setting-switch:checked::after {
   transform: translateX(14px);
 }
-.setting-tag {
-  font-size: 10px;
-  border: 1px solid var(--line);
-  color: var(--muted);
-  border-radius: 6px;
-  padding: 5px 7px;
-}
 .settings-content .settings-description {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.8;
   margin: 12px 0;
-}
-.settings-about-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.settings-about-brand h2 {
-  font-size: 23px;
-}
-.settings-about-brand p {
-  margin-top: 7px;
-  color: var(--muted);
-  font-size: 11px;
 }
 .settings-no-results {
   min-height: 260px;

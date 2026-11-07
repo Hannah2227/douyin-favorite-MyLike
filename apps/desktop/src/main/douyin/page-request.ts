@@ -1,6 +1,15 @@
 export type WriteOperation =
   'unlike' | 'favoriteRemove' | 'favoriteAdd' | 'favoriteFolderAdd' | 'favoriteFolderCreate'
-export type Operation = 'self' | 'likes' | 'detail' | 'favorites' | 'folders' | 'folderItems' | WriteOperation
+export type Operation =
+  | 'self'
+  | 'likes'
+  | 'detail'
+  | 'favorites'
+  | 'folders'
+  | 'folderItems'
+  | 'comments'
+  | 'commentReplies'
+  | WriteOperation
 export function isWriteOperation(operation: Operation): operation is WriteOperation {
   return ['unlike', 'favoriteRemove', 'favoriteAdd', 'favoriteFolderAdd', 'favoriteFolderCreate'].includes(
     operation
@@ -20,6 +29,8 @@ async function requestInPage(request: PageRequest) {
     self: '/aweme/v1/web/user/profile/self/',
     likes: '/aweme/v1/web/aweme/favorite/',
     detail: '/aweme/v1/web/aweme/detail/',
+    comments: '/aweme/v1/web/comment/list/',
+    commentReplies: '/aweme/v1/web/comment/list/reply/',
     unlike: '/aweme/v1/web/commit/item/digg/',
     favorites: '/aweme/v1/web/aweme/listcollection/',
     folders: '/aweme/v1/web/collects/list/',
@@ -48,8 +59,13 @@ async function requestInPage(request: PageRequest) {
       : request.parameters)
   })
   const collection = ['favorites', 'folders', 'folderItems'].includes(request.operation)
-  const collectionReferrer = 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
-  if (collection) {
+  const commentRead = request.operation === 'comments' || request.operation === 'commentReplies'
+  const referrer = collection
+    ? 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
+    : commentRead
+      ? 'https://www.douyin.com/video/' + (request.parameters.aweme_id ?? request.parameters.item_id)
+      : undefined
+  if (collection || commentRead) {
     if (request.operation !== 'favorites' && !params.has('count')) params.set('count', '20')
     params.set('pc_client_type', '1')
     // Values describe this Chromium session; never copy another client's fingerprint.
@@ -91,7 +107,7 @@ async function requestInPage(request: PageRequest) {
   try {
     // Match the original page-SDK request: use only the current page's token,
     // never a fabricated or persisted signing value.
-    if (request.operation === 'likes' || collection) {
+    if (request.operation === 'likes' || collection || commentRead) {
       try {
         const token = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/)?.[1]
         if (token) {
@@ -109,7 +125,7 @@ async function requestInPage(request: PageRequest) {
       credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,
-      ...(collection ? { referrer: collectionReferrer } : {}),
+      ...(referrer ? { referrer } : {}),
       method: [
         'unlike',
         'favorites',

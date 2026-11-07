@@ -6,6 +6,8 @@ import { AppError } from './errors'
 import { metadataBytes } from './storage/usage'
 
 export class DataMaintenance {
+  constructor(private readonly warning: () => string | undefined) {}
+
   async info(): Promise<DataInfo> {
     const folder = app.getPath('userData')
     const size = async (file: string) => {
@@ -30,6 +32,7 @@ export class DataMaintenance {
       ])
       return {
         folder,
+        warning: this.warning(),
         metadataBytes: metadata,
         backupsCount: backups.length,
         backupsBytes: backupsSizes.reduce((a, b) => a + b, 0)

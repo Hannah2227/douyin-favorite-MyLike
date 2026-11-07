@@ -3,14 +3,13 @@ import { useState, type Dispatch, type SetStateAction } from 'react'
 import {
   Activity,
   LayoutDashboard,
-  Library,
-  Bookmark,
+  Heart,
+  Star,
   Plus,
   Settings2,
   Sun,
   Moon,
   CircleHelp,
-  BookOpen,
   Pencil,
   Trash2
 } from 'lucide-react'
@@ -49,9 +48,9 @@ export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding,
         {(
           [
             { id: 'dashboard', icon: LayoutDashboard, text: '仪表盘' },
-            { id: 'library', icon: Library, text: '喜欢的内容' },
-            { id: 'favorites', icon: Bookmark, text: '收藏的内容' },
-            { id: 'tasks', icon: Activity, text: '连接与任务' },
+            { id: 'library', icon: Heart, text: '喜欢' },
+            { id: 'favorites', icon: Star, text: '收藏' },
+            { id: 'tasks', icon: Activity, text: '任务' },
             { id: 'settings', icon: Settings2, text: '设置' }
           ] as const
         ).map((item) => (
@@ -89,21 +88,13 @@ export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding,
           {snapshot?.theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           {snapshot?.theme === 'dark' ? '白天模式' : '黑夜模式'}
         </button>
-        {(
-          [
-            { id: 'faq', text: '常见问题', icon: CircleHelp },
-            { id: 'guide', text: '使用教程', icon: BookOpen }
-          ] as const
-        ).map((item) => (
-          <button
-            key={item.id}
-            className={`sidebar-utility${tab === item.id ? ' active' : ''}`}
-            onClick={() => void back().then(() => setTab(item.id))}
-          >
-            <item.icon size={17} />
-            {item.text}
-          </button>
-        ))}
+        <button
+          className={`sidebar-utility${tab === 'faq' ? ' active' : ''}`}
+          onClick={() => void back().then(() => setTab('faq'))}
+        >
+          <CircleHelp size={17} />
+          常见问题
+        </button>
         <button
           className="sidebar-utility"
           onClick={() => void perform('打开项目地址', () => call(window.mylike.invoke('openProject', {})))}

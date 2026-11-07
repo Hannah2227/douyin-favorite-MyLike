@@ -597,3 +597,90 @@ it('does not announce a committed page when the folder transaction rolls back', 
   expect(store.call('query', query).total).toBe(0)
   expect(store.call('favoriteFolders', { accountId: 'a' }).map((folder) => folder.localCount)).toEqual([0, 0])
 })
+
+it.each(['unusable next page', 'readable next page', 'recovered original page'] as const)(
+  'verifies the persisted checkpoint with a %s',
+  async (scenario) => {
+    const { store } = setup()
+    let task = store.call('favoritesStart', { accountId: 'a', id: 'sync' })
+    task = save(store, task, { items: [work('1')], cursor: '5', hasMore: true })
+    task = store.call('favoritesUpdate', {
+      accountId: 'a',
+      taskId: task.id,
+      status: 'paused',
+      reason: 'old failure',
+      errorCode: 'UPSTREAM_CHANGED'
+    })
+    const calls: string[] = []
+    const instance = service(store, async (_id, operation, params) => {
+      if (operation === 'folders') return { status_code: 0, has_more: 0, collects_list: [] }
+      calls.push(params.cursor)
+      if (params.cursor === '5' && scenario !== 'recovered original page')
+        return { status_code: 0, has_more: 1, cursor: '6', aweme_list: null }
+      if (scenario === 'unusable next page')
+        return { status_code: 0, has_more: 1, cursor: '7', aweme_list: [{ invalid: true }] }
+      return { status_code: 0, has_more: 0, cursor: '0', aweme_list: [{ aweme_id: '2' }] }
+    })
+    const verify = () =>
+      instance.verifyCheckpoint(
+        task,
+        async () => store.call('accounts', undefined)[0]!,
+        () => {}
+      )
+    if (scenario === 'unusable next page') {
+      await expect(verify()).rejects.toMatchObject({ code: 'FAVORITE_EMPTY_PAGE' })
+      expect(store.call('favoritesTask', { accountId: 'a' })).toEqual(task)
+      expect(instance.checkpointHealth(task)).toMatchObject({ status: 'uncertain', failures: 1 })
+      expect(calls).toEqual(['5', '5', '6'])
+      expect(store.call('query', query).total).toBe(1)
+    } else {
+      await expect(verify()).resolves.toMatchObject({ status: 'running', stage: 'folders' })
+      await settled(instance)
+      expect(calls).toEqual(scenario === 'readable next page' ? ['5', '5', '6', '6'] : ['5', '5'])
+      expect(store.call('query', query).total).toBe(2)
+      expect(store.call('favoritesTask', { accountId: 'a' })?.status).toBe('completed')
+    }
+  }
+)
+
+it('stops a checkpoint verification before a late page can commit or launch collection', async () => {
+  const { store } = setup()
+  let task = store.call('favoritesStart', { accountId: 'a', id: 'sync' })
+  task = save(store, task, { items: [work('1')], cursor: '5', hasMore: true })
+  task = store.call('favoritesUpdate', {
+    accountId: 'a',
+    taskId: task.id,
+    status: 'paused',
+    reason: 'fixture',
+    errorCode: 'FAVORITE_EMPTY_PAGE'
+  })
+  let started!: () => void, release!: () => void
+  const requestStarted = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const instance = service(store, async () => {
+    started()
+    await blocked
+    return { status_code: 0, has_more: 1, cursor: '6', aweme_list: [{ aweme_id: '2' }] }
+  })
+  let resumed = false
+  const verified = instance.verifyCheckpoint(
+    task,
+    async () => store.call('accounts', undefined)[0]!,
+    () => {
+      resumed = true
+    }
+  )
+  const rejected = expect(verified).rejects.toMatchObject({ code: 'CANCELLED' })
+  await requestStarted
+  const stopping = instance.control('a', task.id, 'stop')
+  release()
+  await rejected
+  await stopping
+  expect(resumed).toBe(false)
+  expect(store.call('favoritesTask', { accountId: 'a' })).toMatchObject({ status: 'stopped', cursor: '5' })
+  expect(store.call('query', query).total).toBe(1)
+})

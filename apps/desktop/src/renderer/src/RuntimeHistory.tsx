@@ -24,6 +24,11 @@ const legacyFailureLabels: Record<string, string> = {
   BROWSER_CRASHED: '抖音页面进程意外停止'
 }
 function eventMessage(event: RuntimeEvent): string {
+  if (
+    (event.operation === 'storage' && event.responseType === 'sqlite-error') ||
+    event.code === 'FAVORITE_PAGE_SKIPPED'
+  )
+    return event.message
   if (runtimeEventCategory(event) === 'exception' && event.code)
     return taskRecovery(event.code)?.message ?? '操作未完成，请稍后重试。'
   if (event.message !== '接口请求未正常结束') return event.message

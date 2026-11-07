@@ -50,6 +50,8 @@ export class CollectionService {
     if (this.loop) throw new AppError('BUSY', '请先暂停或停止现有采集任务。')
     this.engine.assertAvailable?.(accountId, 'likes')
     const previous = await this.db.call('collection', { accountId })
+    if (mode === 'full' && previous?.mode === 'full' && previous.status !== 'completed')
+      return this.control(accountId, previous.id, 'resume')
     if (mode === 'update' && previous && previous.status !== 'completed')
       return this.control(accountId, previous.id, 'resume')
     if (mode === 'incremental' && previous?.mode === 'incremental' && previous.status !== 'completed')

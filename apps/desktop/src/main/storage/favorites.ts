@@ -33,6 +33,7 @@ export type FavoritesPage = {
   incomplete?: boolean
   checkpointCursor?: string
   traversedCursors?: string[]
+  resumePausedAt?: number
 }
 export class FavoritesStore {
   private readonly state: FavoriteState
@@ -332,7 +333,7 @@ export class FavoritesStore {
       if (
         !task ||
         task.id !== input.taskId ||
-        task.status !== 'running' ||
+        !this.canSave(task, input) ||
         task.cursor !== (input.checkpointCursor ?? input.requestCursor)
       )
         throw new AppError('TASK_CHANGED', '收藏更新断点已变化，本页未保存。')
@@ -353,6 +354,14 @@ export class FavoritesStore {
         traversed[0] !== task.cursor ||
         traversed.at(-1) !== input.requestCursor ||
         new Set(traversed).size !== traversed.length ||
+        (input.resumePausedAt !== undefined &&
+          traversed
+            .slice(1)
+            .some((cursor) =>
+              this.db
+                .prepare('SELECT 1 FROM saved_update_cursors WHERE taskId=? AND cursor=?')
+                .get(task.id, cursor)
+            )) ||
         (input.hasMore &&
           (traversed.includes(input.cursor) ||
             this.db
@@ -391,6 +400,11 @@ export class FavoritesStore {
       return this.task(input.accountId, 'update')!
     })
   }
+  private canSave(task: FavoritesTask, input: FavoritesPage): boolean {
+    return input.resumePausedAt === undefined
+      ? task.status === 'running'
+      : task.status === 'paused' && task.updatedAt === input.resumePausedAt
+  }
   save(input: FavoritesPage): FavoritesTask {
     if (input.mode === 'update') return this.saveUpdate(input)
     return this.transaction(() => {
@@ -398,7 +412,7 @@ export class FavoritesStore {
       if (
         !task ||
         task.id !== input.taskId ||
-        task.status !== 'running' ||
+        !this.canSave(task, input) ||
         task.stage !== input.stage ||
         task.folderId !== input.folderId ||
         task.cursor !== (input.checkpointCursor ?? input.requestCursor)
@@ -416,7 +430,15 @@ export class FavoritesStore {
         traversed.length > 6 ||
         traversed[0] !== task.cursor ||
         traversed.at(-1) !== input.requestCursor ||
-        new Set(traversed).size !== traversed.length
+        new Set(traversed).size !== traversed.length ||
+        (input.resumePausedAt !== undefined &&
+          traversed
+            .slice(1)
+            .some((cursor) =>
+              this.db
+                .prepare('SELECT 1 FROM saved_cursors WHERE taskId=? AND scope=? AND cursor=?')
+                .get(task.id, scope, cursor)
+            ))
       )
         throw new AppError('CURSOR_STALLED', '收藏空页探查范围无效，原断点保留。')
       if (
@@ -477,7 +499,7 @@ export class FavoritesStore {
       }
       this.db
         .prepare(
-          'UPDATE saved_tasks SET cursor=?,pages=pages+1,received=received+?,added=added+?,reason=NULL,errorCode=NULL,updatedAt=? WHERE id=?'
+          "UPDATE saved_tasks SET status='running',cursor=?,pages=pages+1,received=received+?,added=added+?,reason=NULL,errorCode=NULL,updatedAt=? WHERE id=?"
         )
         .run(input.cursor, input.received ?? input.items?.length ?? 0, added, Date.now(), task.id)
       this.db
