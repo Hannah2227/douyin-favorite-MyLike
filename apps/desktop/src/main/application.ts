@@ -2,8 +2,9 @@ import { HealthMonitor } from './health'
 import { healthStatus, type HealthSnapshot } from '../shared/health'
 import { blockedFavoriteTask, favoriteOperation, FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
-import { app, shell, clipboard, type BrowserWindow } from 'electron'
+import { app, shell, clipboard, dialog, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { Account, Command, Diagnostics, FavoritesTask, Query, Snapshot } from '../shared/contracts'
 import { Database } from './storage/client'
 import { DouyinEngine } from './douyin/engine'
@@ -27,6 +28,7 @@ import { DataMaintenance } from './data-maintenance'
 import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
 import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
+import { saveMobileLibrary } from './mobile-export'
 
 export class Application {
   private readonly health = new HealthMonitor()
@@ -46,6 +48,7 @@ export class Application {
     cancelled: boolean
   } | null = null
   private closing = false
+  private exportingMobileLibrary = false
   private accountAction: Promise<unknown> | null = null
   private readonly accounts: AccountService
   private readonly maintenance: DataMaintenance
@@ -681,6 +684,37 @@ export class Application {
     await paused
     await this.lane.idle()
   }
+  private async exportMobileLibrary(accountId: string) {
+    if (this.exportingMobileLibrary) throw new AppError('BUSY', '请先完成当前清单导出。')
+    this.exportingMobileLibrary = true
+    const epoch = this.epoch
+    try {
+      await this.active(accountId)
+      const prepared = await this.database.call('mobileLibraryExport', { accountId })
+      const owner = this.parent()
+      if (this.closing || !owner || owner.isDestroyed())
+        throw new AppError('CLOSING', '窗口已关闭，未导出清单。')
+      const selected = await dialog.showSaveDialog(owner, {
+        title: `导出 ${prepared.count} 条喜欢作品`,
+        defaultPath: join(
+          app.getPath('documents'),
+          `MyLike-喜欢-${new Date().toISOString().slice(0, 10)}.mylike.json`
+        ),
+        filters: [{ name: 'MyLike 手机清单', extensions: ['json'] }]
+      })
+      if (selected.canceled || !selected.filePath) return null
+      const filePath = selected.filePath
+      return await this.exclusive(async () => {
+        if (this.closing || epoch !== this.epoch)
+          throw new AppError('CANCELLED', '账号或应用状态已变化，未导出清单。')
+        await this.active(accountId)
+        await saveMobileLibrary(filePath, prepared.text, app.getPath('userData'))
+        return { count: prepared.count, filePath }
+      })
+    } finally {
+      this.exportingMobileLibrary = false
+    }
+  }
   async execute(command: Command, input: any): Promise<unknown> {
     if (this.closing) throw new AppError('CLOSING', '应用正在退出。')
     if (
@@ -735,6 +769,8 @@ export class Application {
     )
       throw new AppError('BUSY', '请先停止取消点赞或收藏任务，等待当前请求结果保存。')
     switch (command) {
+      case 'exportMobileLibrary':
+        return this.exportMobileLibrary(input.accountId)
       case 'appPreferences': {
         const value = await this.database.call('appPreferences', input)
         this.parent()?.webContents.setZoomFactor(value.zoom)

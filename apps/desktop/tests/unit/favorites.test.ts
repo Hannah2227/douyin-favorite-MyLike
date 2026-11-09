@@ -146,7 +146,7 @@ it('commits new folder membership only when its pagination reaches a credible en
   ).toEqual(['2'])
   expect(store.call('favoriteFolders', { accountId: 'a' })).toHaveLength(1)
 })
-it('counts publication years once per account work across likes and favorites, including unknown dates', () => {
+it('counts only likes in both charts and opens the same year and author groups', () => {
   const { store, file } = setup()
   for (const accountId of ['a', 'b'])
     store.call('savePage', {
@@ -166,23 +166,31 @@ it('counts publication years once per account work across likes and favorites, i
   })
   const db = new DatabaseSync(file)
   try {
-    db.prepare('UPDATE works SET publishedAt=? WHERE id=?').run(1579090000, '1')
-    db.prepare('UPDATE works SET publishedAt=0 WHERE id=?').run('2')
+    db.prepare('UPDATE works SET publishedAt=?, author=? WHERE id=?').run(1579090000, ' 作者 ', '1')
+    db.prepare('UPDATE works SET publishedAt=?, author=? WHERE id=?').run(1610700000, '只收藏作者', '2')
+    db.prepare('UPDATE works SET publishedAt=0, author=?, title=? WHERE id=?').run('作者同名', '作者', '3')
   } finally {
     db.close()
   }
   const overview = store.call('libraryOverview', { accountId: 'a' })
   expect(overview).toMatchObject({ total: 3, likes: 2, favorites: 2, overlap: 1, folders: 2 })
   expect(overview.years).toEqual([
-    { year: 2023, count: 1 },
     { year: 2020, count: 1 },
     { year: null, count: 1 }
   ])
-  expect(overview.years.reduce((sum, item) => sum + item.count, 0)).toBe(overview.total)
-  expect(overview.authors).toEqual([{ nickname: '作者', count: 3 }])
+  expect(overview.years.reduce((sum, item) => sum + item.count, 0)).toBe(overview.likes)
+  expect(overview.authors).toEqual([
+    { nickname: '作者', count: 1 },
+    { nickname: '作者同名', count: 1 }
+  ])
+  expect(store.call('query', { ...query, year: 2020 }).items.map((item) => item.id)).toEqual(['1'])
+  expect(store.call('query', { ...query, year: 'unknown' }).items.map((item) => item.id)).toEqual(['3'])
+  expect(store.call('query', { ...query, author: '作者' }).items.map((item) => item.id)).toEqual(['1'])
+  expect(store.call('matchingIds', { ...query, author: '作者' })).toEqual(['1'])
   expect(store.call('libraryOverview', { accountId: 'b' }).years).toEqual([
-    { year: 2023, count: 2 },
-    { year: 2020, count: 1 }
+    { year: 2023, count: 1 },
+    { year: 2020, count: 1 },
+    { year: null, count: 1 }
   ])
 })
 it('keeps a saved work and its folder after a confirmed unlike removes the like', () => {

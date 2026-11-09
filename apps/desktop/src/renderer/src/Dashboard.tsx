@@ -1,5 +1,5 @@
 import { Film, Heart, ImageIcon, Database, Plus, CalendarDays, TrendingUp, Users } from 'lucide-react'
-import type { Account, LibraryOverview } from '../../shared/contracts'
+import type { Account, Filter, LibraryOverview } from '../../shared/contracts'
 import './dashboard.css'
 import './dashboard-extra.css'
 import { BrandMark } from './BrandMark'
@@ -8,6 +8,7 @@ type Props = {
   account: Account | undefined
   overview: { data: LibraryOverview | null; error: string; retry: () => void }
   add: () => void
+  openLikes: (target: { year: Filter['year'] } | { author: string }) => void
 }
 const number = (value: number | undefined) => (value === undefined ? '—' : String(value))
 
@@ -15,37 +16,35 @@ function DashboardBars({
   items,
   empty
 }: {
-  items: { label: string; count: number }[] | undefined
+  items: { label: string; count: number; open: () => void }[] | undefined
   empty: string
 }) {
   if (!items) return <div className="dashboard-empty">正在读取收录记录…</div>
   if (!items.length) return <div className="dashboard-empty">{empty}</div>
   const max = Math.max(...items.map((item) => item.count))
   return (
-    <div
-      className="collection-chart"
-      role="img"
-      aria-label={items.map((item) => item.label + '：' + item.count + ' 条').join('，')}
-    >
-      {items.map((item) => (
-        <div
+    <div className="collection-chart">
+      {items.map(({ label, count, open }) => (
+        <button
+          type="button"
           className="chart-column"
-          key={item.label}
-          tabIndex={0}
-          title={item.label + ' · ' + item.count + ' 条'}
+          key={label}
+          onClick={open}
+          aria-label={`查看 ${label} · ${count} 条喜欢`}
+          title={`查看 ${label} · ${count} 条喜欢`}
         >
-          <strong>{item.count}</strong>
-          <div>
-            <i style={{ height: Math.max(4, (100 * item.count) / max) + '%' }} />
-          </div>
-          <span>{item.label}</span>
-        </div>
+          <strong>{count}</strong>
+          <span className="chart-track" aria-hidden="true">
+            <i style={{ height: Math.max(4, (100 * count) / max) + '%' }} />
+          </span>
+          <span className="chart-label">{label}</span>
+        </button>
       ))}
     </div>
   )
 }
 
-export function Dashboard({ account, overview, add }: Props) {
+export function Dashboard({ account, overview, add, openLikes }: Props) {
   const data = overview.data
   if (!account)
     return (
@@ -120,24 +119,29 @@ export function Dashboard({ account, overview, add }: Props) {
         <div className="dashboard-section-title">
           <TrendingUp size={16} />
           <h2>收录足迹</h2>
-          <span>按作品发布年份</span>
+          <span>喜欢 · 按发布年份</span>
         </div>
         <DashboardBars
           items={data?.years.map(({ year, count }) => ({
-            label: year === null ? '未知年份' : String(year),
-            count
+            label: year === null ? '未知年份' : `${year} 年`,
+            count,
+            open: () => openLikes({ year: year ?? 'unknown' })
           }))}
-          empty="暂无收录作品"
+          empty="暂无喜欢作品"
         />
       </section>
       <section className="dashboard-chart-card" aria-label="作者收录排行">
         <div className="dashboard-section-title">
           <Users size={16} />
           <h2>作者榜</h2>
-          <span>按作者昵称</span>
+          <span>喜欢 · 按作者昵称</span>
         </div>
         <DashboardBars
-          items={data?.authors.map(({ nickname, count }) => ({ label: nickname, count }))}
+          items={data?.authors.map(({ nickname, count }) => ({
+            label: nickname,
+            count,
+            open: () => openLikes({ author: nickname })
+          }))}
           empty="暂无作者统计"
         />
       </section>

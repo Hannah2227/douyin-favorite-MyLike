@@ -6,13 +6,19 @@ import { appPreferencesPatchSchema, playbackPreferencesSchema, type AppPreferenc
 export { playbackPreferencesSchema, shortcutKeys } from './preferences'
 
 export const MAX_BATCH_SIZE = 1000
+export const MIN_LIBRARY_YEAR = 2000
+export const MAX_LIBRARY_YEAR = 2200
 export const idSchema = z.string().uuid()
 export const workIdSchema = z.string().regex(/^\d{1,30}$/)
 export const filterSchema = z.object({
   accountId: idSchema,
   search: z.string().max(200).default(''),
+  author: z.string().min(1).max(500).optional(),
   mediaType: z.enum(['all', 'video', 'gallery']).default('all'),
-  year: z.number().int().min(2000).max(2200).nullable().default(null),
+  year: z
+    .union([z.number().int().min(MIN_LIBRARY_YEAR).max(MAX_LIBRARY_YEAR), z.literal('unknown')])
+    .nullable()
+    .default(null),
   month: z.number().int().min(1).max(12).nullable().default(null),
   sort: z.enum(['published', 'collected', 'liked']).default('published'),
   source: z.enum(['likes', 'favorites', 'all']).optional(),
@@ -44,6 +50,7 @@ const queueSourceSchema = z.discriminatedUnion('type', [
 
 export const commands = {
   snapshot: z.object({}),
+  exportMobileLibrary: z.object({ accountId: idSchema }),
   checkHealth: z.object({ accountId: idSchema }),
   collectionAction: z.object({
     accountId: idSchema,
@@ -374,6 +381,7 @@ export interface FavoritesTask {
   updatedAt: number
 }
 export interface Outputs {
+  exportMobileLibrary: { count: number; filePath: string } | null
   appPreferences: AppPreferences
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }
   copyDiagnostics: null

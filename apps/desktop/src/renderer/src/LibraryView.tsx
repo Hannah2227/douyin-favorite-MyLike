@@ -24,6 +24,7 @@ type Props = {
   rebuildLikedOrder?: () => void
   rebuildBusy: boolean
   readOnly?: boolean
+  exportMobileLibrary?: () => void
   library: Library
   account: Account | undefined
   busy: boolean
@@ -46,6 +47,7 @@ export function LibraryView({
   rebuildLikedOrder,
   rebuildBusy,
   readOnly = false,
+  exportMobileLibrary,
   account,
   busy,
   mutationBusy,
@@ -78,7 +80,12 @@ export function LibraryView({
     selection,
     pendingChanges
   } = library
-  const filtered = !!(search || type !== 'all' || library.filter.year || library.filter.month)
+  const { author, year: activeYear, month } = library.filter
+  const years =
+    typeof activeYear === 'number' && !page.years.includes(activeYear)
+      ? [activeYear, ...page.years]
+      : page.years
+  const filtered = !!(search || type !== 'all' || author || activeYear || month)
   const connected = !!account?.lastVerifiedAt
   return (
     <>
@@ -115,6 +122,16 @@ export function LibraryView({
                 </button>
               ))}
             </div>
+            {author && (
+              <button
+                className="author-filter"
+                aria-label={`清除作者筛选：${author}`}
+                onClick={library.clearAuthor}
+              >
+                <span>作者：{author}</span>
+                <X size={14} />
+              </button>
+            )}
             <div className="range-play-actions">
               <button disabled={!page.total || querying || busy} onClick={() => playRange('sequence')}>
                 <Play size={14} />
@@ -128,17 +145,21 @@ export function LibraryView({
             <Select
               label="年份筛选"
               disabled={sort === 'liked' || (!!page.yearsUnavailable && year === null)}
-              value={String(library.filter.year ?? '')}
+              value={String(activeYear ?? '')}
               options={[
                 { value: '', label: '全部年份' },
-                ...page.years.map((y) => ({ value: String(y), label: `${y} 年` }))
+                ...years.map((y) => ({ value: String(y), label: `${y} 年` })),
+                ...(!readOnly ? [{ value: 'unknown', label: '未知年份' }] : [])
               ]}
-              onChange={(value) => setYear(value ? Number(value) : null)}
+              onChange={(value) => {
+                setYear(value === 'unknown' ? value : value ? Number(value) : null)
+                if (value === 'unknown') setMonth(null)
+              }}
             />
             <Select
               label="月份筛选"
-              disabled={sort === 'liked'}
-              value={String(library.filter.month ?? '')}
+              disabled={sort === 'liked' || activeYear === 'unknown'}
+              value={String(month ?? '')}
               options={[
                 { value: '', label: '全部月份' },
                 ...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 月` }))
@@ -166,6 +187,12 @@ export function LibraryView({
                   : `${page.total} 条内容`}
             </span>
             <div className="list-actions">
+              {exportMobileLibrary && (
+                <button disabled={busy} onClick={exportMobileLibrary}>
+                  <ArrowDownToLine size={15} />
+                  导出清单
+                </button>
+              )}
               <button
                 disabled={!page.total || busy}
                 onClick={selection.enabled ? selection.clear : selection.enable}

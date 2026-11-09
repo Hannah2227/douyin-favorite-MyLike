@@ -23,23 +23,18 @@
 
 ## 界面预览
 
-### 喜欢的内容
-
-![喜欢的内容](assets/readme/likes-preview.png)
-
-### 仪表盘
-
-![仪表盘](assets/readme/dashboard-preview.png)
+| 喜欢的内容 | 仪表盘 |
+| :---: | :---: |
+| <a href="assets/readme/likes-preview.png"><img src="assets/readme/likes-preview.png" alt="喜欢的内容" width="420"></a> | <a href="assets/readme/dashboard-preview.png"><img src="assets/readme/dashboard-preview.png" alt="仪表盘" width="420"></a> |
 
 ## 下载
 
 **[下载最新版 · Windows x64](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)**
 
-在发布页下载 `*-win-x64-setup.exe`，双击后按向导为当前 Windows 用户安装。可选择安装盘和应用目录，请使用有写入权限的独立目录。安装向导可勾选桌面快捷方式。安装后可从开始菜单或安装目录中的 `MyLike.exe` 启动。再次安装 MyLike 会替换同一 Windows 用户的现有版本，选择新目录时也会移除原目录的应用文件。
+在发布页下载 `*-win-x64-setup.exe`，可选择应用目录。
 
 macOS（社区版本）：请前往[贡献者维护的仓库](https://github.com/billybobz-design/douyin-favorite-MyLike)下载，相关问题请在该仓库反馈。
 
-从 Electron 便携版升级时，先退出旧版，再运行安装程序。安装版会沿用原有数据库和登录态。历史发布中的 `portable.exe` 可直接运行；旧 WPF 版的数据与登录态不迁移。
 
 ## 功能特性
 

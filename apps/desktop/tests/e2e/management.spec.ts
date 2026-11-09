@@ -1,6 +1,6 @@
 import { testTimeout } from '../helpers/test-timeout'
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -104,7 +104,7 @@ test.afterEach(async () => {
   }
 })
 
-test('removes import and export controls and rejects the retired IPC commands without changing local content', async () => {
+test('keeps the old transfer controls and IPC commands retired without changing local content', async () => {
   const accountId = await account()
   for (const name of ['导出所选', '导出当前范围'])
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
@@ -119,6 +119,28 @@ test('removes import and export controls and rejects the retired IPC commands wi
     })
   expect((await invoke('query', { accountId })).data.total).toBe(2)
   await expect(page.getByRole('button', { name: '更改目录', exact: true })).toBeEnabled()
+})
+
+test('exports all local likes for mobile even while the desktop list is filtered', async ({}, testInfo) => {
+  await account()
+  await page.getByPlaceholder('搜索标题或作者').fill('受控作品 1')
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  const target = testInfo.outputPath('mobile-library.json')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: true, filePath })
+  }, target)
+  const button = page.getByRole('button', { name: '导出清单', exact: true })
+  await button.click()
+  await expect(button).toBeEnabled()
+  expect(existsSync(target)).toBe(false)
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+  }, target)
+  await button.click()
+  await expect(page.locator('.notice')).toContainText('已导出 2 条喜欢作品')
+  const content = JSON.parse(readFileSync(target, 'utf8'))
+  expect(content).toMatchObject({ format: 'mylike.library', version: 2, source: { kind: 'douyin.likes' } })
+  expect(content.items.map((row: { id: string }) => row.id).sort()).toEqual(['1', '2'])
 })
 
 test('renames, clears cache without login loss, logs out only one session, and purges current data and backup records when deleting that account', async () => {

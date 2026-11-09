@@ -15,7 +15,8 @@ export function useLibrary(
 ) {
   const [search, setSearch] = useState('')
   const [type, setType] = useState<Filter['mediaType']>('all')
-  const [year, setYear] = useState<number | null>(null)
+  const [author, setAuthor] = useState<string>()
+  const [year, setYear] = useState<Filter['year']>(null)
   const [month, setMonth] = useState<number | null>(null)
   const [sort, setSort] = useState<Filter['sort']>('published')
   const [position, setPosition] = useState({ scope: '', number: 1 })
@@ -37,9 +38,10 @@ export function useLibrary(
   const filter: Filter = {
     accountId: accountId ?? '',
     search,
+    author,
     mediaType: type,
     year: byLikes ? null : year,
-    month: byLikes ? null : month,
+    month: byLikes || year === 'unknown' ? null : month,
     sort,
     ...origin
   }
@@ -70,6 +72,7 @@ export function useLibrary(
     if (scroll.current) scroll.current.scrollTop = 0
   }, [key, pageNumber])
   useEffect(() => {
+    setAuthor(undefined)
     setYear(null)
     setMonth(null)
   }, [accountId, origin?.source, origin?.folderId])
@@ -193,9 +196,17 @@ export function useLibrary(
       return next
     })
   }
+  const resetFilters = () => {
+    setSearch('')
+    setAuthor(undefined)
+    setType('all')
+    setYear(null)
+    setMonth(null)
+  }
   return {
     search,
     setSearch,
+    clearAuthor: () => setAuthor(undefined),
     type,
     setType,
     year,
@@ -211,11 +222,16 @@ export function useLibrary(
     querying: visible && !!accountId && (querying || (!current && !loadError)),
     loadError,
     retry: () => setRetryToken((n) => n + 1),
-    resetFilters: () => {
-      setSearch('')
-      setType('all')
-      setYear(null)
-      setMonth(null)
+    resetFilters,
+    applyDashboardFilter: (target: { year: Filter['year'] } | { author: string }) => {
+      resetFilters()
+      if ('year' in target) {
+        setSort('published')
+        setYear(target.year)
+      } else setAuthor(target.author)
+      setPosition({ scope: '', number: 1 })
+      clearSelection()
+      savedScroll.current = 0
     },
     filter,
     scroll,

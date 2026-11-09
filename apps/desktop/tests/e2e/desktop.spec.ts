@@ -3329,7 +3329,7 @@ test('shows compact task cards with direct controls and clear errors at small si
   await screenshot(info.outputPath('tasks-unified-light-small.png'))
 })
 
-test('shows publication years and ranks authors below them', async ({}, info) => {
+test('opens filtered likes from the dashboard year and author charts', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareQueue(12)
   expect((await invoke('favoritesStart', { accountId })).ok).toBe(true)
@@ -3347,12 +3347,32 @@ test('shows publication years and ranks authors below them', async ({}, info) =>
   await page.getByRole('region', { name: '作品年份分布' }).scrollIntoViewIfNeeded()
   const authors = page.getByRole('region', { name: '作者收录排行' })
   await expect(authors.getByRole('heading', { name: '作者榜' })).toBeVisible()
-  await expect(authors.getByRole('img', { name: '测试作者：9 条，收藏作者：3 条' })).toBeVisible()
+  const authorBar = authors.getByRole('button', { name: '查看 测试作者 · 9 条喜欢' })
+  await expect(authorBar).toBeVisible()
   expect(await authors.evaluate((node) => node.previousElementSibling?.getAttribute('aria-label'))).toBe(
     '作品年份分布'
   )
   await authors.scrollIntoViewIfNeeded()
   await screenshot(info.outputPath('dashboard-trends.png'))
+
+  await authorBar.click()
+  await expect(page.getByRole('heading', { name: '喜欢的内容', exact: true })).toBeVisible()
+  await expect(page.locator('.list-caption')).toContainText('9 条内容')
+  await page.getByRole('button', { name: '清除作者筛选：测试作者' }).click()
+  await expect(page.locator('.list-caption')).toContainText('12 条内容')
+
+  await page.getByRole('searchbox', { name: '搜索内容' }).fill('队列作品 1')
+  await chooseOption('排序方式', '按点赞时间')
+  await page.getByRole('button', { name: '仪表盘', exact: true }).click()
+  const yearBar = page.getByRole('button', { name: '查看 2023 年 · 12 条喜欢' })
+  await yearBar.focus()
+  await yearBar.press('Enter')
+  await expect(page.getByRole('heading', { name: '喜欢的内容', exact: true })).toBeVisible()
+  await expect(page.getByRole('searchbox', { name: '搜索内容' })).toHaveValue('')
+  await expect(page.getByRole('combobox', { name: '年份筛选' })).toHaveText('2023 年')
+  await expect(page.getByRole('combobox', { name: '排序方式' })).toHaveText('按发布时间')
+  await expect(page.locator('.list-caption')).toContainText('12 条内容')
+
   await page.getByRole('button', { name: '收藏', exact: true }).click()
   await expect(page.getByRole('heading', { name: '收藏的内容', exact: true })).toBeVisible()
 })

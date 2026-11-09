@@ -529,6 +529,16 @@ h1 {
   flex-shrink: 0;
   border-bottom: 1px solid var(--line);
 }
+.author-filter {
+  max-width: 200px;
+  font-size: 12px;
+}
+.author-filter span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .segmented {
   display: flex;
   gap: 3px;

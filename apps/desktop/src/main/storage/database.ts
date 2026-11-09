@@ -1,6 +1,7 @@
 import { configureTemporaryStorage, recoverableYearFailure, sqliteFailure } from './sqlite-policy'
 import { FavoritesStore, favoritesMigration } from './favorites'
 import { likedOrderJoin, likedOrderSchema, likedOrderSort, recordLikedOrder } from './liked-order'
+import { encodeMobileLibrary, MAX_MOBILE_EXPORT_ITEMS, type MobileExportRow } from './mobile-library'
 import { FavoriteState, favoriteStateSchema } from './favorite-state'
 import { RuntimeEventsStore } from './runtime-events'
 import { purgeAccountRows, purgeAccountBackups } from './account-purge'
@@ -9,12 +10,15 @@ import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Account, CollectionTask, Filter, Query } from '../../shared/contracts'
-import { MAX_BATCH_SIZE } from '../../shared/contracts'
+import { MAX_BATCH_SIZE, MAX_LIBRARY_YEAR, MIN_LIBRARY_YEAR } from '../../shared/contracts'
 import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
 import { PlaybackStore } from './playback'
 import { UnlikeStore } from './unlike'
 import { appPreferencesSchema } from '../../shared/preferences'
+
+const publicationYear = "CAST(strftime('%Y',w.publishedAt,'unixepoch','localtime') AS INTEGER)"
+const supportedPublicationYear = `${publicationYear} BETWEEN ${MIN_LIBRARY_YEAR} AND ${MAX_LIBRARY_YEAR}`
 
 export class Store {
   private readonly db: DatabaseSync
@@ -634,6 +638,17 @@ export class Store {
         })
       case 'query':
         return this.query(input)
+      case 'mobileLibraryExport': {
+        const account = this.account(input.accountId)
+        const rows = this.db
+          .prepare(
+            `SELECT w.id,w.title,w.author,w.publishedAt,w.mediaType,w.isLive,w.coverUrl
+             FROM account_items a JOIN works w ON w.id=a.workId ${likedOrderJoin}
+             WHERE a.accountId=? ${likedOrderSort} LIMIT ?`
+          )
+          .all(input.accountId, MAX_MOBILE_EXPORT_ITEMS + 1) as unknown as MobileExportRow[]
+        return { text: encodeMobileLibrary(rows, account.name), count: rows.length }
+      }
       case 'libraryOverview': {
         this.account(input.accountId)
         const scope = this.filter({
@@ -659,18 +674,19 @@ export class Store {
           (SELECT count(*) FROM saved_folders WHERE accountId=?) AS folders`
           )
           .get(input.accountId, input.accountId, input.accountId, input.accountId)!
+        const likes = 'FROM account_items a JOIN works w ON w.id=a.workId WHERE a.accountId=?'
         const years = this.db
           .prepare(
-            `SELECT CASE WHEN w.publishedAt>0 THEN CAST(strftime('%Y',w.publishedAt,'unixepoch','localtime') AS INTEGER) ELSE NULL END AS year,
-            count(*) AS count ${scope.from} GROUP BY year ORDER BY year DESC`
+            `SELECT CASE WHEN ${supportedPublicationYear} THEN ${publicationYear} END AS year,
+            count(*) AS count ${likes} GROUP BY year ORDER BY year DESC`
           )
-          .all(...scope.params)
+          .all(input.accountId)
         const authors = this.db
           .prepare(
-            `SELECT trim(w.author) AS nickname,count(*) AS count ${scope.from}
+            `SELECT trim(w.author) AS nickname,count(*) AS count ${likes}
              AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 6`
           )
-          .all(...scope.params)
+          .all(input.accountId)
         return { accountId: input.accountId, ...counts, ...sources, years, authors }
       }
       case 'matchingIds': {
@@ -738,11 +754,17 @@ export class Store {
       clauses.push('(instr(lower(w.title),lower(?))>0 OR instr(lower(w.author),lower(?))>0)')
       params.push(query.search, query.search)
     }
+    if (query.author) {
+      clauses.push('trim(w.author)=?')
+      params.push(query.author)
+    }
     if (query.mediaType !== 'all') {
       clauses.push('w.mediaType=?')
       params.push(query.mediaType)
     }
-    if (query.year !== null) {
+    if (query.year === 'unknown') {
+      clauses.push(`(${supportedPublicationYear}) IS NOT TRUE`)
+    } else if (query.year !== null) {
       clauses.push('w.publishedAt>=? AND w.publishedAt<?')
       params.push(
         new Date(query.year, query.month ? query.month - 1 : 0, 1).getTime() / 1000,
@@ -818,7 +840,7 @@ export class Store {
         items,
         total,
         ...orderInfo,
-        years: query.year === null ? [] : [query.year],
+        years: typeof query.year === 'number' ? [query.year] : [],
         yearsUnavailable: true
       } as Replies['query']
     }
@@ -827,6 +849,7 @@ export class Store {
     const yearScope = this.filter({
       ...query,
       search: '',
+      author: undefined,
       mediaType: 'all',
       year: null,
       month: null,
@@ -835,12 +858,10 @@ export class Store {
     // Only the small set of distinct years is sorted; sorting every matching row
     // inside SQLite can spill to the system temp directory even for a 60-row page.
     return this.db
-      .prepare(
-        `SELECT DISTINCT cast(strftime('%Y',w.publishedAt,'unixepoch','localtime') AS INTEGER) AS year ${yearScope.from}`
-      )
+      .prepare(`SELECT DISTINCT ${publicationYear} AS year ${yearScope.from}`)
       .all(...yearScope.params)
       .map((row) => Number(row.year))
-      .filter((year) => year >= 2000)
+      .filter((year) => year >= MIN_LIBRARY_YEAR && year <= MAX_LIBRARY_YEAR)
       .sort((a, b) => b - a)
   }
 }

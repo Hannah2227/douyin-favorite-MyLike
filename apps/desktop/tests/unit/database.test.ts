@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { Store } from '../../src/main/storage/database'
+import { saveMobileLibrary } from '../../src/main/mobile-export'
 import type { Work } from '../../src/shared/contracts'
 
 const directories: string[] = [],
@@ -56,6 +57,79 @@ afterEach(() => {
 })
 
 describe('SQLite transactions and account ownership', () => {
+  it('exports only the selected account likes in observed order, with safe mobile metadata', () => {
+    const { store } = setup()
+    const earlier = item('7637322941528689935')
+    const recent = {
+      ...item('7637322941528689936'),
+      coverUrl: 'https://p3-pc.douyinpic.com/cover.jpg?x=a%2Fb',
+      mediaType: 'gallery' as const,
+      isLive: true
+    }
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: [
+        {
+          ...item('8'),
+          publishedAt: recent.publishedAt + 1,
+          coverUrl: 'https://douyinpic.com.example.test/cover.jpg'
+        }
+      ]
+    })
+    store.call('startCollection', { accountId: 'a', id: 'run-a', mode: 'full' })
+    store.call('saveCollectionPage', {
+      accountId: 'a',
+      taskId: 'run-a',
+      remoteId: 'remote-a',
+      requestCursor: '0',
+      items: [earlier, recent],
+      cursor: '0',
+      hasMore: false
+    })
+    store.call('createAccount', { id: 'b', name: 'B' })
+    store.call('bindAccount', { accountId: 'b', remoteId: 'remote-b', nickname: 'B', avatarUrl: null })
+    store.call('savePage', {
+      accountId: 'b',
+      remoteId: 'remote-b',
+      items: [item('9')],
+      cursor: '0',
+      hasMore: false
+    })
+    store.call('favoriteConfirm', { accountId: 'a', remoteId: 'remote-a', work: item('10') })
+    const { text, count } = store.call('mobileLibraryExport', { accountId: 'a' })
+    const exportFile = JSON.parse(text)
+    expect(count).toBe(3)
+    expect(exportFile).toMatchObject({
+      format: 'mylike.library',
+      version: 2,
+      order: 'desktop-liked',
+      source: { kind: 'douyin.likes', label: 'A' }
+    })
+    expect(exportFile.items.map((work: Work) => work.id)).toEqual([earlier.id, recent.id, '8'])
+    expect(exportFile.items[1]).toEqual({
+      id: recent.id,
+      title: recent.title,
+      author: recent.author,
+      publishedAt: new Date(recent.publishedAt * 1000).toISOString(),
+      kind: 'live-gallery',
+      coverUrl: recent.coverUrl
+    })
+    expect(exportFile.items[2]).not.toHaveProperty('coverUrl')
+    expect(text).not.toContain('remote-a')
+  })
+
+  it('keeps the MyLike data directory out of bounds for exported files', async () => {
+    const { file } = setup()
+    const target = join(dirname(file), 'export.json')
+    await expect(saveMobileLibrary(target, '{}', dirname(file))).rejects.toMatchObject({
+      code: 'EXPORT_LOCATION'
+    })
+    expect(readdirSync(dirname(file))).not.toContain('export.json')
+  })
+
   it('aggregates account-wide dashboard counts without cross-account rows', () => {
     const { store } = setup()
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)

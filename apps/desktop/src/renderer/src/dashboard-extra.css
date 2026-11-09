@@ -137,6 +137,9 @@
   gap: 14px;
 }
 .chart-column {
+  padding: 0;
+  border: 0;
+  background: transparent;
   flex: 1 0 44px;
   max-width: 76px;
   display: flex;
@@ -154,7 +157,7 @@
   color: var(--muted);
   font-weight: 500;
 }
-.chart-column > div {
+.chart-track {
   height: 90px;
   flex: 1;
   width: 65%;
@@ -177,7 +180,7 @@
 .chart-column:focus-visible i {
   opacity: 1;
 }
-.chart-column > span {
+.chart-label {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;

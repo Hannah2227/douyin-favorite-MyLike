@@ -284,7 +284,15 @@ export function App() {
         </div>
         {tab !== 'library' && tab !== 'favorites' && heading}
         {tab === 'dashboard' && (
-          <Dashboard account={account} overview={overview} add={() => setAdding(true)} />
+          <Dashboard
+            account={account}
+            overview={overview}
+            add={() => setAdding(true)}
+            openLikes={(target) => {
+              likesLibrary.applyDashboardFilter(target)
+              setTab('library')
+            }}
+          />
         )}
         {tab === 'faq' && <HelpPage />}
         {(tab === 'library' || tab === 'favorites') && (
@@ -306,6 +314,15 @@ export function App() {
             }
             rebuildBusy={busy}
             readOnly={tab === 'favorites'}
+            exportMobileLibrary={
+              tab === 'library' && accountId
+                ? () =>
+                    void perform('导出清单', async () => {
+                      const result = await call(window.mylike.invoke('exportMobileLibrary', { accountId }))
+                      if (result) setNotice(`已导出 ${result.count} 条喜欢作品：${result.filePath}`)
+                    })
+                : undefined
+            }
             library={library}
             account={account}
             busy={!!operation}

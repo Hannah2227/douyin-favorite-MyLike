@@ -91,6 +91,7 @@ export interface Inputs {
     preserveCheckpoint?: boolean
   }
   query: Query
+  mobileLibraryExport: { accountId: string }
   libraryOverview: { accountId: string }
   matchingIds: Filter
   deleteLocal: { accountId: string; workIds: string[] }
@@ -167,6 +168,7 @@ export interface Replies {
   saveCollectionPage: CollectionTask
   savePage: PageResult & { previouslyCollected: number }
   query: LibraryPage
+  mobileLibraryExport: { text: string; count: number }
   libraryOverview: Omit<LibraryOverview, 'metadataBytes'>
   matchingIds: string[]
   deleteLocal: { removed: number }
