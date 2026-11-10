@@ -17,6 +17,16 @@
   --shadow: 0 20px 70px #0005;
   color-scheme: dark;
 }
+:root[data-theme='classic'] {
+  --bg: #101014;
+  --sidebar: #141419;
+  --surface: #19191f;
+  --surface2: #222229;
+  --line: #2c2c35;
+  --text: #ececf2;
+  --muted: #9999aa;
+  --subtle: #747485;
+}
 :root[data-theme='light'] {
   --bg: #f7f8fb;
   --sidebar: #fff;
@@ -233,7 +243,7 @@ button svg {
   position: relative;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--navigation-width, 218px) minmax(0, 1fr);
+  grid-template-columns: var(--navigation-width, 192px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg);
@@ -265,7 +275,7 @@ button svg {
 }
 .sidebar {
   height: 100%;
-  width: 218px;
+  width: var(--navigation-width, 192px);
   flex-shrink: 0;
   background: var(--sidebar);
   border-right: 1px solid var(--line);
@@ -673,6 +683,13 @@ h1 {
 .help-questions p {
   margin: 12px 0 0;
 }
+.library-list-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
 .list-caption {
   display: flex;
   justify-content: space-between;
@@ -684,6 +701,7 @@ h1 {
 }
 .library-scroll {
   flex: 1;
+  overflow-anchor: none;
   min-height: 0;
   overflow: auto;
   position: relative;
@@ -699,6 +717,12 @@ h1 {
   display: flex;
   flex-direction: column;
   padding: 0 24px 16px;
+}
+.library-more {
+  min-height: 1px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
 }
 .library-grid-area .empty-state {
   flex: 1;
@@ -731,6 +755,9 @@ h1 {
 .virtual-grid {
   position: relative;
   width: 100%;
+}
+.virtual-grid.is-selecting {
+  user-select: none;
 }
 .grid-row {
   position: absolute;
@@ -807,12 +834,8 @@ h1 {
   margin: 11px 1px 6px;
   font-size: 12px;
   font-weight: 500;
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   line-height: 1.5;
-  min-height: 36px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1151,10 +1174,9 @@ h1 {
 }
 @media (max-width: 1050px) {
   .app-shell {
-    --navigation-width: 188px;
+    --navigation-width: 172px;
   }
   .sidebar {
-    width: 188px;
     padding-left: 13px;
     padding-right: 13px;
   }

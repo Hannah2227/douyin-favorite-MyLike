@@ -18,6 +18,7 @@ import {
 import { MAX_BATCH_SIZE, type Account, type Work, type QueueState } from '../../shared/contracts'
 import type { Library } from './useLibrary'
 import { Select } from './Select'
+import { useDragSelection } from './useDragSelection'
 
 type Props = {
   header: ReactNode
@@ -87,6 +88,12 @@ export function LibraryView({
       : page.years
   const filtered = !!(search || type !== 'all' || author || activeYear || month)
   const connected = !!account?.lastVerifiedAt
+  const dragSelection = useDragSelection(
+    selection.enabled && !busy && !querying,
+    selection.add,
+    scroll,
+    library.toolbar
+  )
   return (
     <>
       <div className="library-scroll" ref={scroll}>
@@ -151,10 +158,7 @@ export function LibraryView({
                 ...years.map((y) => ({ value: String(y), label: `${y} 年` })),
                 ...(!readOnly ? [{ value: 'unknown', label: '未知年份' }] : [])
               ]}
-              onChange={(value) => {
-                setYear(value === 'unknown' ? value : value ? Number(value) : null)
-                if (value === 'unknown') setMonth(null)
-              }}
+              onChange={(value) => setYear(value === 'unknown' ? value : value ? Number(value) : null)}
             />
             <Select
               label="月份筛选"
@@ -178,6 +182,8 @@ export function LibraryView({
               />
             )}
           </div>
+        </div>
+        <div className="library-list-toolbar" ref={library.toolbar}>
           <div className="list-caption">
             <span>
               {querying
@@ -230,6 +236,8 @@ export function LibraryView({
               )}
             </div>
           )}
+        </div>
+        <div className="library-grid-area" ref={library.gridArea}>
           {sort !== 'liked' && page.yearsUnavailable && !library.loadError && (
             <div className="library-load-error" role="status" aria-label="年份筛选提示">
               <span>年份筛选暂时不可用，作品仍可浏览。</span>
@@ -250,8 +258,6 @@ export function LibraryView({
               </button>
             </div>
           )}
-        </div>
-        <div className="library-grid-area">
           {library.loadError && !page.items.length ? (
             <div className="empty-state" role="alert">
               <h2>内容读取失败</h2>
@@ -337,7 +343,12 @@ export function LibraryView({
                   <button onClick={library.retry}>重新读取</button>
                 </div>
               )}
-              <div className="virtual-grid" ref={library.grid} style={{ height: virtual.getTotalSize() }}>
+              <div
+                className={selection.enabled ? 'virtual-grid is-selecting' : 'virtual-grid'}
+                ref={library.grid}
+                style={{ height: virtual.getTotalSize() }}
+                {...dragSelection}
+              >
                 {virtual.getVirtualItems().map((row) => (
                   <div
                     className="grid-row"
@@ -347,72 +358,89 @@ export function LibraryView({
                       gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`
                     }}
                   >
-                    {page.items.slice(row.index * columns, (row.index + 1) * columns).map((work) => (
-                      <div
-                        key={work.id}
-                        className={`work-item ${selection.ids.has(work.id) ? 'is-selected' : ''}`}
-                      >
-                        <button
-                          className="work-card"
-                          disabled={busy || (querying && selection.enabled)}
-                          onClick={() => (selection.enabled ? selection.toggle(work.id) : play(work))}
-                          title={work.title}
+                    {library.rowItems(row.index).map((work, column) =>
+                      work ? (
+                        <div
+                          key={work.id}
+                          data-work-id={work.id}
+                          className={`work-item ${selection.ids.has(work.id) ? 'is-selected' : ''}`}
                         >
-                          <div className="cover">
-                            {work.coverUrl ? (
-                              <img
-                                loading="lazy"
-                                src={work.coverUrl}
-                                alt=""
-                                onError={(e) => {
-                                  e.currentTarget.style.visibility = 'hidden'
-                                }}
-                              />
-                            ) : (
-                              <Heart size={36} />
-                            )}
-                            <span className="type-badge">
-                              {work.mediaType === 'gallery' ? (
-                                <ImageIcon size={12} />
+                          <button
+                            className="work-card"
+                            disabled={busy || (querying && selection.enabled)}
+                            onClick={() => (selection.enabled ? selection.toggle(work.id) : play(work))}
+                            title={work.title}
+                          >
+                            <div className="cover">
+                              {work.coverUrl ? (
+                                <img
+                                  loading="lazy"
+                                  draggable={false}
+                                  src={work.coverUrl}
+                                  alt=""
+                                  onError={(e) => {
+                                    e.currentTarget.style.visibility = 'hidden'
+                                  }}
+                                />
                               ) : (
-                                <Play size={11} fill="currentColor" />
+                                <Heart size={36} />
                               )}
-                              {work.isLive ? '实况' : work.mediaType === 'gallery' ? '图集' : '视频'}
-                            </span>
-                            <span className="play-hover">
-                              <Play size={24} fill="currentColor" />
-                            </span>
-                          </div>
-                          <h3>{work.title || '未命名作品'}</h3>
-                          <p>
-                            <span>@{work.author || '未知作者'}</span>
-                            <time>
-                              {work.publishedAt
-                                ? new Date(work.publishedAt * 1000).toLocaleDateString('zh-CN')
-                                : ''}
-                            </time>
-                          </p>
-                        </button>
-                        {selection.enabled && (
-                          <input
-                            className="work-select"
-                            type="checkbox"
-                            aria-label={`选择 ${work.title || work.id}`}
-                            checked={selection.ids.has(work.id)}
-                            disabled={busy}
-                            onChange={() => selection.toggle(work.id)}
-                          />
-                        )}
-                      </div>
-                    ))}
+                              <span className="type-badge">
+                                {work.mediaType === 'gallery' ? (
+                                  <ImageIcon size={12} />
+                                ) : (
+                                  <Play size={11} fill="currentColor" />
+                                )}
+                                {work.isLive ? '实况' : work.mediaType === 'gallery' ? '图集' : '视频'}
+                              </span>
+                              <span className="play-hover">
+                                <Play size={24} fill="currentColor" />
+                              </span>
+                            </div>
+                            <h3>{work.title || '未命名作品'}</h3>
+                            <p>
+                              <span>@{work.author || '未知作者'}</span>
+                              <time>
+                                {work.publishedAt
+                                  ? new Date(work.publishedAt * 1000).toLocaleDateString('zh-CN')
+                                  : ''}
+                              </time>
+                            </p>
+                          </button>
+                          {selection.enabled && (
+                            <input
+                              className="work-select"
+                              type="checkbox"
+                              aria-label={`选择 ${work.title || work.id}`}
+                              checked={selection.ids.has(work.id)}
+                              disabled={busy || querying}
+                              onChange={() => selection.toggle(work.id)}
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <div key={column} aria-hidden="true" />
+                      )
+                    )}
                   </div>
                 ))}
               </div>
+              {library.hasMore && (
+                <div ref={library.sentinel} className="library-more">
+                  {library.loadingMore && <span role="status">正在加载更多…</span>}
+                  {library.moreError && (
+                    <div className="library-load-error" role="alert">
+                      <span>加载更多失败：{library.moreError}</span>
+                      <button onClick={library.retry}>重试</button>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
       </div>
-      {page.total > 0 && (
+      {library.paginated && page.total > 0 && (
         <form
           className="library-pagination"
           aria-label="内容分页"

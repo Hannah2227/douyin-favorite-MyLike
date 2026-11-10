@@ -11,6 +11,8 @@ import {
   shortcutKeys,
   shortcutActions,
   keyLabel,
+  themeOptions,
+  type Theme,
   type AppPreferences,
   type ShortcutAction
 } from '../../shared/preferences'
@@ -35,7 +37,8 @@ const groups = [
     id: 'general',
     title: '通用',
     icon: Settings2,
-    keywords: '通用 外观 主题 白天 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画'
+    keywords:
+      '通用 外观 主题 白天 经典 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画 列表 浏览 分页 无限 滚动'
   },
   {
     id: 'playback',
@@ -167,13 +170,10 @@ export function SettingsPanel({
               <Select
                 label="外观主题"
                 value={snapshot?.theme ?? 'dark'}
-                options={[
-                  { value: 'dark', label: '黑夜模式' },
-                  { value: 'light', label: '白天模式' }
-                ]}
+                options={themeOptions}
                 onChange={(value) =>
                   void perform('切换主题', () =>
-                    call(window.mylike.invoke('theme', { theme: value as 'dark' | 'light' }))
+                    call(window.mylike.invoke('theme', { theme: value as Theme }))
                   )
                 }
               />
@@ -191,6 +191,19 @@ export function SettingsPanel({
                   { value: 'favorites', label: '收藏的内容' },
                   { value: 'tasks', label: '任务' }
                 ]}
+              />
+            </Row>
+            <Row label="内容列表浏览方式" description="适用于喜欢、收藏和收藏夹">
+              <Select
+                label="内容列表浏览方式"
+                value={application.libraryMode}
+                options={[
+                  { value: 'paged', label: '分页' },
+                  { value: 'scroll', label: '连续滚动' }
+                ]}
+                onChange={(value) =>
+                  updateApplication({ libraryMode: value === 'scroll' ? 'scroll' : 'paged' })
+                }
               />
             </Row>
             <Row label="界面缩放" description="同时调整文字和控件大小">

@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  ImageIcon,
   LoaderCircle,
   Volume2,
   VolumeX,
@@ -71,7 +70,7 @@ export function Player({
   setClean,
   exit
 }: Props) {
-  const { queue, media, error } = playback.view!,
+  const { queue, media, error, unavailable } = playback.view!,
     work = queue.work,
     scope = playback.key
   const stage = useRef<HTMLElement>(null),
@@ -311,6 +310,14 @@ export function Player({
     pause()
     void playback.move(target)
   }
+  const autoSkip = unavailable && playing && preferences.continuous && !queue.completed && !!queue.next
+  useEffect(() => {
+    if (!autoSkip) return
+    const timer = setTimeout(() => {
+      if (playback.isCurrent(scope)) move('next')
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [autoSkip, scope])
   const closeComments = () => {
     setCommentsOpen(false)
     commentsButton.current?.focus()
@@ -479,23 +486,18 @@ export function Player({
               <h2>正在获取播放地址</h2>
             </div>
           )}
-          {(error || mediaError) && (
+          {(error || mediaError || (media && !hasContent)) && (
             <div className="stage-message" role="alert">
-              <h2>暂时无法播放</h2>
-              <p>{error || mediaError}</p>
+              <h2>{unavailable ? '作品当前不可访问' : '暂时无法播放'}</h2>
+              <p>{error || mediaError || '未取得可播放资源。'}</p>
+              {autoSkip && <p>正在切换到下一条…</p>}
               <div className="panel-actions">
                 <button title="刷新播放地址" onClick={retryMedia}>
                   刷新地址重试
                 </button>
-                <button onClick={login}>打开登录 / 验证</button>
+                {queue.next && <button onClick={() => move('next')}>下一条</button>}
+                {error && !unavailable && <button onClick={login}>打开登录 / 验证</button>}
               </div>
-            </div>
-          )}
-          {media && !hasContent && (
-            <div className="stage-message">
-              <ImageIcon size={30} />
-              <h2>未取得可播放资源</h2>
-              <p>可以刷新地址，或切换到下一条作品。</p>
             </div>
           )}
           {source && !mediaError && (

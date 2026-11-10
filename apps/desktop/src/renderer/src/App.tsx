@@ -24,7 +24,6 @@ import { HelpPage } from './HelpPage'
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [tab, setTab] = useState<Tab>('library')
-  const [folderId, setFolderId] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const [operation, setOperation] = useState('')
   const [notice, setNotice] = useState('')
@@ -52,28 +51,32 @@ export function App() {
     tab === 'dashboard' && (!playback.view || presentation.leaving)
   )
   const preferences = usePlaybackPreferences(snapshot?.playbackPreferences, setError)
+  const libraryMode = snapshot?.appPreferences.libraryMode ?? 'paged'
   const likesLibrary = useLibrary(
     accountId,
     (!playback.view || presentation.leaving) && tab === 'library',
-    revision
+    revision,
+    libraryMode
   )
   const favoritesLibrary = useLibrary(
     accountId,
     (!playback.view || presentation.leaving) && tab === 'favorites',
     revision,
-    { source: 'favorites', folderId }
+    libraryMode,
+    'favorites'
   )
   const favoriteFolders = useFavoriteFolders(tab === 'favorites' ? accountId : null, revision)
   const library = tab === 'favorites' ? favoritesLibrary : likesLibrary
-  useEffect(() => setFolderId(null), [accountId])
+  const { folderId, setFolderId } = favoritesLibrary
   useEffect(() => {
     if (
       favoriteFolders.loaded &&
+      !favoriteFolders.error &&
       folderId &&
       !favoriteFolders.folders.some((folder) => folder.id === folderId)
     )
       setFolderId(null)
-  }, [favoriteFolders.loaded, favoriteFolders.folders, folderId])
+  }, [favoriteFolders.loaded, favoriteFolders.error, favoriteFolders.folders, folderId])
   const startFavorites = () =>
     accountId &&
     void perform('向下采集', () =>
@@ -315,11 +318,17 @@ export function App() {
             rebuildBusy={busy}
             readOnly={tab === 'favorites'}
             exportMobileLibrary={
-              tab === 'library' && accountId
+              accountId
                 ? () =>
                     void perform('导出清单', async () => {
-                      const result = await call(window.mylike.invoke('exportMobileLibrary', { accountId }))
-                      if (result) setNotice(`已导出 ${result.count} 条喜欢作品：${result.filePath}`)
+                      const source = tab === 'favorites' ? 'favorites' : 'likes'
+                      const result = await call(
+                        window.mylike.invoke('exportMobileLibrary', { accountId, source })
+                      )
+                      if (result)
+                        setNotice(
+                          `已导出 ${result.count} 条${source === 'favorites' ? '收藏' : '喜欢'}作品：${result.filePath}`
+                        )
                     })
                 : undefined
             }

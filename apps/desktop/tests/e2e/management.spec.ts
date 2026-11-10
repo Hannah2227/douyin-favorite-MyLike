@@ -143,6 +143,45 @@ test('exports all local likes for mobile even while the desktop list is filtered
   expect(content.items.map((row: { id: string }) => row.id).sort()).toEqual(['1', '2'])
 })
 
+test('exports the full mobile favorites library from a filtered folder', async ({}, testInfo) => {
+  const accountId = await account()
+  const db = new DatabaseSync(join(profile, 'mylike.sqlite'))
+  try {
+    db.prepare('INSERT INTO saved_items VALUES (?, ?, ?), (?, ?, ?)').run(
+      accountId,
+      '1',
+      1,
+      accountId,
+      '2',
+      2
+    )
+    db.prepare('INSERT INTO saved_folders VALUES (?, ?, ?, ?, ?)').run(accountId, '101', '旅行', 1, 'fixture')
+    db.prepare('INSERT INTO saved_members VALUES (?, ?, ?, ?)').run(accountId, '101', '1', 'fixture')
+  } finally {
+    db.close()
+  }
+  await page.getByRole('button', { name: '收藏', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '收藏的内容' })).toBeVisible()
+  await expect(page.locator('.list-caption')).toContainText('2 条内容')
+  await page.getByRole('combobox', { name: '收藏夹筛选' }).click()
+  await page.getByRole('option', { name: '旅行 · 1' }).click()
+  await expect(page.locator('.list-caption')).toContainText('1 条内容')
+  const target = testInfo.outputPath('mobile-favorites.json')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+  }, target)
+  await page.getByRole('button', { name: '导出清单', exact: true }).click()
+  await expect(page.locator('.notice')).toContainText('已导出 2 条收藏作品')
+  const content = JSON.parse(readFileSync(target, 'utf8'))
+  expect(content).toMatchObject({
+    format: 'mylike.library',
+    version: 3,
+    source: { kind: 'douyin.favorites' },
+    folders: [{ title: '旅行', workIds: ['1'] }]
+  })
+  expect(content.items.map(({ id }: { id: string }) => id).sort()).toEqual(['1', '2'])
+})
+
 test('renames, clears cache without login loss, logs out only one session, and purges current data and backup records when deleting that account', async () => {
   const a = await account('账号 A'),
     b = await account('账号 B')

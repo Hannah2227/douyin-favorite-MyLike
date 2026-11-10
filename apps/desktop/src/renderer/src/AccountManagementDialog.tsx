@@ -3,6 +3,7 @@ import type { Account } from '../../shared/contracts'
 import { accountLabel } from '../../shared/account-label'
 import { ConfirmDialog } from './ConfirmDialog'
 import { call, type Perform } from './api'
+import { removeBrowse } from './library-browse'
 
 export function AccountManagementDialog({
   account,
@@ -43,6 +44,7 @@ export function AccountManagementDialog({
                 ...(rename ? { name } : {})
               })
             )
+            if (!rename) removeBrowse(account.id)
             close()
           } catch (error) {
             setError(error instanceof Error ? error.message : '账号操作未完成。')

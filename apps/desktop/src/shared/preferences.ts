@@ -99,18 +99,28 @@ export function keyLabel(code: string): string {
   }
   return labels[code] ?? code.replace('Key', '')
 }
+export const themeSchema = z.enum(['light', 'classic', 'dark'])
+export type Theme = z.infer<typeof themeSchema>
+export const themeOptions: { value: Theme; label: string }[] = [
+  { value: 'light', label: '白天模式' },
+  { value: 'classic', label: '经典模式' },
+  { value: 'dark', label: '黑夜模式' }
+]
+
 export const appPreferencesSchema = z.object({
   startupPage: z.enum(['library', 'dashboard', 'favorites', 'tasks']).default('library'),
   zoom: z.union([z.literal(0.9), z.literal(1), z.literal(1.1), z.literal(1.25), z.literal(1.5)]).default(1),
   rememberWindow: z.boolean().default(true),
-  motion: z.enum(['system', 'reduce']).default('system')
+  motion: z.enum(['system', 'reduce']).default('system'),
+  libraryMode: z.enum(['paged', 'scroll']).default('paged')
 })
 export type AppPreferences = z.infer<typeof appPreferencesSchema>
 export const appPreferencesPatchSchema = z.object({
   startupPage: appPreferencesSchema.shape.startupPage.removeDefault().optional(),
   zoom: appPreferencesSchema.shape.zoom.removeDefault().optional(),
   rememberWindow: appPreferencesSchema.shape.rememberWindow.removeDefault().optional(),
-  motion: appPreferencesSchema.shape.motion.removeDefault().optional()
+  motion: appPreferencesSchema.shape.motion.removeDefault().optional(),
+  libraryMode: appPreferencesSchema.shape.libraryMode.removeDefault().optional()
 })
 export interface WindowState {
   x: number

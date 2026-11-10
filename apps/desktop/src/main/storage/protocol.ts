@@ -6,6 +6,7 @@ import type {
   Filter,
   LibraryPage,
   LibraryOverview,
+  MobileLibrarySource,
   PageResult,
   Query,
   Work,
@@ -91,7 +92,7 @@ export interface Inputs {
     preserveCheckpoint?: boolean
   }
   query: Query
-  mobileLibraryExport: { accountId: string }
+  mobileLibraryExport: { accountId: string; source?: MobileLibrarySource }
   libraryOverview: { accountId: string }
   matchingIds: Filter
   deleteLocal: { accountId: string; workIds: string[] }

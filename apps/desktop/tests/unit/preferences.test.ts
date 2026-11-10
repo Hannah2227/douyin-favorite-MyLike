@@ -109,7 +109,8 @@ it('persists application and playback preferences across restart without changin
       rememberWindow: false
     })
   })
-  store.call('appPreferences', { preferences: { zoom: 1.1 } })
+  expect(store.call('appPreferences', {}).libraryMode).toBe('paged')
+  store.call('appPreferences', { preferences: { zoom: 1.1, libraryMode: 'scroll' } })
   store.call('playbackPreferences', {
     preferences: playbackPreferencesSchema.parse({
       autoplay: false,
@@ -125,7 +126,8 @@ it('persists application and playback preferences across restart without changin
     startupPage: 'dashboard',
     zoom: 1.1,
     motion: 'reduce',
-    rememberWindow: false
+    rememberWindow: false,
+    libraryMode: 'scroll'
   })
   expect(next.call('playbackPreferences', {})).toMatchObject({
     autoplay: false,

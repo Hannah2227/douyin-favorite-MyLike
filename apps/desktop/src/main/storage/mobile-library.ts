@@ -21,6 +21,7 @@ export type MobileExportRow = {
   isLive: number
   coverUrl: string | null
 }
+export type MobileExportFolder = { id: string; title: string; workIds: string[] }
 
 function cover(value: string | null): string | undefined {
   if (!value || value.length > 16_384) return
@@ -39,8 +40,14 @@ function cover(value: string | null): string | undefined {
   }
 }
 
-export function encodeMobileLibrary(rows: MobileExportRow[], label: string, now = new Date()): string {
-  if (!rows.length) throw new AppError('EXPORT_EMPTY', '当前账号没有可导出的喜欢作品。')
+export function encodeMobileLibrary(
+  rows: MobileExportRow[],
+  label: string,
+  folders?: MobileExportFolder[],
+  now = new Date()
+): string {
+  if (!rows.length)
+    throw new AppError('EXPORT_EMPTY', `当前账号没有可导出的${folders ? '收藏' : '喜欢'}作品。`)
   if (rows.length > MAX_MOBILE_EXPORT_ITEMS)
     throw new AppError('EXPORT_TOO_LARGE', '手机清单最多支持 10 万条作品。')
   const items = rows.map((row) => {
@@ -67,11 +74,12 @@ export function encodeMobileLibrary(rows: MobileExportRow[], label: string, now 
   const text =
     JSON.stringify({
       format: 'mylike.library',
-      version: 2,
+      version: folders ? 3 : 2,
       exportedAt: now.toISOString(),
-      source: { kind: 'douyin.likes', label },
-      order: 'desktop-liked',
-      items
+      source: { kind: folders ? 'douyin.favorites' : 'douyin.likes', label },
+      order: folders ? 'desktop-favorites' : 'desktop-liked',
+      items,
+      ...(folders && { folders })
     }) + '\n'
   if (Buffer.byteLength(text, 'utf8') > MAX_MOBILE_EXPORT_BYTES)
     throw new AppError('EXPORT_TOO_LARGE', '手机清单超过 64 MiB，未导出文件。')

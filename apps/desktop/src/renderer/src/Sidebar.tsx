@@ -9,6 +9,7 @@ import {
   Settings2,
   Sun,
   Moon,
+  Palette,
   CircleHelp,
   Pencil,
   Trash2
@@ -19,6 +20,9 @@ import { Select } from './Select'
 import { accountLabel } from '../../shared/account-label'
 import { AccountManagementDialog } from './AccountManagementDialog'
 import { BrandMark, GitHubMark } from './BrandMark'
+import { themeOptions } from '../../shared/preferences'
+
+const themeIcons = { light: Sun, classic: Palette, dark: Moon }
 
 type Props = {
   snapshot: Snapshot | null
@@ -32,6 +36,9 @@ type Props = {
 }
 export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding, perform }: Props) {
   const [manage, setManage] = useState<'rename' | 'remove' | null>(null)
+  const themeIndex = themeOptions.findIndex(({ value }) => value === snapshot?.theme)
+  const nextTheme = themeOptions[(themeIndex + 1) % themeOptions.length]!
+  const ThemeIcon = themeIcons[nextTheme.value]
   const taskRunning =
     snapshot?.collection?.status === 'running' ||
     !!snapshot?.collectionActivity ||
@@ -76,17 +83,11 @@ export function Sidebar({ snapshot, tab, setTab, back, busy, account, setAdding,
           aria-label="切换主题"
           disabled={!snapshot}
           onClick={() =>
-            void perform('切换主题', () =>
-              call(
-                window.mylike.invoke('theme', {
-                  theme: snapshot?.theme === 'dark' ? 'light' : 'dark'
-                })
-              )
-            )
+            void perform('切换主题', () => call(window.mylike.invoke('theme', { theme: nextTheme.value })))
           }
         >
-          {snapshot?.theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
-          {snapshot?.theme === 'dark' ? '白天模式' : '黑夜模式'}
+          <ThemeIcon size={17} />
+          {nextTheme.label}
         </button>
         <button
           className={`sidebar-utility${tab === 'faq' ? ' active' : ''}`}

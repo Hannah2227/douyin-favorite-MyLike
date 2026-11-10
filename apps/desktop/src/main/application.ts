@@ -5,7 +5,15 @@ import { FavoriteActions } from './favorite-actions'
 import { app, shell, clipboard, dialog, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { Account, Command, Diagnostics, FavoritesTask, Query, Snapshot } from '../shared/contracts'
+import type {
+  Account,
+  Command,
+  Diagnostics,
+  FavoritesTask,
+  MobileLibrarySource,
+  Query,
+  Snapshot
+} from '../shared/contracts'
 import { Database } from './storage/client'
 import { DouyinEngine } from './douyin/engine'
 import {
@@ -29,6 +37,14 @@ import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
 import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
 import { saveMobileLibrary } from './mobile-export'
+import { themeSchema, type Theme } from '../shared/preferences'
+
+const storedTheme = themeSchema.catch('dark')
+const themeColors = {
+  light: { color: '#f7f8fb', symbolColor: '#202436' },
+  classic: { color: '#101014', symbolColor: '#ececf2' },
+  dark: { color: '#000000', symbolColor: '#f2f2f2' }
+}
 
 export class Application {
   private readonly health = new HealthMonitor()
@@ -165,7 +181,7 @@ export class Application {
     return {
       accounts,
       activeAccountId,
-      theme: theme === 'light' ? 'light' : 'dark',
+      theme: storedTheme.parse(theme),
       engine: this.engine.snapshot(),
       authentication: this.authentication.snapshot(),
       health: activeAccountId
@@ -191,19 +207,13 @@ export class Application {
       version
     }
   }
-  async applyAppearance(theme?: 'dark' | 'light'): Promise<void> {
-    const value = theme ?? (await this.database.call('setting', { key: 'theme' }))
-    const light = value === 'light' && !this.playerVisible
-    const color = this.playerVisible ? '#111113' : light ? '#f7f8fb' : '#000000'
+  async applyAppearance(theme?: Theme): Promise<void> {
+    const value = theme ?? storedTheme.parse(await this.database.call('setting', { key: 'theme' }))
+    const colors = this.playerVisible ? { color: '#111113', symbolColor: '#ececf2' } : themeColors[value]
     const win = this.parent()
     if (!win || win.isDestroyed()) return
-    win.setBackgroundColor(color)
-    if (process.platform === 'win32')
-      win.setTitleBarOverlay({
-        color,
-        symbolColor: this.playerVisible ? '#ececf2' : light ? '#202436' : '#f2f2f2',
-        height: 30
-      })
+    win.setBackgroundColor(colors.color)
+    if (process.platform === 'win32') win.setTitleBarOverlay({ ...colors, height: 30 })
   }
   private async exclusive<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.admission
@@ -684,21 +694,22 @@ export class Application {
     await paused
     await this.lane.idle()
   }
-  private async exportMobileLibrary(accountId: string) {
+  private async exportMobileLibrary(accountId: string, source: MobileLibrarySource = 'likes') {
     if (this.exportingMobileLibrary) throw new AppError('BUSY', '请先完成当前清单导出。')
     this.exportingMobileLibrary = true
     const epoch = this.epoch
     try {
       await this.active(accountId)
-      const prepared = await this.database.call('mobileLibraryExport', { accountId })
+      const prepared = await this.database.call('mobileLibraryExport', { accountId, source })
+      const label = source === 'favorites' ? '收藏' : '喜欢'
       const owner = this.parent()
       if (this.closing || !owner || owner.isDestroyed())
         throw new AppError('CLOSING', '窗口已关闭，未导出清单。')
       const selected = await dialog.showSaveDialog(owner, {
-        title: `导出 ${prepared.count} 条喜欢作品`,
+        title: `导出 ${prepared.count} 条${label}作品`,
         defaultPath: join(
           app.getPath('documents'),
-          `MyLike-喜欢-${new Date().toISOString().slice(0, 10)}.mylike.json`
+          `MyLike-${label}-${new Date().toISOString().slice(0, 10)}.mylike.json`
         ),
         filters: [{ name: 'MyLike 手机清单', extensions: ['json'] }]
       })
@@ -770,7 +781,7 @@ export class Application {
       throw new AppError('BUSY', '请先停止取消点赞或收藏任务，等待当前请求结果保存。')
     switch (command) {
       case 'exportMobileLibrary':
-        return this.exportMobileLibrary(input.accountId)
+        return this.exportMobileLibrary(input.accountId, input.source)
       case 'appPreferences': {
         const value = await this.database.call('appPreferences', input)
         this.parent()?.webContents.setZoomFactor(value.zoom)

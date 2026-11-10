@@ -4,7 +4,13 @@ import { call, CommandError } from './api'
 import { VideoWarmup } from './video-warmup'
 
 const key = (queue: QueueState) => `${queue.accountId}:${queue.queueId}:${queue.revision}`
-type View = { queue: QueueState; media: Media | null; error: string; prepared?: HTMLVideoElement }
+type View = {
+  queue: QueueState
+  media: Media | null
+  error: string
+  unavailable?: boolean
+  prepared?: HTMLVideoElement
+}
 type Cache = { queueId: string; expires: number; media?: Media; promise?: Promise<Media> }
 export function usePlayback(
   accountId: string | null,
@@ -159,7 +165,12 @@ export function usePlayback(
           .catch(() => {})
     } catch (error) {
       if (seq === intent.current)
-        set({ queue, media: null, error: error instanceof Error ? error.message : '未能取得播放地址。' })
+        set({
+          queue,
+          media: null,
+          error: error instanceof Error ? error.message : '未能取得播放地址。',
+          unavailable: error instanceof CommandError && error.code === 'CONTENT_UNAVAILABLE'
+        })
     }
   }
   const start = async (source: QueueCreate['source'], mode: QueueCreate['mode'], startWorkId?: string) => {

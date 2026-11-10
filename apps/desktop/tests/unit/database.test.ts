@@ -130,6 +130,52 @@ describe('SQLite transactions and account ownership', () => {
     expect(readdirSync(dirname(file))).not.toContain('export.json')
   })
 
+  it('exports only the current account favorites and keeps all their folder memberships', () => {
+    const { store } = setup()
+    const work = item('7637322941528689935')
+    const folder = { id: '101', title: '摄影', remoteCount: 1, localCount: 0 }
+    const second = { ...folder, id: '102', title: '旅行' }
+    const empty = { ...folder, id: '103', title: '空夹' }
+    for (const selected of [folder, second]) {
+      store.call('favoriteConfirm', { accountId: 'a', remoteId: 'remote-a', work, folder: selected })
+    }
+    store.call('favoriteRememberFolder', { accountId: 'a', remoteId: 'remote-a', folder: empty })
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: [item('8')]
+    })
+    store.call('createAccount', { id: 'b', name: 'B' })
+    store.call('bindAccount', { accountId: 'b', remoteId: 'remote-b', nickname: 'B', avatarUrl: null })
+    store.call('favoriteConfirm', { accountId: 'b', remoteId: 'remote-b', work: item('9'), folder })
+
+    const { text, count } = store.call('mobileLibraryExport', { accountId: 'a', source: 'favorites' })
+    const result = JSON.parse(text)
+    expect(count).toBe(1)
+    expect(result).toMatchObject({
+      format: 'mylike.library',
+      version: 3,
+      order: 'desktop-favorites',
+      source: { kind: 'douyin.favorites', label: 'A' }
+    })
+    expect(result.items.map(({ id }: Work) => id)).toEqual([work.id])
+    expect(result.folders).toEqual(
+      expect.arrayContaining([
+        { id: expect.stringMatching(/^[0-9a-f]{64}$/), title: '摄影', workIds: [work.id] },
+        { id: expect.stringMatching(/^[0-9a-f]{64}$/), title: '旅行', workIds: [work.id] },
+        { id: expect.stringMatching(/^[0-9a-f]{64}$/), title: '空夹', workIds: [] }
+      ])
+    )
+    expect(result.folders).toHaveLength(3)
+    const other = JSON.parse(store.call('mobileLibraryExport', { accountId: 'b', source: 'favorites' }).text)
+    expect(other.folders[0].id).not.toBe(
+      result.folders.find(({ title }: { title: string }) => title === '摄影').id
+    )
+    expect(text).not.toContain('remote-a')
+  })
+
   it('aggregates account-wide dashboard counts without cross-account rows', () => {
     const { store } = setup()
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
