@@ -56,6 +56,28 @@ afterEach(() => {
 })
 
 describe('SQLite transactions and account ownership', () => {
+  it('persists author IDs and preserves them when later updates omit the identifier', () => {
+    const { store } = setup()
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: [item('1')]
+    })
+    store.call('updateWork', { work: { ...item('1'), authorId: 'MS4wLjABAAAA_example-123' } })
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: [item('1')]
+    })
+    expect(store.call('libraryOverview', { accountId: 'a' }).recent).toMatchObject([
+      { id: '1', authorId: 'MS4wLjABAAAA_example-123' }
+    ])
+  })
+
   it('aggregates account-wide dashboard counts with bounded recent items and no cross-account rows', () => {
     const { store } = setup()
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
@@ -237,7 +259,7 @@ describe('SQLite transactions and account ownership', () => {
         ['8', 1205],
         ['9', 100]
       ] as const)
-        db.prepare('INSERT INTO saved_folders VALUES(?,?,?,?,?)').run(
+        db.prepare('INSERT INTO saved_folders(accountId,id,title,remoteCount,seenRun) VALUES(?,?,?,?,?)').run(
           'a',
           id,
           'Folder ' + id,
@@ -343,9 +365,9 @@ describe('SQLite transactions and account ownership', () => {
       cursor: '0',
       hasMore: false
     })
-    expect(store.call('query', { ...query, search: '7672255161846976246' }).items.map((work) => work.id)).toEqual([
-      '7672255161846976246'
-    ])
+    expect(
+      store.call('query', { ...query, search: '7672255161846976246' }).items.map((work) => work.id)
+    ).toEqual(['7672255161846976246'])
   })
   it('finds a work by its author name', () => {
     const { store } = setup()

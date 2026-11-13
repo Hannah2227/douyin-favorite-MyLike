@@ -38,8 +38,8 @@ export class DataMaintenance {
       throw new AppError('DATA_INFO_FAILED', '无法读取数据占用信息，请检查数据目录权限。')
     }
   }
-  async open(target: 'data' | 'backups'): Promise<null> {
-    const folder = target === 'data' ? app.getPath('userData') : join(app.getPath('userData'), 'backups')
+  async open(target: 'data' | 'backups' | 'logs'): Promise<null> {
+    const folder = target === 'data' ? app.getPath('userData') : join(app.getPath('userData'), target)
     await mkdir(folder, { recursive: true })
     if (await shell.openPath(folder))
       throw new AppError('OPEN_FOLDER_FAILED', '无法打开数据目录，请稍后重试。')

@@ -6,6 +6,7 @@ import {
   parseFavoriteState,
   parseFavoriteFolders,
   parseFavoriteFolder,
+  parseFavoritesPage,
   parseWriteResult
 } from './douyin/parse'
 import { AppError } from './errors'
@@ -44,27 +45,84 @@ export class FavoriteActions {
     await this.db.call('favoriteWriteGuard', { accountId: scope.accountId, workId: scope.workId })
     check()
   }
-  private async folders(accountId: string, check: () => void): Promise<FavoriteFolder[]> {
+  private async folders(accountId: string, check: () => void, remoteId = ''): Promise<FavoriteFolder[]> {
     const local = await this.db.call('favoriteFolders', { accountId })
-    const counts = new Map(local.map((folder) => [folder.id, folder.localCount]))
+    const byRemoteId = new Map(local.map((folder) => [folder.remoteId ?? folder.id, folder]))
+    const hiddenRemoteIds = new Set(await this.db.call('favoriteHiddenFolderIds', { accountId }))
     const result = new Map<string, FavoriteFolder>(),
       visited = new Set<string>()
     let cursor = '0'
     for (let page = 0; page < 100; page++) {
       check()
       const data = parseFavoriteFolders(
-        await this.engine.request(accountId, 'folders', { cursor, count: '20' })
+        await this.engine.request(accountId, 'folders', {
+          cursor,
+          count: '20',
+          ...(remoteId ? { sec_user_id: remoteId } : {})
+        })
       )
       check()
-      for (const folder of data.folders)
-        result.set(folder.id, { ...folder, localCount: counts.get(folder.id) ?? 0 })
-      if (!data.hasMore) return [...result.values()]
+      for (const folder of data.folders) {
+        if (hiddenRemoteIds.has(folder.id)) continue
+        const known = byRemoteId.get(folder.id)
+        const mapped = {
+          ...folder,
+          title: known?.managedLocally ? known.title : folder.title,
+          id: known?.id ?? folder.id,
+          remoteId: folder.id,
+          localOnly: false,
+          managedLocally: known?.managedLocally ?? false,
+          localCount: known?.localCount ?? 0
+        }
+        result.set(mapped.id, mapped)
+      }
+      if (!data.hasMore) {
+        for (const folder of local.filter((entry) => entry.localOnly)) result.set(folder.id, folder)
+        return [...result.values()]
+      }
       visited.add(cursor)
       if (visited.has(data.cursor))
         throw new AppError('CURSOR_STALLED', '收藏夹列表游标重复，请稍后重新读取。')
       cursor = data.cursor
     }
     throw new AppError('TOO_MANY_FOLDERS', '收藏夹列表过长，本次未完整读取，未发送收藏请求。')
+  }
+  async refreshFolders(accountId: string): Promise<FavoriteFolder[]> {
+    return this.run(accountId, async (check) => {
+      const account = await this.identity(accountId, check)
+      if (!account.remoteId) throw new AppError('AUTH_REQUIRED', '请先登录并核验账号。')
+      const folders = await this.folders(accountId, check, account.remoteId)
+      check()
+      return folders
+    })
+  }
+  private async remoteFolderWorkIds(
+    accountId: string,
+    remoteFolderId: string,
+    check: () => void
+  ): Promise<Set<string>> {
+    const workIds = new Set<string>()
+    const visited = new Set<string>()
+    let cursor = '0'
+    for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
+      check()
+      if (visited.has(cursor)) throw new AppError('CURSOR_STALLED', '收藏夹分页游标重复，未继续写回。')
+      visited.add(cursor)
+      const page = parseFavoritesPage(
+        await this.engine.request(accountId, 'folderItems', {
+          collects_id: remoteFolderId,
+          cursor,
+          count: '20'
+        })
+      )
+      check()
+      if (page.skipped.length)
+        throw new AppError('INVALID_ITEMS', '云端收藏夹包含无法读取的作品，已停止写回以避免遗漏。')
+      for (const work of page.items) workIds.add(work.id)
+      if (!page.hasMore) return workIds
+      cursor = page.cursor
+    }
+    throw new AppError('TOO_MANY_ITEMS', '收藏夹分页过多，已停止写回。')
   }
   async open(scope: Scope): Promise<FavoriteEditor> {
     return this.run(scope.accountId, async (check) => {
@@ -75,7 +133,7 @@ export class FavoriteActions {
         await this.engine.request(scope.accountId, 'detail', { aweme_id: scope.workId }),
         scope.workId
       )
-      const folders = await this.folders(scope.accountId, check)
+      const folders = await this.folders(scope.accountId, check, account.remoteId ?? '')
       await this.guard(scope, check)
       // A read can confirm an existing remote collection without inventing folder memberships.
       if (state.collected) {
@@ -146,12 +204,13 @@ export class FavoriteActions {
           await this.engine.request(accountId, 'detail', { aweme_id: editor.scope.workId }),
           editor.scope.workId
         )
-        const folders = await this.folders(accountId, valid)
+        const folders = await this.folders(accountId, valid, account.remoteId ?? '')
         const targets = [...new Set(folderIds)].map((id) => {
           const folder = folders.find((entry) => entry.id === id)
           if (!folder) throw new AppError('FOLDER_CHANGED', '所选收藏夹已变化，请重新读取后再保存。')
           return folder
         })
+        const preferences = await this.db.call('appPreferences', {})
         let inflight = false,
           collected = state.collected,
           foldersAdded = 0
@@ -168,9 +227,29 @@ export class FavoriteActions {
             inflight = false
             collected = true
           }
-          await this.db.call('favoriteConfirm', { accountId, remoteId: editor.remoteId, work: state.work })
+          await this.db.call('favoriteConfirm', {
+            accountId,
+            remoteId: editor.remoteId,
+            work: state.work,
+            favoriteAddIntent: !state.collected,
+            synced: true
+          })
           this.changed()
           for (const folder of targets) {
+            if (folder.localOnly) {
+              // Locally created folders stay local until an explicit writeback
+              // when the user allows cloud writeback.
+              await this.db.call('favoriteConfirm', {
+                accountId,
+                remoteId: editor.remoteId,
+                work: state.work,
+                folder,
+                queueWrite: preferences.syncFavoritesToCloud
+              })
+              foldersAdded++
+              this.changed()
+              continue
+            }
             await this.guard(editor.scope, valid)
             inflight = true
             parseWriteResult(
@@ -178,7 +257,7 @@ export class FavoriteActions {
                 aweme_id: state.work.id,
                 item_ids: state.work.id,
                 item_type: '2',
-                to_collects_id: folder.id,
+                to_collects_id: folder.remoteId ?? folder.id,
                 collects_name: folder.title,
                 update_collects_sort: 'true'
               })
@@ -188,7 +267,8 @@ export class FavoriteActions {
               accountId,
               remoteId: editor.remoteId,
               work: state.work,
-              folder
+              folder: { ...folder, remoteCount: folder.remoteCount + 1 },
+              synced: true
             })
             foldersAdded++
             this.changed()
@@ -213,43 +293,316 @@ export class FavoriteActions {
     )
   }
   createFolder(accountId: string, token: string, name: string, secret: boolean): Promise<FavoriteFolder> {
-    const epoch = this.writeEpoch
     return this.write(token, () =>
       this.run(accountId, async (check) => {
-        const valid = () => {
-          check()
-          if (epoch !== this.writeEpoch) throw new AppError('CANCELLED', '新建收藏夹已停止，未发送新的请求。')
-        }
         const editor = this.editor(accountId, token)
-        await this.guard(editor.scope, valid)
+        await this.guard(editor.scope, check)
         const account = await this.identity(accountId, check)
         if (account.remoteId !== editor.remoteId)
-          throw new AppError('IDENTITY_MISMATCH', '当前抖音身份已变化，未新建收藏夹。')
-        const existing = await this.folders(accountId, valid)
+          throw new AppError('IDENTITY_MISMATCH', '当前抖音身份已变化，收藏夹未创建。')
+        const existing = await this.folders(accountId, check, account.remoteId ?? '')
         if (existing.some((folder) => folder.title === name))
           throw new AppError('FOLDER_EXISTS', '已有同名收藏夹，请直接选择。')
-        await this.guard(editor.scope, valid)
-        try {
-          const response = await this.engine.request(accountId, 'favoriteFolderCreate', {
-            action: '1',
-            collects_name: name,
-            secret: secret ? '1' : '0'
-          })
-          parseWriteResult(response)
-          const folder = { ...parseFavoriteFolder(response.collects_info), localCount: 0 }
-          await this.db.call('favoriteRememberFolder', { accountId, remoteId: editor.remoteId, folder })
-          editor.folders.unshift(folder)
-          this.changed()
-          return folder
-        } catch (error) {
-          this.editors.delete(token)
-          if (error instanceof AppError && error.code === 'API_REJECTED') throw error
-          throw new AppError(
-            'WRITE_UNCONFIRMED',
-            '新建结果未完整确认，未自动重试。请重新读取收藏夹，核对是否已创建。'
-          )
-        }
+        await this.guard(editor.scope, check)
+        // A folder created from the video view is a real cloud collection. Create
+        // it on the platform first, then link a local record so the following
+        // save adds the work to that cloud folder immediately.
+        const response = await this.engine.request(accountId, 'favoriteFolderCreate', {
+          action: '1',
+          collects_name: name,
+          secret: secret ? '1' : '0'
+        })
+        parseWriteResult(response)
+        const remote = { ...parseFavoriteFolder(response.collects_info), localCount: 0 }
+        const id = `local-${randomUUID()}`
+        await this.db.call('favoriteLocalFolderCreate', {
+          accountId,
+          remoteId: editor.remoteId,
+          id,
+          title: name,
+          private: secret,
+          queueWrite: false
+        })
+        await this.db.call('favoriteLinkFolder', {
+          accountId,
+          folderId: id,
+          remoteId: remote.remoteId ?? remote.id,
+          title: remote.title,
+          remoteCount: remote.remoteCount,
+          private: remote.private
+        })
+        const folder = (await this.db.call('favoriteFolders', { accountId })).find(
+          (entry) => entry.id === id
+        )!
+        editor.folders.unshift(folder)
+        this.changed()
+        return folder
       })
     )
+  }
+  async renameFolder(accountId: string, folderId: string, title: string): Promise<FavoriteFolder> {
+    return this.run(accountId, async (check) => {
+      const account = await this.identity(accountId, check)
+      if (!account.remoteId) throw new AppError('AUTH_REQUIRED', '请先登录并核验账号。')
+      const folders = await this.db.call('favoriteFolders', { accountId })
+      const folder = folders.find((entry) => entry.id === folderId)
+      if (!folder?.managedLocally)
+        throw new AppError('LOCAL_FOLDER_ONLY', '只有本地创建的收藏夹可以在本机改名。')
+      if (folders.some((entry) => entry.id !== folderId && entry.title === title))
+        throw new AppError('FOLDER_EXISTS', '已有同名收藏夹，请选择其他名称。')
+      // A locally managed folder that is already linked to a cloud collection keeps
+      // its cloud name in sync. The maintain endpoint renames with action=2.
+      if (folder.remoteId && !folder.localOnly) {
+        parseWriteResult(
+          await this.engine.request(accountId, 'favoriteFolderCreate', {
+            action: '2',
+            collects_id: folder.remoteId,
+            collects_name: title
+          })
+        )
+      }
+      const updated = await this.db.call('favoriteLocalFolderEdit', { accountId, folderId, title })
+      this.changed()
+      return updated
+    })
+  }
+  async removeFromFolder(
+    accountId: string,
+    folderId: string,
+    workIds: string[]
+  ): Promise<{ folderId: string; folderTitle: string; removed: number }> {
+    return this.run(accountId, async (check) => {
+      const account = await this.identity(accountId, check)
+      if (!account.remoteId) throw new AppError('AUTH_REQUIRED', '请先登录并核验账号。')
+      const folder = (await this.db.call('favoriteFolders', { accountId })).find(
+        (entry) => entry.id === folderId
+      )
+      if (!folder) throw new AppError('FOLDER_CHANGED', '收藏夹已不存在，请重新读取。')
+      const targets = [...new Set(workIds)]
+      const cloud = !folder.localOnly && !!folder.remoteId
+      let removed = 0
+      try {
+        for (const workId of targets) {
+          check()
+          if (cloud) {
+            parseWriteResult(
+              await this.engine.request(accountId, 'favoriteFolderRemove', {
+                aweme_id: workId,
+                item_ids: workId,
+                item_type: '2',
+                from_collects_id: folder.remoteId!,
+                collects_name: folder.title
+              })
+            )
+          }
+          await this.db.call('favoriteForgetFolderWork', {
+            accountId,
+            remoteId: account.remoteId,
+            folderId,
+            workId
+          })
+          removed++
+        }
+      } catch (error) {
+        this.changed()
+        const code = error instanceof AppError ? error.code : 'WRITE_UNCONFIRMED'
+        const message = error instanceof Error ? error.message : '移出收藏夹失败。'
+        throw new AppError(code, `${removed ? `已从“${folder.title}”移出 ${removed} 条；` : ''}${message}`)
+      }
+      this.changed()
+      return { folderId, folderTitle: folder.title, removed }
+    })
+  }
+  async syncToCloud(
+    accountId: string,
+    check: () => void,
+    scope?: { folderIds: string[]; includeDefault: boolean }
+  ): Promise<{
+    synced: number
+    remaining: number
+    skipped: number
+    skippedItems: { workId: string; kind: string; reason: string }[]
+  }> {
+    const account = await this.identity(accountId, check)
+    if (!account.remoteId) throw new AppError('AUTH_REQUIRED', '请先登录并核验抖音账号。')
+    const folders = await this.db.call('favoriteFolders', { accountId })
+    const folderIds = scope?.folderIds ?? folders.map((folder) => folder.id)
+    const includeDefault = scope?.includeDefault ?? true
+    if (!includeDefault && folderIds.length === 0)
+      throw new AppError('INVALID_INPUT', '请选择要写回的收藏夹或默认收藏列表。')
+    if (folderIds.some((id) => !folders.some((folder) => folder.id === id)))
+      throw new AppError('FOLDER_CHANGED', '收藏夹列表已变化，请重新选择写回范围。')
+    for (const folder of folders.filter((entry) => folderIds.includes(entry.id) && !entry.localOnly)) {
+      const remoteFolderId = folder.remoteId ?? folder.id
+      const [localWorkIds, remoteWorkIds] = await Promise.all([
+        this.db.call('favoriteFolderWorkIds', { accountId, folderId: folder.id }),
+        this.remoteFolderWorkIds(accountId, remoteFolderId, check)
+      ])
+      for (const workId of localWorkIds) {
+        if (remoteWorkIds.has(workId)) continue
+        await this.db.call('favoriteQueueWrite', {
+          accountId,
+          remoteId: account.remoteId,
+          kind: 'favorite-add',
+          workId
+        })
+        await this.db.call('favoriteQueueWrite', {
+          accountId,
+          remoteId: account.remoteId,
+          kind: 'folder-add',
+          folderId: folder.id,
+          workId
+        })
+      }
+    }
+    await this.db.call('favoriteStageLocalFolders', {
+      accountId,
+      remoteId: account.remoteId,
+      folderIds,
+      includeDefault
+    })
+    const staged = await this.db.call('favoriteWriteOps', { accountId })
+    const selected = new Set(folderIds)
+    const selectedFolderWorks = new Set(
+      staged
+        .filter((operation) => operation.kind === 'folder-add' && selected.has(operation.folderId ?? ''))
+        .map((operation) => operation.workId)
+        .filter((workId): workId is string => !!workId)
+    )
+    const operations = staged.filter((operation) =>
+      operation.kind === 'favorite-add'
+        ? includeDefault || selectedFolderWorks.has(operation.workId ?? '')
+        : selected.has(operation.folderId ?? '')
+    )
+    let synced = 0
+    let skipped = 0
+    const skippedWorkIds = new Set<string>()
+    const skippedItems: { workId: string; kind: string; reason: string }[] = []
+    for (const operation of operations) {
+      check()
+      if (operation.workId && skippedWorkIds.has(operation.workId)) {
+        await this.db.call('favoriteWriteComplete', { accountId, operationId: operation.id })
+        continue
+      }
+      try {
+        if (operation.kind === 'favorite-add') {
+          const state = parseFavoriteState(
+            await this.engine.request(accountId, 'detail', { aweme_id: operation.workId! }),
+            operation.workId!
+          )
+          check()
+          if (!state.collected)
+            parseWriteResult(
+              await this.engine.request(accountId, 'favoriteAdd', {
+                aweme_id: state.work.id,
+                aweme_type: state.type
+              })
+            )
+        } else if (operation.kind === 'folder-create') {
+          const folders = await this.folders(accountId, check, account.remoteId ?? '')
+          const existing = folders.find((folder) => !folder.localOnly && folder.title === operation.title)
+          let remoteFolder: FavoriteFolder
+          if (existing) remoteFolder = existing
+          else {
+            const response = await this.engine.request(accountId, 'favoriteFolderCreate', {
+              action: '1',
+              collects_name: operation.title!,
+              secret: operation.private ? '1' : '0'
+            })
+            parseWriteResult(response)
+            remoteFolder = { ...parseFavoriteFolder(response.collects_info), localCount: 0 }
+          }
+          await this.db.call('favoriteLinkFolder', {
+            accountId,
+            folderId: operation.folderId!,
+            remoteId: remoteFolder.remoteId ?? remoteFolder.id,
+            title: remoteFolder.title,
+            remoteCount: remoteFolder.remoteCount,
+            private: remoteFolder.private
+          })
+        } else {
+          const folder = (await this.db.call('favoriteFolders', { accountId })).find(
+            (entry) => entry.id === operation.folderId
+          )
+          if (!folder?.remoteId || folder.localOnly)
+            throw new AppError(
+              'FOLDER_UNSYNCED',
+              `收藏夹“${folder?.title ?? operation.folderId}”尚未创建到云端。`
+            )
+          if (operation.kind === 'folder-add') {
+            if (!operation.workId) throw new AppError('INVALID_INPUT', '收藏夹写回缺少作品标识。')
+            parseWriteResult(
+              await this.engine.request(accountId, 'favoriteFolderAdd', {
+                aweme_id: operation.workId,
+                item_ids: operation.workId,
+                item_type: '2',
+                to_collects_id: folder.remoteId,
+                collects_name: folder.title,
+                update_collects_sort: 'true'
+              })
+            )
+          } else {
+            if (operation.kind !== 'folder-remove' || !operation.workId)
+              throw new AppError('INVALID_INPUT', '收藏夹写回操作类型无效。')
+            parseWriteResult(
+              await this.engine.request(accountId, 'favoriteFolderRemove', {
+                aweme_id: operation.workId,
+                item_ids: operation.workId,
+                item_type: '2',
+                from_collects_id: folder.remoteId,
+                collects_name: folder.title
+              })
+            )
+            await this.db.call('favoriteForgetFolderWork', {
+              accountId,
+              remoteId: account.remoteId,
+              folderId: folder.id,
+              workId: operation.workId
+            })
+          }
+        }
+        await this.db.call('favoriteWriteComplete', { accountId, operationId: operation.id })
+        if (operation.kind === 'folder-add' && operation.folderId) {
+          const folder = (await this.db.call('favoriteFolders', { accountId })).find(
+            (entry) => entry.id === operation.folderId
+          )
+          if (folder && !folder.localOnly)
+            await this.db.call('favoriteRememberFolder', {
+              accountId,
+              remoteId: account.remoteId,
+              folder: { ...folder, remoteCount: folder.remoteCount + 1 }
+            })
+        }
+        synced++
+        // Space out platform writes; a tight burst trips the same risk control
+        // that makes every later item fail.
+        await new Promise<void>((resolve) => setTimeout(resolve, 350))
+      } catch (error) {
+        const code = error instanceof AppError ? error.code : ''
+        const skippable = operation.kind === 'favorite-add' || operation.kind === 'folder-add'
+        if (skippable && (code === 'WORK_UNAVAILABLE' || code === 'CONTENT_UNAVAILABLE')) {
+          if (operation.workId && !skippedWorkIds.has(operation.workId)) {
+            skippedWorkIds.add(operation.workId)
+            skipped++
+            skippedItems.push({
+              workId: operation.workId,
+              kind: operation.kind,
+              reason: error instanceof Error ? error.message : String(error)
+            })
+          }
+          await this.db.call('favoriteWriteComplete', { accountId, operationId: operation.id })
+          continue
+        }
+        const remaining = await this.db.call('favoriteWritePending', { accountId })
+        const message = error instanceof Error ? error.message : '云端写回失败。'
+        throw new AppError(
+          error instanceof AppError ? error.code : 'WRITE_UNCONFIRMED',
+          `${synced ? `已完成 ${synced} 项；` : ''}写回“${operation.kind}”失败：${message}队列中仍有 ${remaining} 项，未自动重试。`
+        )
+      }
+    }
+    const remaining = await this.db.call('favoriteWritePending', { accountId })
+    this.changed()
+    return { synced, remaining, skipped, skippedItems }
   }
 }

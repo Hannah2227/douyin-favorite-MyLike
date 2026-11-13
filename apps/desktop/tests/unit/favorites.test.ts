@@ -1,5 +1,5 @@
 import { dropFavoriteExtensions } from '../helpers/legacy-schema'
-import { afterEach, it, expect } from 'vitest'
+import { afterEach, it, expect, vi } from 'vitest'
 import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname, basename } from 'node:path'
@@ -81,6 +81,7 @@ function round(store: Store, id = 'run') {
   return save(store, task, { items: [work('2')] })
 }
 afterEach(() => {
+  vi.useRealTimers()
   for (const store of stores.splice(0)) {
     try {
       store.call('close', undefined)
@@ -102,6 +103,7 @@ it('stores favorites and folder scopes independently of likes and other accounts
     cursor: '0',
     hasMore: false
   })
+
   round(store)
   expect(store.call('query', query).items.map((w) => w.id)).toEqual(['3', '1'])
   expect(store.call('query', { ...query, source: 'favorites' }).items.map((w) => w.id)).toEqual(['2', '1'])
@@ -113,7 +115,9 @@ it('stores favorites and folder scopes independently of likes and other accounts
   expect(store.call('query', { ...query, accountId: 'b', source: 'favorites' }).total).toBe(0)
   expect(store.call('libraryOverview', { accountId: 'a' }).total).toBe(3)
   expect(store.call('favoriteFolders', { accountId: 'a' })).toEqual(
-    expect.arrayContaining([{ id: '8', title: '音乐', remoteCount: 1, localCount: 1 }])
+    expect.arrayContaining([
+      expect.objectContaining({ id: '8', title: '音乐', remoteCount: 1, localCount: 1 })
+    ])
   )
   const queue = store.call('queueCreate', {
     accountId: 'a',
@@ -124,6 +128,171 @@ it('stores favorites and folder scopes independently of likes and other accounts
   store.call('deleteLocal', { accountId: 'a', workIds: ['1'] })
   expect(store.call('query', { ...query, source: 'favorites' }).total).toBe(2)
   expect(store.call('queueState', { accountId: 'a' })?.work.id).toBe('2')
+})
+it('preserves local folder edits across cloud refresh while keeping write queues opt-in', () => {
+  const { store } = setup()
+  round(store)
+  const local = store.call('favoriteLocalFolderCreate', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    id: 'local-custom',
+    title: '仅本地',
+    private: true,
+    queueWrite: false
+  })
+  expect(local).toMatchObject({ id: 'local-custom', localOnly: true })
+  expect(store.call('favoriteWriteOps', { accountId: 'a' })).toHaveLength(0)
+
+  let task = store.call('favoritesStart', { accountId: 'a', id: 'refresh' })
+  task = save(store, task, { items: [work('1'), work('2')] })
+  task = save(store, task, {
+    folders: [
+      { id: '9007199254740993999', title: '旅行', remoteCount: 1 },
+      { id: '8', title: '音乐', remoteCount: 1 }
+    ]
+  })
+  task = save(store, task, { items: [work('1')] })
+  save(store, task, { items: [work('2')] })
+
+  expect(store.call('favoriteFolders', { accountId: 'a' })).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: 'local-custom', localOnly: true })])
+  )
+})
+it('counts and stages local-only folders and memberships only for explicit writeback', () => {
+  const { store } = setup()
+  const folder = store.call('favoriteLocalFolderCreate', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    id: 'local-custom',
+    title: '仅本地',
+    private: true,
+    queueWrite: false
+  })
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('3'),
+    folder
+  })
+
+  expect(store.call('favoriteWriteOps', { accountId: 'a' })).toHaveLength(0)
+  expect(store.call('favoriteWritePending', { accountId: 'a' })).toBe(2)
+  expect(store.call('favoriteStageLocalFolders', { accountId: 'a', remoteId: 'remote-a' })).toBe(2)
+  expect(store.call('favoriteWriteOps', { accountId: 'a' }).map((operation) => operation.kind)).toEqual([
+    'folder-create',
+    'folder-add'
+  ])
+  expect(store.call('favoriteWritePending', { accountId: 'a' })).toBe(2)
+  expect(store.call('favoriteStageLocalFolders', { accountId: 'a', remoteId: 'remote-a' })).toBe(2)
+})
+it('keeps local folder names as local overrides and hides locally deleted cloud-backed folders', () => {
+  const { store } = setup()
+  const folder = store.call('favoriteLocalFolderCreate', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    id: 'local-managed',
+    title: '初始名称',
+    private: true,
+    queueWrite: false
+  })
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('3'),
+    folder
+  })
+  store.call('favoriteLinkFolder', {
+    accountId: 'a',
+    folderId: folder.id,
+    remoteId: '9',
+    title: folder.title,
+    private: true
+  })
+  expect(
+    store.call('favoriteLocalFolderEdit', {
+      accountId: 'a',
+      folderId: folder.id,
+      title: '本机名称'
+    })
+  ).toMatchObject({ title: '本机名称', managedLocally: true, localOnly: false })
+
+  let task = store.call('favoritesStart', { accountId: 'a', id: 'refresh-local' })
+  task = save(store, task, { items: [work('1'), work('2'), work('3')] })
+  task = save(store, task, {
+    folders: [
+      { id: '8', title: '音乐', remoteCount: 1 },
+      { id: '9', title: '云端名称', remoteCount: 1 }
+    ]
+  })
+  expect(store.call('favoriteFolders', { accountId: 'a' })).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: folder.id, title: '本机名称' })])
+  )
+
+  expect(store.call('favoriteLocalFolderDelete', { accountId: 'a', folderId: folder.id })).toMatchObject({
+    title: '本机名称',
+    localCount: 1
+  })
+  expect(store.call('favoriteFolders', { accountId: 'a' })).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: folder.id })])
+  )
+  expect(store.call('favoriteHiddenFolderIds', { accountId: 'a' })).toContain('9')
+  expect(store.call('query', { ...query, source: 'favorites', folderId: null }).total).toBe(3)
+
+  task = store.call('favoritesUpdate', {
+    accountId: 'a',
+    taskId: task.id,
+    status: 'stopped',
+    reason: null,
+    mode: 'sync'
+  })
+  expect(task.status).toBe('stopped')
+})
+it('preserves a locally added folder membership when a cloud refresh omits it', () => {
+  const { store } = setup()
+  round(store)
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('3'),
+    folder: { id: '8', title: '音乐', remoteId: '8', remoteCount: 1, localCount: 1 }
+  })
+
+  round(store, 'refresh')
+
+  expect(
+    store.call('query', { ...query, source: 'favorites', folderId: '8' }).items.map((item) => item.id)
+  ).toEqual(['3', '2'])
+  expect(store.call('favoriteWriteOps', { accountId: 'a' })).toHaveLength(0)
+})
+it('preserves a known thumbnail when a later collection response has no cover', () => {
+  const { store } = setup()
+  store.call('savePage', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    items: [{ ...work('1'), coverUrl: 'https://p3.douyinpic.com/cover.jpg' }],
+    cursor: '0',
+    hasMore: false
+  })
+  store.call('savePage', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    items: [work('1')],
+    cursor: '0',
+    hasMore: false
+  })
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('1')
+  })
+
+  expect(store.call('query', query).items[0]?.coverUrl).toBe('https://p3.douyinpic.com/cover.jpg')
+})
+it('can start a folder-content sync directly at the remote folder list', () => {
+  const { store } = setup()
+  const task = store.call('favoritesStart', { accountId: 'a', id: 'folders-only', stage: 'folders' })
+
+  expect(task).toMatchObject({ stage: 'folders', status: 'running', cursor: '0' })
 })
 it('commits new folder membership only when its pagination reaches a credible end', () => {
   const { store } = setup()
@@ -355,4 +524,92 @@ it('parses collection and folder pagination without rounding long IDs or accepti
   })
   expect(() => parseFavoriteFolders({ collects_list: [], cursor: '0', has_more: 1 })).toThrow(/空/)
   expect(() => parseFavoriteFolders({ collects_list: [], cursor: '0' })).toThrow(/可信/)
+})
+function resync(store: Store, id: string) {
+  let task = store.call('favoritesStart', { accountId: 'a', id })
+  task = save(store, task, { items: [work('1'), work('2')] })
+  task = save(store, task, { folders: [{ id: '8', title: '音乐', remoteCount: 2 }] })
+  return save(store, task, { items: [work('1'), work('2')] })
+}
+const folderIds = (store: Store) =>
+  store
+    .call('query', { ...query, source: 'favorites', folderId: '8' })
+    .items.map((item) => item.id)
+    .sort()
+it('keeps a newer local removal against a cloud copy that still has it', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+  const { store } = setup()
+  resync(store, 'seed')
+  vi.setSystemTime(new Date('2026-01-02T00:00:00Z'))
+  store.call('favoriteForgetFolderWork', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    folderId: '8',
+    workId: '1',
+    synced: true
+  })
+  resync(store, 'merge-newer-removal')
+  expect(folderIds(store)).toEqual(['2'])
+})
+it('accepts a cloud re-add of a work removed before the last confirmed sync', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-01-02T00:00:00Z'))
+  const { store } = setup()
+  resync(store, 'seed')
+  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+  store.call('favoriteForgetFolderWork', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    folderId: '8',
+    workId: '1',
+    synced: true
+  })
+  vi.setSystemTime(new Date('2026-01-03T00:00:00Z'))
+  resync(store, 'merge-stale-removal')
+  expect(folderIds(store)).toEqual(['1', '2'])
+})
+it('follows the cloud when it dropped a locally added work after that add was confirmed', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-01-02T00:00:00Z'))
+  const { store } = setup()
+  resync(store, 'seed')
+  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('3'),
+    folder: { id: '8', title: '音乐', remoteCount: 2, localCount: 0 },
+    synced: true
+  })
+  expect(folderIds(store)).toEqual(['1', '2', '3'])
+  vi.setSystemTime(new Date('2026-01-03T00:00:00Z'))
+  resync(store, 'merge-stale-add')
+  expect(folderIds(store)).toEqual(['1', '2'])
+})
+it('re-verifies every folder when the user explicitly syncs folders again', () => {
+  const { store } = setup()
+  let task = store.call('favoritesStart', { accountId: 'a', id: 'first' })
+  task = save(store, task, { items: [work('1')] })
+  task = save(store, task, {
+    folders: [
+      { id: '8', title: '音乐', remoteCount: 1 },
+      { id: '9', title: '旅行', remoteCount: 1 }
+    ]
+  })
+  task = save(store, task, { items: [work('1')] })
+  expect(task.foldersDone).toBe(1)
+  expect(task.folderTitle).toBe('旅行')
+  store.call('favoritesUpdate', {
+    accountId: 'a',
+    taskId: task.id,
+    status: 'paused',
+    reason: null
+  })
+
+  const resumed = store.call('favoritesStart', { accountId: 'a', id: 'ignored', stage: 'folders' })
+
+  expect(resumed.stage).toBe('folders')
+  expect(resumed.foldersTotal).toBe(2)
+  expect(resumed.foldersDone).toBe(0)
 })

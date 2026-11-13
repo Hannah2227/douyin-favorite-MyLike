@@ -9,7 +9,9 @@ export type ResponseContext = { operation?: Operation; workId?: string }
 const riskCodes = new Set(['8', '2154', '2156', '10000', '10001'])
 const envelopeKeys = new Set(['status_code', 'status_msg', 'message', 'extra', 'log_pb', 'logid', 'log_id'])
 export const contentRead = (operation?: Operation) =>
-  operation === 'likes' || operation === 'detail' || collectionRead(operation)
+  operation === 'likes' || operation === 'detail' || commentRead(operation) || collectionRead(operation)
+export const commentRead = (operation?: Operation) =>
+  operation === 'comments' || operation === 'commentReplies'
 export function bareEnvelope(data: Payload, operation?: Operation): boolean {
   const keys = Object.keys(data)
   return contentRead(operation) && keys.length > 0 && keys.every((key) => envelopeKeys.has(key))
@@ -47,7 +49,11 @@ export function assertBusinessResponse(data: Payload, context: ResponseContext =
       'envelope.verification'
     )
   // An explicit business rejection of a write is known, unlike a missing reply.
-  if (code === '2053' && context.workId && ['detail', 'favoriteRemove'].includes(context.operation ?? ''))
+  if (
+    code === '2053' &&
+    context.workId &&
+    (commentRead(context.operation) || ['detail', 'favoriteRemove'].includes(context.operation ?? ''))
+  )
     throw new AppError('CONTENT_UNAVAILABLE', '平台明确返回此作品当前不可访问。', 'envelope.business_code')
   if (riskCodes.has(code ?? '') && context.operation !== 'self')
     throw new AppError(
@@ -58,7 +64,9 @@ export function assertBusinessResponse(data: Payload, context: ResponseContext =
   if (code !== null && code !== '0')
     throw new AppError(
       'API_REJECTED',
-      '平台拒绝了这次请求，请检查登录、人工验证或稍后重试。',
+      context.operation === 'self'
+        ? '平台拒绝了身份核验请求，尚未确认已登录；请在抖音窗口查看登录或人工验证状态。'
+        : '抖音拒绝了这次接口请求；单次业务拒绝不代表账号已退出，请稍后重试。',
       'envelope.rejected'
     )
   // A status-only read is withheld data, never a confirmed end. Writes may

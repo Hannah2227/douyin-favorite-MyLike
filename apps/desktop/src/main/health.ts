@@ -61,7 +61,8 @@ export class HealthMonitor {
     if (code) round?.failed.add(operation)
     const evidence = rule ?? (prior?.code === code ? prior?.rule : undefined)
     const risk = code === 'UPSTREAM_RISK_CONTROL' && evidence === 'envelope.risk_code'
-    const status = !code ? 'normal' : definite.has(code) || risk || failures >= 3 ? 'abnormal' : 'uncertain'
+    const definiteFailure = definite.has(code ?? '') && (code !== 'API_REJECTED' || operation === 'self')
+    const status = !code ? 'normal' : definiteFailure || risk || failures >= 3 ? 'abnormal' : 'uncertain'
     rows.set(operation, {
       operation: operation as HealthOperation,
       status,

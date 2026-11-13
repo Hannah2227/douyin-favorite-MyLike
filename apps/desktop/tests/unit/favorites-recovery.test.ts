@@ -297,7 +297,7 @@ it(
   process.env.CI ? 30_000 : 5_000
 )
 
-it('keeps the v7 core layout and preserves current folder progress without an incompatible version bump', () => {
+it('keeps the v8 core layout and preserves current folder progress after the author ID migration', () => {
   const { store, file, root } = setup()
   let task = folders(store, 'sync', 1)
   task = save(store, task, { items: [work('1')], cursor: '5', hasMore: true })
@@ -315,7 +315,7 @@ it('keeps the v7 core layout and preserves current folder progress without an in
   expect(reopened.call('query', { ...query, folderId: '8' }).items.map((w) => w.id)).toEqual(['1'])
   expect(readdirSync(root).includes('backups')).toBe(false)
   const db = new DatabaseSync(file, { readOnly: true })
-  expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(7)
+  expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(8)
   expect(
     db
       .prepare('PRAGMA table_info(saved_tasks)')
@@ -360,6 +360,60 @@ it('continues good folders after a contradictory empty folder, without reporting
     foldersDeferred: 1
   })
   expect(store.call('query', { ...query, folderId: '8' }).items.map((w) => w.id)).toEqual(['2'])
+})
+it('defers one business-rejected folder, preserves its saved contents and continues syncing', async () => {
+  const { store } = setup()
+  store.call('favoriteConfirm', {
+    accountId: 'a',
+    remoteId: 'remote-a',
+    work: work('2'),
+    folder: { id: '8', title: '夹 8', remoteCount: 1, localCount: 0 }
+  })
+  folders(store, 'sync', 2)
+  store.call('favoritesUpdate', { accountId: 'a', taskId: 'sync', status: 'paused', reason: null })
+  const calls: string[] = []
+  const instance = service(store, async (_id, _operation, params) => {
+    calls.push(params.collects_id)
+    if (params.collects_id === '8') throw new AppError('API_REJECTED', '业务拒绝')
+    return {
+      status_code: 0,
+      has_more: 0,
+      cursor: '0',
+      aweme_list: [{ aweme_id: '1' }]
+    }
+  })
+
+  await instance.start('a')
+  await settled(instance)
+  expect(calls).toEqual(['8', '9', '9'])
+  expect(store.call('favoritesTask', { accountId: 'a' })).toMatchObject({
+    status: 'partial',
+    foldersDone: 1,
+    foldersDeferred: 1,
+    issues: [{ folderId: '8', errorCode: 'API_REJECTED' }]
+  })
+  expect(store.call('query', { ...query, folderId: '8' }).items.map((item) => item.id)).toEqual(['2'])
+  expect(store.call('query', { ...query, folderId: '9' }).items.map((item) => item.id)).toEqual(['1'])
+})
+it('pauses after three consecutive business-rejected folders', async () => {
+  const { store } = setup()
+  folders(store, 'sync', 4)
+  store.call('favoritesUpdate', { accountId: 'a', taskId: 'sync', status: 'paused', reason: null })
+  const calls: string[] = []
+  const instance = service(store, async (_id, _operation, params) => {
+    calls.push(params.collects_id)
+    throw new AppError('API_REJECTED', '业务拒绝')
+  })
+
+  await instance.start('a')
+  await settled(instance)
+  expect(calls).toEqual(['8', '9', '10'])
+  expect(store.call('favoritesTask', { accountId: 'a' })).toMatchObject({
+    status: 'paused',
+    folderId: '10',
+    foldersDeferred: 2,
+    errorCode: 'API_REJECTED'
+  })
 })
 it('accepts a confirmed empty folder despite a stale remote count when no local members would be discarded', () => {
   const { store } = setup()

@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { AuthorName } from './AuthorName'
 
 const rates = [0.75, 1, 1.25, 1.5, 1.75, 2, 3]
 const rateLabel = (rate: number) => `${Number.isInteger(rate) ? rate.toFixed(1) : rate}x`
@@ -165,20 +166,30 @@ export function GalleryProgress({
 
 export function MediaCaption({
   author,
+  authorId,
+  workId,
+  accountId,
   title,
   publishedAt,
   gallery,
   expanded,
   toggle,
-  hint
+  hint,
+  openAuthor,
+  copyAuthor
 }: {
   author: string
+  authorId: string | null
+  workId: string
+  accountId: string
   title: string
   publishedAt: number
   gallery: boolean
   expanded: boolean
   toggle: () => void
   hint: string
+  openAuthor: (authorId: string | null, author: string, workId: string, accountId: string | null) => void
+  copyAuthor: (author: string) => void
 }) {
   const [overflow, setOverflow] = useState(false)
   const text = useRef<HTMLParagraphElement>(null)
@@ -197,7 +208,15 @@ export function MediaCaption({
   return (
     <div className="media-caption">
       <div className="caption-author">
-        <strong>@{author || '未知作者'}</strong>
+        <AuthorName
+          author={author}
+          authorId={authorId}
+          workId={workId}
+          accountId={accountId}
+          openAuthor={openAuthor}
+          copyAuthor={copyAuthor}
+          className="caption-author-name"
+        />
         {date && Number.isFinite(date.getTime()) && (
           <time dateTime={date.toISOString()}>
             · {date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}

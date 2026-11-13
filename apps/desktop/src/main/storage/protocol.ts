@@ -29,7 +29,12 @@ export interface Inputs {
   windowState: { state?: WindowState }
   checkDatabase: Record<string, never>
   favoritesTask: { accountId: string; mode?: 'sync' | 'update' }
-  favoritesStart: { accountId: string; id: string; mode?: 'sync' | 'update' }
+  favoritesStart: {
+    accountId: string
+    id: string
+    mode?: 'sync' | 'update'
+    stage?: 'all' | 'folders'
+  }
   favoritesDefer: {
     accountId: string
     taskId: string
@@ -48,10 +53,78 @@ export interface Inputs {
   }
   favoritesSave: FavoritesPage
   favoriteFolders: { accountId: string }
+  favoriteHiddenFolderIds: { accountId: string }
+  favoriteLocalFolderCreate: {
+    accountId: string
+    remoteId: string
+    id: string
+    title: string
+    private: boolean
+    queueWrite: boolean
+  }
+  favoriteLocalFolderEdit: { accountId: string; folderId: string; title: string }
+  favoriteLocalFolderDelete: { accountId: string; folderId: string }
+  favoriteQueueWrite: {
+    accountId: string
+    remoteId: string
+    kind: 'favorite-add' | 'folder-add' | 'folder-remove'
+    folderId?: string
+    workId?: string
+  }
+  favoriteWritePending: { accountId: string }
+  favoriteFolderWorkIds: { accountId: string; folderId: string }
+  favoriteStageLocalFolders: {
+    accountId: string
+    remoteId: string
+    folderIds?: string[]
+    includeDefault?: boolean
+  }
+  favoriteWriteOps: { accountId: string }
+  favoriteWriteComplete: { accountId: string; operationId: number }
+  favoriteLinkFolder: {
+    accountId: string
+    folderId: string
+    remoteId: string
+    title?: string
+    remoteCount?: number
+    private?: boolean
+  }
   favoriteStatus: { accountId: string; workId: string }
   favoriteWriteGuard: { accountId: string; workId: string }
   favoriteRememberFolder: { accountId: string; remoteId: string; folder: FavoriteFolder }
-  favoriteConfirm: { accountId: string; remoteId: string; work: Work; folder?: FavoriteFolder }
+  favoriteConfirm: {
+    accountId: string
+    remoteId: string
+    work: Work
+    folder?: FavoriteFolder
+    queueWrite?: boolean
+    queueFavoriteAdd?: boolean
+    favoriteAddIntent?: boolean
+    synced?: boolean
+  }
+  favoriteForgetFolderWork: {
+    accountId: string
+    remoteId: string
+    folderId: string
+    workId: string
+    synced?: boolean
+  }
+  aiAssignmentSave: {
+    accountId: string
+    source: 'likes' | 'favorites'
+    items: { workId: string; category: string }[]
+  }
+  aiAssignmentClear: { accountId: string; source: 'likes' | 'favorites' }
+  aiAssignmentPending: { accountId: string; source: 'likes' | 'favorites' }
+  aiAssignmentComplete: {
+    accountId: string
+    source: 'likes' | 'favorites'
+    workId: string
+    category: string
+  }
+  aiAssignmentStats: { accountId: string }
+  unclassifiedWorkIds: { accountId: string; source: 'likes' | 'favorites' }
+  worksByIds: { workIds: string[] }
   updateWork: { work: Work }
   accounts: undefined
   createAccount: { id: string; name: string }
@@ -149,10 +222,36 @@ export interface Replies {
   favoritesUpdate: FavoritesTask
   favoritesSave: FavoritesTask
   favoriteFolders: FavoriteFolder[]
+  favoriteHiddenFolderIds: string[]
+  favoriteLocalFolderCreate: FavoriteFolder
+  favoriteLocalFolderEdit: FavoriteFolder
+  favoriteLocalFolderDelete: { folderId: string; title: string; localCount: number }
+  favoriteQueueWrite: null
+  favoriteWritePending: number
+  favoriteFolderWorkIds: string[]
+  favoriteStageLocalFolders: number
+  favoriteWriteOps: {
+    id: number
+    kind: 'favorite-add' | 'folder-add' | 'folder-remove' | 'folder-create'
+    folderId: string | null
+    workId: string | null
+    title: string | null
+    private: boolean | null
+  }[]
+  favoriteWriteComplete: null
+  favoriteLinkFolder: null
   favoriteStatus: { collected: boolean }
   favoriteWriteGuard: null
   favoriteRememberFolder: FavoriteFolder
   favoriteConfirm: null
+  favoriteForgetFolderWork: null
+  aiAssignmentSave: number
+  aiAssignmentClear: number
+  aiAssignmentPending: { workId: string; category: string }[]
+  aiAssignmentComplete: null
+  aiAssignmentStats: { likes: number; favorites: number }
+  unclassifiedWorkIds: string[]
+  worksByIds: Work[]
   updateWork: null
   accounts: Account[]
   createAccount: Account

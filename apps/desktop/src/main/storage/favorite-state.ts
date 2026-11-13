@@ -22,6 +22,33 @@ CREATE TABLE IF NOT EXISTS saved_updates(
  added INTEGER NOT NULL DEFAULT 0,incomplete INTEGER NOT NULL DEFAULT 0,skipped INTEGER NOT NULL DEFAULT 0,
  reason TEXT,errorCode TEXT,updatedAt INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS saved_update_cursors(taskId TEXT NOT NULL REFERENCES saved_updates(id) ON DELETE CASCADE,cursor TEXT NOT NULL,PRIMARY KEY(taskId,cursor));
+CREATE TABLE IF NOT EXISTS favorite_folder_links(
+ accountId TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+ localId TEXT NOT NULL,remoteId TEXT,localOnly INTEGER NOT NULL DEFAULT 0,isPrivate INTEGER NOT NULL DEFAULT 0,
+ managedLocally INTEGER NOT NULL DEFAULT 0,localTitle TEXT,hiddenLocally INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(accountId,localId));
+-- Legacy table: folder-level "clear" intent is no longer written. It stays so
+-- released builds and existing databases keep working.
+CREATE TABLE IF NOT EXISTS favorite_folder_overrides(
+ accountId TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,folderId TEXT NOT NULL,
+ cleared INTEGER NOT NULL DEFAULT 0,synced INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(accountId,folderId));
+CREATE TABLE IF NOT EXISTS favorite_member_overrides(
+ accountId TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,folderId TEXT NOT NULL,
+ workId TEXT NOT NULL,desired INTEGER NOT NULL,synced INTEGER NOT NULL DEFAULT 0,
+ updatedAt INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(accountId,folderId,workId));
+CREATE TABLE IF NOT EXISTS ai_assignments(
+ accountId TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,source TEXT NOT NULL,
+ workId TEXT NOT NULL,category TEXT NOT NULL,updatedAt INTEGER NOT NULL,
+ PRIMARY KEY(accountId,source,workId,category));
+CREATE TABLE IF NOT EXISTS favorite_default_overrides(
+ accountId TEXT NOT NULL,workId TEXT NOT NULL,synced INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(accountId,workId),
+ FOREIGN KEY(accountId,workId) REFERENCES saved_items(accountId,workId) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS favorite_write_ops(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,accountId TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL,folderId TEXT NOT NULL DEFAULT '',workId TEXT NOT NULL DEFAULT '',
+ title TEXT NOT NULL DEFAULT '',isPrivate INTEGER NOT NULL DEFAULT 0,createdAt INTEGER NOT NULL,
+ UNIQUE(accountId,kind,folderId,workId));
 `
 
 export type SyncMeta = { incomplete: number; skipped: number; partial: number; stamp: string }

@@ -3,7 +3,12 @@ import type { Operation } from './page-request'
 export type AccessTarget = {
   operation: Exclude<
     Operation,
-    'unlike' | 'favoriteRemove' | 'favoriteAdd' | 'favoriteFolderAdd' | 'favoriteFolderCreate'
+    | 'unlike'
+    | 'favoriteRemove'
+    | 'favoriteAdd'
+    | 'favoriteFolderAdd'
+    | 'favoriteFolderRemove'
+    | 'favoriteFolderCreate'
   >
   parameters: Record<string, string>
 }

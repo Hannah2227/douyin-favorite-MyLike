@@ -32,11 +32,25 @@ export class FavoritesService {
   get running() {
     return !!this.loop
   }
-  async start(accountId: string, mode: 'sync' | 'update' = 'sync'): Promise<FavoritesTask> {
+  async start(
+    accountId: string,
+    mode: 'sync' | 'update' = 'sync',
+    stage: 'all' | 'folders' = 'all'
+  ): Promise<FavoritesTask> {
     if (this.loop) throw new AppError('BUSY', '请先暂停现有收藏同步任务。')
     const previous = await this.db.call('favoritesTask', { accountId, mode })
-    this.engine.assertAvailable?.(accountId, this.readOperation(previous, mode))
-    const task = await this.db.call('favoritesStart', { accountId, id: randomUUID(), mode })
+    this.engine.assertAvailable?.(
+      accountId,
+      stage === 'folders' && (!previous || previous.status === 'completed')
+        ? 'folders'
+        : this.readOperation(previous, mode)
+    )
+    const task = await this.db.call('favoritesStart', {
+      accountId,
+      id: randomUUID(),
+      mode,
+      ...(mode === 'sync' ? { stage } : {})
+    })
     this.launch(task)
     return task
   }
@@ -86,6 +100,8 @@ export class FavoritesService {
       check()
       const stage = task && task.status !== 'completed' && task.status !== 'partial' ? task.stage : 'all'
       const operation = stage === 'all' ? 'favorites' : stage === 'folders' ? 'folders' : 'folderItems'
+      if (operation === 'folderItems' && !task?.folderId)
+        throw new AppError('TASK_CHANGED', '收藏夹检查缺少收藏夹标识；请先重新同步收藏夹。')
       const result = await this.engine.request(
         accountId,
         operation,
@@ -167,10 +183,11 @@ export class FavoritesService {
     }
     while (!signal.aborted && task.status === 'running') {
       try {
-        this.engine.assertAvailable?.(
-          task.accountId,
+        const operation =
           task.stage === 'all' ? 'favorites' : task.stage === 'folders' ? 'folders' : 'folderItems'
-        )
+        this.engine.assertAvailable?.(task.accountId, operation)
+        if (operation === 'folderItems' && !task.folderId)
+          throw new AppError('TASK_CHANGED', '收藏夹任务缺少收藏夹标识，已暂停；请重新点击“同步收藏夹”。')
         if (pages >= this.timing.pagesPerSegment || Date.now() - started >= this.timing.segmentMs) {
           this.activity = 'recycling'
           this.changed()
@@ -206,10 +223,13 @@ export class FavoritesService {
               )
               const account = await this.identity(task.accountId, guard)
               guard()
+              const parameters = this.parameters(traversal.cursor, task.folderId)
               const result = await this.engine.request(
                 task.accountId,
-                task.stage === 'all' ? 'favorites' : task.stage === 'folders' ? 'folders' : 'folderItems',
-                this.parameters(traversal.cursor, task.folderId)
+                operation,
+                task.stage === 'folders' && account.remoteId
+                  ? { ...parameters, sec_user_id: account.remoteId }
+                  : parameters
               )
               guard()
               const page =
@@ -325,6 +345,7 @@ export class FavoritesService {
           [
             'INVALID_RESPONSE',
             'UPSTREAM_CHANGED',
+            'API_REJECTED',
             'EMPTY_PAGE',
             'EMPTY_RESPONSE',
             'EMPTY_PAGE_LIMIT',

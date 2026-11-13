@@ -1,10 +1,29 @@
 export type WriteOperation =
-  'unlike' | 'favoriteRemove' | 'favoriteAdd' | 'favoriteFolderAdd' | 'favoriteFolderCreate'
-export type Operation = 'self' | 'likes' | 'detail' | 'favorites' | 'folders' | 'folderItems' | WriteOperation
+  | 'unlike'
+  | 'favoriteRemove'
+  | 'favoriteAdd'
+  | 'favoriteFolderAdd'
+  | 'favoriteFolderRemove'
+  | 'favoriteFolderCreate'
+export type Operation =
+  | 'self'
+  | 'likes'
+  | 'detail'
+  | 'favorites'
+  | 'folders'
+  | 'folderItems'
+  | 'comments'
+  | 'commentReplies'
+  | WriteOperation
 export function isWriteOperation(operation: Operation): operation is WriteOperation {
-  return ['unlike', 'favoriteRemove', 'favoriteAdd', 'favoriteFolderAdd', 'favoriteFolderCreate'].includes(
-    operation
-  )
+  return [
+    'unlike',
+    'favoriteRemove',
+    'favoriteAdd',
+    'favoriteFolderAdd',
+    'favoriteFolderRemove',
+    'favoriteFolderCreate'
+  ].includes(operation)
 }
 export interface PageRequest {
   id: string
@@ -20,6 +39,8 @@ async function requestInPage(request: PageRequest) {
     self: '/aweme/v1/web/user/profile/self/',
     likes: '/aweme/v1/web/aweme/favorite/',
     detail: '/aweme/v1/web/aweme/detail/',
+    comments: '/aweme/v1/web/comment/list/',
+    commentReplies: '/aweme/v1/web/comment/list/reply/',
     unlike: '/aweme/v1/web/commit/item/digg/',
     favorites: '/aweme/v1/web/aweme/listcollection/',
     folders: '/aweme/v1/web/collects/list/',
@@ -27,6 +48,7 @@ async function requestInPage(request: PageRequest) {
     favoriteAdd: '/aweme/v1/web/aweme/collect/',
     favoriteRemove: '/aweme/v1/web/aweme/collect/',
     favoriteFolderAdd: '/aweme/v1/web/collects/video/move/',
+    favoriteFolderRemove: '/aweme/v1/web/collects/video/move/',
     favoriteFolderCreate: '/aweme/v1/web/collects/maintain/'
   }
   const scope = globalThis as typeof globalThis & { __mylikeRequests?: Map<string, AbortController> }
@@ -34,6 +56,64 @@ async function requestInPage(request: PageRequest) {
   const controller = new AbortController()
   controllers.set(request.id, controller)
   const timer = setTimeout(() => controller.abort(), request.timeout)
+  const findDetail = (
+    value: unknown,
+    workId: string,
+    seen = new Set<object>()
+  ): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object') return null
+    if (seen.has(value)) return null
+    seen.add(value)
+    if (
+      !Array.isArray(value) &&
+      String((value as Record<string, unknown>).aweme_id ?? '') === workId &&
+      ((value as Record<string, unknown>).video || (value as Record<string, unknown>).images)
+    )
+      return value as Record<string, unknown>
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findDetail(item, workId, seen)
+        if (found) return found
+      }
+    } else {
+      for (const item of Object.values(value)) {
+        const found = findDetail(item, workId, seen)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  const detailFromPage = async (workId: string): Promise<string | null> => {
+    const page = await fetch('https://www.douyin.com/video/' + encodeURIComponent(workId), {
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller.signal,
+      referrer: 'https://www.douyin.com/user/self?showTab=like',
+      headers: { accept: 'text/html,application/xhtml+xml' }
+    })
+    if (!page.ok) return null
+    const html = await page.text()
+    const scripts = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) ?? []
+    for (const script of scripts) {
+      const content = script.replace(/^<script[^>]*>|<\/script>$/gi, '').trim()
+      if (!content) continue
+      const candidates = [content]
+      try {
+        candidates.push(decodeURIComponent(content))
+      } catch {
+        // The page may contain a non-URL-encoded JSON script.
+      }
+      for (const candidate of candidates) {
+        try {
+          const found = findDetail(JSON.parse(candidate), workId)
+          if (found) return JSON.stringify({ status_code: 0, aweme_detail: found })
+        } catch {
+          // Ignore unrelated scripts and continue looking for page data.
+        }
+      }
+    }
+    return null
+  }
   const params = new URLSearchParams({
     device_platform: 'webapp',
     aid: '6383',
@@ -48,8 +128,13 @@ async function requestInPage(request: PageRequest) {
       : request.parameters)
   })
   const collection = ['favorites', 'folders', 'folderItems'].includes(request.operation)
-  const collectionReferrer = 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
-  if (collection) {
+  const commentRead = request.operation === 'comments' || request.operation === 'commentReplies'
+  const referrer = collection
+    ? 'https://www.douyin.com/user/self?from_tab_name=main&showTab=favorite_collection'
+    : commentRead
+      ? 'https://www.douyin.com/video/' + (request.parameters.aweme_id ?? request.parameters.item_id)
+      : undefined
+  if (collection || commentRead) {
     if (request.operation !== 'favorites' && !params.has('count')) params.set('count', '20')
     params.set('pc_client_type', '1')
     // Values describe this Chromium session; never copy another client's fingerprint.
@@ -87,11 +172,16 @@ async function requestInPage(request: PageRequest) {
     params.set('version_code', '230000')
     params.set('version_name', '23.0.0')
   }
-  if (request.operation === 'favoriteFolderAdd') params.delete('aweme_id')
+  if (request.operation === 'detail') {
+    params.set('from_tab_name', 'main')
+    params.set('showTab', 'like')
+  }
+  if (request.operation === 'favoriteFolderAdd' || request.operation === 'favoriteFolderRemove')
+    params.delete('aweme_id')
   try {
     // Match the original page-SDK request: use only the current page's token,
     // never a fabricated or persisted signing value.
-    if (request.operation === 'likes' || collection) {
+    if (request.operation === 'likes' || request.operation === 'detail' || collection || commentRead) {
       try {
         const token = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/)?.[1]
         if (token) {
@@ -109,13 +199,18 @@ async function requestInPage(request: PageRequest) {
       credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,
-      ...(collection ? { referrer: collectionReferrer } : {}),
+      ...(referrer
+        ? { referrer }
+        : request.operation === 'detail'
+          ? { referrer: 'https://www.douyin.com/user/self?showTab=like' }
+          : {}),
       method: [
         'unlike',
         'favorites',
         'favoriteAdd',
         'favoriteRemove',
         'favoriteFolderAdd',
+        'favoriteFolderRemove',
         'favoriteFolderCreate'
       ].includes(request.operation)
         ? 'POST'
@@ -149,7 +244,12 @@ async function requestInPage(request: PageRequest) {
     })
     const length = Number(response.headers.get('content-length') ?? 0)
     if (length > 16 * 1024 * 1024) return { id: request.id, error: 'TOO_LARGE' }
-    return { id: request.id, status: response.status, body: await response.text() }
+    let body = await response.text()
+    if (request.operation === 'detail' && !body.trim()) {
+      const fallback = await detailFromPage(request.parameters.aweme_id ?? '')
+      if (fallback) body = fallback
+    }
+    return { id: request.id, status: response.status, body }
   } catch {
     return { id: request.id, error: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR' }
   } finally {

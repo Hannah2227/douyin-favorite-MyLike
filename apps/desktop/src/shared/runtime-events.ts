@@ -145,6 +145,8 @@ export const operationLabels: Record<string, string> = {
   favoriteRemove: '取消收藏',
   favoriteAdd: '收藏作品',
   favoriteFolderAdd: '加入收藏夹',
+  favoriteFolderRemove: '移出收藏夹',
   favoriteFolderCreate: '新建收藏夹',
+  aiClassify: 'AI 自动分类',
   textScan: '扫描文字作品'
 }

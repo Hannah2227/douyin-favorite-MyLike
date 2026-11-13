@@ -1,11 +1,18 @@
 import JSONbigFactory from 'json-bigint'
-import type { Media, Work, FavoriteFolder } from '../../shared/contracts'
+import type {
+  Media,
+  Work,
+  FavoriteFolder,
+  CommentPage,
+  WorkComment,
+  CommentMediaSource
+} from '../../shared/contracts'
 import { AppError } from '../errors'
 import {
   assertBusinessResponse,
   assertDetailResponse,
-  contentRead,
   collectionRead,
+  contentRead,
   type ResponseContext
 } from './response-policy'
 
@@ -118,7 +125,8 @@ export function parseResponse(body: string, status: number, context: ResponseCon
     )
   if (!body.trim())
     throw new AppError(
-      collectionRead(context.operation) || context.operation === 'detail'
+      collectionRead(context.operation) ||
+        ['detail', 'comments', 'commentReplies'].includes(context.operation ?? '')
         ? 'UPSTREAM_RISK_CONTROL'
         : 'EMPTY_RESPONSE',
       '平台返回空响应，未确认列表末尾，进度未推进。',
@@ -139,7 +147,8 @@ export function parseResponse(body: string, status: number, context: ResponseCon
   const data = decoded as Obj
   if (!Object.keys(data).length)
     throw new AppError(
-      collectionRead(context.operation) || context.operation === 'detail'
+      collectionRead(context.operation) ||
+        ['detail', 'comments', 'commentReplies'].includes(context.operation ?? '')
         ? 'UPSTREAM_RISK_CONTROL'
         : 'EMPTY_RESPONSE',
       '平台返回空响应，未确认列表末尾，进度未推进。',
@@ -148,6 +157,100 @@ export function parseResponse(body: string, status: number, context: ResponseCon
   assertBusinessResponse(data, context)
   if (context.operation === 'detail' && context.workId) assertDetailResponse(data, context.workId)
   return data
+}
+
+function commentAttachments(row: Obj): CommentMediaSource[][] {
+  const imageList = Array.isArray(row.image_list) ? row.image_list.slice(0, 9) : []
+  const stickers = [
+    row.sticker,
+    row.sticker_info,
+    row.emoji,
+    row.emoji_info,
+    row.sticker_list,
+    row.emoji_detail_list
+  ].flatMap((value: unknown) => (Array.isArray(value) ? value.slice(0, 9) : [value]))
+  const attachments = new Map<string, CommentMediaSource[]>()
+  const mediaUrls = (value: unknown) => {
+    const candidate = object(value)
+    const list = Array.isArray(value)
+      ? value
+      : [value, candidate.url, ...(Array.isArray(candidate.url_list) ? candidate.url_list : [])]
+    return urls(list.slice(0, 8))
+  }
+  for (const value of [...imageList, ...stickers]) {
+    const item = object(value)
+    const video = object(item.video)
+    const images = [
+      item.animated_url,
+      item.animation_url,
+      item.animate_url,
+      item.dynamic_url,
+      item.gif_url,
+      item.origin_url,
+      item.sticker_url,
+      item.emoji_url,
+      item.image_url,
+      item.url_list,
+      value,
+      item.display_image,
+      item.static_url,
+      item.thumb_url,
+      item.thumbnail
+    ]
+    const videoUrls = [item.video_url, item.play_addr, video.play_addr, video.download_addr].flatMap(
+      mediaUrls
+    )
+    const sources = new Map<string, CommentMediaSource>()
+    for (const url of [...videoUrls, ...images.flatMap(mediaUrls)]) {
+      const type =
+        videoUrls.includes(url) || /\.(?:mp4|webm)(?:[?#]|$)|[?&]mime_type=video[_%/]/i.test(url)
+          ? 'video'
+          : 'image'
+      sources.set(url, { url, type })
+    }
+    const candidates = [...sources.values()].slice(0, 8)
+    if (candidates.length) attachments.set(candidates[0]!.url, candidates)
+  }
+  return [...attachments.values()].slice(0, 9)
+}
+
+export function parseCommentPage(data: Obj, workId: string, requestedCursor: string): CommentPage {
+  const fail = () =>
+    new AppError('INVALID_RESPONSE', '抖音未返回有效的评论列表，请稍后重试。', 'payload.schema')
+  const more = [1, true, '1'].includes(data.has_more)
+  if (!more && ![0, false, '0'].includes(data.has_more)) throw fail()
+  const rows = data.comments === null && !more && String(data.status_code) === '0' ? [] : data.comments
+  if (!Array.isArray(rows)) throw fail()
+  const items = new Map<string, WorkComment>()
+  const count = (value: unknown) => {
+    const parsed =
+      typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value)) ? Number(value) : 0
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
+  }
+  for (const value of rows) {
+    const row = object(value)
+    const cid = text(row.cid) || (Number.isSafeInteger(row.cid) ? String(row.cid) : '')
+    if (!/^\d{1,30}$/.test(cid) || /^0+$/.test(cid)) continue
+    if (row.aweme_id != null && String(row.aweme_id) !== workId)
+      throw new AppError('INVALID_RESPONSE', '评论与当前作品不一致，请重试。', 'payload.target_mismatch')
+    const user = object(row.user)
+    const timestamp = count(row.create_time)
+    items.set(cid, {
+      id: cid,
+      text: text(row.text).slice(0, 4000),
+      author: text(user.nickname).slice(0, 100) || '抖音用户',
+      avatarUrl: first(object(user.avatar_thumb).url_list),
+      attachments: commentAttachments(row),
+      publishedAt: timestamp > 0 && timestamp < 32_503_680_000 ? timestamp : null,
+      likes: count(row.digg_count),
+      replies: count(row.reply_comment_total)
+    })
+  }
+  if (rows.length && !items.size) throw fail()
+  if (more && !items.size) throw fail()
+  const nextCursor = more ? pageCursor(data.cursor, true) : null
+  if (nextCursor === requestedCursor) throw new AppError('CURSOR_STALLED', '评论分页没有推进，请重试。')
+  return { items: [...items.values()], nextCursor }
 }
 
 export function parseLikeState(data: Obj, workId: string): boolean {
@@ -218,11 +321,25 @@ export function parseWork(value: unknown): Work {
       text(articleContent.markdown) ||
       text(share.share_title)
   const images = Array.isArray(data.images) ? data.images : []
-  const isText = Object.keys(article).length > 0 && Object.keys(articleContent).length > 0
+  const isText =
+    Object.keys(article).length > 0 &&
+    (Object.keys(articleContent).length > 0 ||
+      [
+        article.title,
+        article.article_title,
+        article.desc,
+        articleContent.title,
+        articleContent.markdown
+      ].some((value) => text(value).trim().length > 0))
+  const authorId =
+    typeof author.sec_uid === 'string' && /^[A-Za-z0-9_-]{8,200}$/.test(author.sec_uid)
+      ? author.sec_uid
+      : null
   return {
     id: numericId(data.aweme_id),
     title: title.slice(0, 20_000),
     author: text(author.nickname).slice(0, 500),
+    authorId,
     publishedAt: Number.isSafeInteger(data.create_time) ? data.create_time : 0,
     coverUrl:
       first(video.cover?.url_list) ?? first(video.origin_cover?.url_list) ?? first(images[0]?.url_list),

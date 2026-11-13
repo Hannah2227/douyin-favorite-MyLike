@@ -290,19 +290,6 @@ export function usePlayback(
       if (reader.current === entry) reader.current = null
     }
   }
-  const original = async (expectedScope: string) => {
-    const queue = current.current?.queue
-    if (!queue || key(queue) !== expectedScope || activeIntent.current !== intent.current) return
-    await flush()
-    if (!current.current || key(current.current.queue) !== key(queue)) return
-    await call(
-      window.mylike.invoke('original', {
-        accountId: queue.accountId,
-        workId: queue.work.id,
-        playback: { queueId: queue.queueId, revision: queue.revision }
-      })
-    )
-  }
   return {
     view,
     start,
@@ -315,7 +302,6 @@ export function usePlayback(
     suspend: () => reader.current?.suspend(),
     report,
     registerReader,
-    original,
     acceptWheel: () => {
       if (Date.now() - wheelAt.current < 700) return false
       wheelAt.current = Date.now()

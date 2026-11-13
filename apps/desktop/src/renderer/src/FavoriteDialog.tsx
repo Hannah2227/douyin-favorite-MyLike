@@ -213,7 +213,10 @@ export function FavoriteDialog({
                 <span className="favorite-folder-name" title={folder.title}>
                   <span>{folder.title}</span>
                   {folder.private && <LockKeyhole size={12} aria-label="私密收藏夹" />}
-                  <small>{folder.remoteCount}</small>
+                  <small>
+                    {folder.localCount}
+                    {folder.localOnly ? ' · 本地' : ''}
+                  </small>
                 </span>
                 <input
                   type="checkbox"

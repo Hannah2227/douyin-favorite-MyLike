@@ -1,11 +1,12 @@
 import { CollectionActions } from './CollectionActions'
 import { useEffect, useState } from 'react'
-import { Sparkles, ScanSearch } from 'lucide-react'
+import { ScanSearch, Sparkles } from 'lucide-react'
 import type { FavoriteFolder, FavoritesTask, Snapshot } from '../../shared/contracts'
 import type { RecoveryState } from '../../shared/recovery-state'
 import { taskRecovery } from '../../shared/task-recovery'
 import { call, type Perform } from './api'
 import { Select } from './Select'
+import { LocalFoldersDialog } from './LocalFoldersDialog'
 
 export function FavoriteIssues({ task }: { task: FavoritesTask | null }) {
   return task?.issues?.length ? (
@@ -28,30 +29,42 @@ export function FavoriteIssues({ task }: { task: FavoritesTask | null }) {
     </details>
   ) : null
 }
-export function useFavoriteFolders(accountId: string | null, revision: number) {
+export function useFavoriteFolders(
+  accountId: string | null,
+  revision: number,
+  onError: (message: string) => void
+) {
   const [result, setResult] = useState<{
     accountId: string
     folders: FavoriteFolder[]
-    error: string
   } | null>(null)
   useEffect(() => {
     if (!accountId) return
     let current = true
     void call(window.mylike.invoke('favoriteFolders', { accountId })).then(
       (folders) => {
-        if (current) setResult({ accountId, folders, error: '' })
+        if (current) setResult({ accountId, folders })
       },
       (error) => {
-        if (current) setResult({ accountId, folders: [], error: error.message })
+        if (current) {
+          setResult({ accountId, folders: [] })
+          onError(error instanceof Error ? error.message : '读取收藏夹失败。')
+        }
       }
     )
     return () => {
       current = false
     }
-  }, [accountId, revision])
+  }, [accountId, revision, onError])
+  const refresh = async () => {
+    if (!accountId) return []
+    const folders = await call(window.mylike.invoke('favoriteFoldersRefresh', { accountId }))
+    setResult({ accountId, folders })
+    return folders
+  }
   return result?.accountId === accountId
-    ? { ...result, loaded: true }
-    : { folders: [], error: '', loaded: false }
+    ? { ...result, loaded: true, refresh }
+    : { folders: [], loaded: false, refresh }
 }
 export function FavoritesPanel({
   accountId,
@@ -59,9 +72,10 @@ export function FavoritesPanel({
   busy,
   perform,
   folders,
+  openClassification,
+  foldersLoaded = true,
   folderId,
   setFolderId,
-  error,
   compact = false,
   snapshot,
   notice
@@ -73,9 +87,10 @@ export function FavoritesPanel({
   perform: Perform
   start: () => void
   folders?: FavoriteFolder[]
+  openClassification: (source: 'likes' | 'favorites') => void
+  foldersLoaded?: boolean
   folderId?: string | null
   setFolderId?: (id: string | null) => void
-  error?: string
   compact?: boolean
   updateTask?: FavoritesTask | null
   recovery?: readonly RecoveryState[]
@@ -86,6 +101,8 @@ export function FavoritesPanel({
   const latest = snapshot?.favoritesUpdate
   const progress =
     latest && (latest.status === 'running' || latest.updatedAt > (task?.updatedAt ?? 0)) ? latest : task
+  const [manageLocalFolders, setManageLocalFolders] = useState(false)
+  const selectedFolder = folders?.find((folder) => folder.id === folderId)
   return (
     <section className={compact ? 'favorites-toolbar' : 'panel'} aria-label="收藏同步">
       {!compact && <h2>收藏与收藏夹</h2>}
@@ -103,6 +120,13 @@ export function FavoritesPanel({
           ]}
         />
       )}
+      {selectedFolder &&
+        !selectedFolder.localOnly &&
+        selectedFolder.localCount !== selectedFolder.remoteCount && (
+          <span className="favorites-progress" role="note">
+            {`本地 ${selectedFolder.localCount} 条 · 最近云端 ${selectedFolder.remoteCount} 条`}
+          </span>
+        )}
       {progress && (
         <span className="favorites-progress" role="status">
           {(progress.status === 'running'
@@ -117,7 +141,11 @@ export function FavoritesPanel({
             ' 条' +
             (progress.mode === 'update'
               ? ' · 更新顶部'
-              : ' · 收藏夹 ' + progress.foldersDone + '/' + progress.foldersTotal)}
+              : ' · 收藏夹 ' +
+                progress.foldersDone +
+                '/' +
+                progress.foldersTotal +
+                (progress.status === 'running' && progress.folderTitle ? ' · ' + progress.folderTitle : ''))}
         </span>
       )}
       <div className="panel-actions">
@@ -127,23 +155,18 @@ export function FavoritesPanel({
           source="favorites"
           busy={busy}
           perform={perform}
+          syncFolders
+          syncToCloud={snapshot?.appPreferences.syncFavoritesToCloud ?? false}
+          pendingWrites={snapshot?.favoriteWritePending ?? 0}
+          notice={notice}
+          folders={folders}
+          onManageLocalFolders={() => setManageLocalFolders(true)}
+          foldersLoaded={foldersLoaded}
         />
         <button
-          disabled={!accountId || busy}
-          onClick={() =>
-            void perform('AI 自动整理收藏', async () => {
-              const result = await call(window.mylike.invoke('aiClassifyFavorites', { accountId: accountId! }))
-              notice?.(
-                [
-                  `AI 分类完成：成功 ${result.classified} 条，失败 ${result.failed} 条，创建 ${result.foldersCreated} 个收藏夹，使用 ${result.foldersUsed} 个收藏夹。`,
-                  ...result.failedItems.map(
-                    (item) => `失败作品 ${item.workId}（${item.category}）：${item.reason}`
-                  )
-                ].join('\n')
-              )
-            })
-          }
-          title="使用语音转文字和 DeepSeek 自动分类默认收藏"
+          disabled={!accountId || busy || !foldersLoaded}
+          onClick={() => openClassification('favorites')}
+          title={foldersLoaded ? '先核实抖音收藏夹，再选择分类目标' : '正在读取收藏夹'}
         >
           <Sparkles size={14} />
           AI 自动分类
@@ -155,7 +178,9 @@ export function FavoritesPanel({
               const result = await call(
                 window.mylike.invoke('scanTextWorks', { accountId: accountId!, source: 'favorites' })
               )
-              notice?.(`扫描完成：检查 ${result.scanned} 条，识别文字 ${result.text} 条，失败 ${result.failed} 条。`)
+              notice?.(
+                `扫描结束：尝试 ${result.scanned} 条，扫描成功 ${result.succeeded} 条，扫描失败 ${result.failed} 条，待稍后扫描 ${result.deferred} 条，识别文字 ${result.text} 条，新增文字 ${result.addedText} 条。`
+              )
             })
           }
           title="批量读取作品详情，识别文字作品"
@@ -164,13 +189,17 @@ export function FavoritesPanel({
           扫描文字作品
         </button>
       </div>
-      {error && (
-        <p role="alert" className="task-error">
-          {error}
-        </p>
-      )}
-
       <FavoriteIssues task={task} />
+      {manageLocalFolders && accountId && (
+        <LocalFoldersDialog
+          accountId={accountId}
+          folders={folders ?? []}
+          busy={busy}
+          perform={perform}
+          close={() => setManageLocalFolders(false)}
+          notice={(message) => notice?.(message)}
+        />
+      )}
     </section>
   )
 }

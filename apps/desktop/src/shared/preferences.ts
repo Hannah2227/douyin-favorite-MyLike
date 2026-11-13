@@ -29,7 +29,7 @@ export const shortcutActions = {
   favorite: { label: '收藏 / 取消收藏（当前作品）', key: 'KeyS', group: '作品' },
   favoriteFolders: { label: '选择收藏夹（当前作品）', key: 'KeyD', group: '作品' },
   rateCycle: { label: '倍速循环（0.75x–2x）', key: 'None', group: '声音与倍速' },
-  original: { label: '打开原页看评论', key: 'None', group: '作品' },
+  original: { label: '查看评论', key: 'None', group: '作品' },
   queue: { label: '播放列表', key: 'KeyQ', group: '界面' },
   clean: { label: '清屏 / 退出清屏', key: 'KeyH', group: '界面' }
 } as const
@@ -108,7 +108,7 @@ export const appPreferencesSchema = z.object({
   deepseekApiKey: z.string().max(300).default(''),
   siliconFlowApiKey: z.string().max(300).default(''),
   favoriteCategoryHints: z.string().max(2000).default(''),
-  allowFavoriteFolderCreation: z.boolean().default(true)
+  syncFavoritesToCloud: z.boolean().default(false)
 })
 export type AppPreferences = z.infer<typeof appPreferencesSchema>
 export const appPreferencesPatchSchema = z.object({
@@ -119,7 +119,7 @@ export const appPreferencesPatchSchema = z.object({
   deepseekApiKey: appPreferencesSchema.shape.deepseekApiKey.removeDefault().optional(),
   siliconFlowApiKey: appPreferencesSchema.shape.siliconFlowApiKey.removeDefault().optional(),
   favoriteCategoryHints: appPreferencesSchema.shape.favoriteCategoryHints.removeDefault().optional(),
-  allowFavoriteFolderCreation: appPreferencesSchema.shape.allowFavoriteFolderCreation.removeDefault().optional()
+  syncFavoritesToCloud: appPreferencesSchema.shape.syncFavoritesToCloud.removeDefault().optional()
 })
 export interface WindowState {
   x: number

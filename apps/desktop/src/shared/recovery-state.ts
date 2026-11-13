@@ -17,4 +17,5 @@ export type RecoveryOperation =
   | 'favoriteAdd'
   | 'favoriteRemove'
   | 'favoriteFolderAdd'
+  | 'favoriteFolderRemove'
   | 'favoriteFolderCreate'

@@ -53,7 +53,8 @@ const groups = [
     id: 'general',
     title: '通用',
     icon: Settings2,
-    keywords: '通用 外观 主题 白天 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画 AI DeepSeek SiliconFlow 收藏夹 分类'
+    keywords:
+      '通用 外观 主题 白天 黑夜 启动 默认 页面 界面 缩放 字体 窗口 记忆 位置 尺寸 动画 AI DeepSeek SiliconFlow 收藏夹 分类 云端 写回 同步'
   },
   {
     id: 'playback',
@@ -139,11 +140,7 @@ export function SettingsPanel({
     setDeepseekApiKey(application.deepseekApiKey)
     setSiliconFlowApiKey(application.siliconFlowApiKey)
     setFavoriteCategoryHints(application.favoriteCategoryHints)
-  }, [
-    application.deepseekApiKey,
-    application.siliconFlowApiKey,
-    application.favoriteCategoryHints
-  ])
+  }, [application.deepseekApiKey, application.siliconFlowApiKey, application.favoriteCategoryHints])
   const updateApplication = (patch: Partial<AppPreferences>) =>
     void perform('保存通用设置', () => call(window.mylike.invoke('appPreferences', { preferences: patch })))
   const visible = (id: string) =>
@@ -262,6 +259,16 @@ export function SettingsPanel({
                 onChange={(value) => updateApplication({ motion: value as AppPreferences['motion'] })}
               />
             </Row>
+            <Row
+              label="允许同步本地收藏夹到抖音"
+              description="开启后可在收藏夹页手动点击“写回云端”，把本机新增的收藏夹、AI 分类结果和新增作品写到抖音；不会自动上传，也不会把云端变化带回本地（云端变化请用“同步收藏夹”）"
+            >
+              <Toggle
+                label="允许同步本地收藏夹到抖音"
+                value={application.syncFavoritesToCloud}
+                change={(syncFavoritesToCloud) => updateApplication({ syncFavoritesToCloud })}
+              />
+            </Row>
             <Row label="DeepSeek API Key" description="用于自动分析和分类收藏内容，仅保存在本机">
               <input
                 type="password"
@@ -281,16 +288,9 @@ export function SettingsPanel({
               />
             </Row>
             <Row
-              label="允许自动新建收藏夹"
-              description="关闭后只会写入已有收藏夹，不会创建新的收藏夹"
+              label="优先使用的收藏夹名称"
+              description="每行一个；仅在名称与本次选择的收藏夹匹配时使用。要新建的 AI 收藏夹名称请在分类弹窗中填写"
             >
-              <Toggle
-                label="允许自动新建收藏夹"
-                value={application.allowFavoriteFolderCreation}
-                change={(allowFavoriteFolderCreation) => updateApplication({ allowFavoriteFolderCreation })}
-              />
-            </Row>
-            <Row label="优先使用的收藏夹名称" description="每行一个；AI 会优先使用这些名称，AI 新建分类自动加 AI- 前缀">
               <textarea
                 aria-label="优先使用的收藏夹名称"
                 value={favoriteCategoryHints}
@@ -315,6 +315,11 @@ export function SettingsPanel({
               <button
                 onClick={() =>
                   void perform('测试 DeepSeek 连接', async () => {
+                    await call(
+                      window.mylike.invoke('appPreferences', {
+                        preferences: { deepseekApiKey, siliconFlowApiKey, favoriteCategoryHints }
+                      })
+                    )
                     await call(window.mylike.invoke('aiTestConnection', { provider: 'deepseek' }))
                     notice('DeepSeek 连接测试成功。')
                   })
@@ -325,6 +330,11 @@ export function SettingsPanel({
               <button
                 onClick={() =>
                   void perform('测试 SiliconFlow 连接', async () => {
+                    await call(
+                      window.mylike.invoke('appPreferences', {
+                        preferences: { deepseekApiKey, siliconFlowApiKey, favoriteCategoryHints }
+                      })
+                    )
                     await call(window.mylike.invoke('aiTestConnection', { provider: 'siliconflow' }))
                     notice('SiliconFlow 连接测试成功。')
                   })

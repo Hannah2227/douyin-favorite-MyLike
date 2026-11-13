@@ -3,8 +3,16 @@ import type { HealthSnapshot } from '../shared/health'
 import { FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
 import { app, shell, clipboard, type BrowserWindow } from 'electron'
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Account, Command, Diagnostics, Query, Snapshot } from '../shared/contracts'
+import type {
+  Account,
+  AiClassificationProgress,
+  Command,
+  Diagnostics,
+  Query,
+  Snapshot
+} from '../shared/contracts'
 import { Database } from './storage/client'
 import { DouyinEngine } from './douyin/engine'
 import {
@@ -12,7 +20,8 @@ import {
   parseLikedPage,
   parseMedia,
   parseFavoriteFolders,
-  parseFavoritesPage
+  parseFavoritesPage,
+  parseCommentPage
 } from './douyin/parse'
 import { Authentication } from './authentication'
 import type { AccessTarget } from './douyin/page-state'
@@ -27,17 +36,22 @@ import { UnlikeService } from './unlike'
 import { metadataBytes } from './storage/usage'
 import { runtimeEventCategory, type RuntimeEventInput } from '../shared/runtime-events'
 import { AiClassifier } from './ai-classifier'
+import { LogFile } from './log-file'
 
 export class Application {
   private readonly health = new HealthMonitor()
+  private readonly logs = new LogFile(join(app.getPath('userData'), 'logs'))
   private readonly healthRuns = new Map<string, Promise<HealthSnapshot>>()
   private readonly healthAfterAuth = new Set<string>()
   private readonly accessChecks = new Map<string, { accountId: string; operation: string; at: number }>()
   private playerVisible = false
   private busy = false
+  private textScan: Snapshot['textScan'] = null
+  private aiClassification: AiClassificationProgress | null = null
   private epoch = 0
   private libraryRevision = 0
   private mediaEpoch = 0
+  private activeComments: { queueId: string; revision: number; cancelled: boolean } | null = null
   private activeMedia: {
     accountId: string
     workId: string
@@ -62,6 +76,9 @@ export class Application {
     private readonly changed: () => void,
     private readonly parent: () => BrowserWindow | null = () => null
   ) {
+    // Touch the AI log at startup so the folder is never empty when users go
+    // looking for a recovery file.
+    void this.logs.append('ai-classification.log', `===== ${new Date().toISOString()} 应用启动 =====`)
     engine.setObserver((accountId, event) => this.record(accountId, event))
     this.authentication = new Authentication(
       engine,
@@ -133,7 +150,13 @@ export class Application {
       () => {
         this.libraryRevision++
         changed()
-      }
+      },
+      this.record.bind(this),
+      (progress) => {
+        this.aiClassification = progress
+        changed()
+      },
+      (line) => void this.logs.append('ai-classification.log', line)
     )
     this.accounts = new AccountService(
       database,
@@ -164,6 +187,14 @@ export class Application {
     const activeAccountId = accounts.some((a) => a.id === active) ? active : (accounts[0]?.id ?? null)
     return {
       accounts,
+      textScan: this.textScan,
+      favoriteWritePending: activeAccountId
+        ? await this.database.call('favoriteWritePending', { accountId: activeAccountId })
+        : 0,
+      aiClassification: this.aiClassification?.accountId === activeAccountId ? this.aiClassification : null,
+      aiPendingAssignments: activeAccountId
+        ? await this.database.call('aiAssignmentStats', { accountId: activeAccountId })
+        : { likes: 0, favorites: 0 },
       activeAccountId,
       theme: theme === 'light' ? 'light' : 'dark',
       engine: this.engine.snapshot(),
@@ -298,7 +329,7 @@ export class Application {
       const data = await this.engine.request(
         accountId,
         target.operation,
-        target.operation === 'likes'
+        target.operation === 'likes' || target.operation === 'folders'
           ? { ...target.parameters, sec_user_id: identity.remoteId }
           : target.parameters,
         { recovery: true }
@@ -378,7 +409,10 @@ export class Application {
               parameters: { sec_user_id: identity.remoteId!, max_cursor: '0', count: '18' }
             },
             { operation: 'favorites', parameters: { cursor: '0', count: '20' } },
-            { operation: 'folders', parameters: { cursor: '0', count: '20' } }
+            {
+              operation: 'folders',
+              parameters: { sec_user_id: identity.remoteId!, cursor: '0', count: '20' }
+            }
           ]
           if (likes?.errorCode && likes.cursor !== '0')
             targets.push({
@@ -508,7 +542,7 @@ export class Application {
   private async collectionAction(
     accountId: string,
     source: 'likes' | 'favorites',
-    action: 'top' | 'down' | 'stop'
+    action: 'top' | 'down' | 'stop' | 'folders'
   ) {
     await this.active(accountId)
     if (source === 'favorites') {
@@ -523,7 +557,12 @@ export class Application {
               mode: task.mode,
               action: 'stop'
             })
-      } else await this.execute('favoritesStart', { accountId, mode: action === 'top' ? 'update' : 'sync' })
+      } else
+        await this.execute('favoritesStart', {
+          accountId,
+          mode: action === 'top' ? 'update' : 'sync',
+          ...(action === 'folders' ? { stage: 'folders' } : {})
+        })
       return
     }
     const task = await this.database.call('collection', { accountId })
@@ -605,7 +644,14 @@ export class Application {
         'favoriteEditor',
         'favoriteSave',
         'favoriteCreateFolder',
-        'aiClassifyFavorites'
+        'favoriteFolderEditLocal',
+        'favoriteFolderRemoveWorks',
+        'aiClassifyFavorites',
+        'aiSuggestFolders',
+        'aiResumeClassification',
+        'aiImportClassificationLog',
+        'favoriteFoldersRefresh',
+        'favoriteSyncToCloud'
       ].includes(command) ||
       (['collectionControl', 'favoritesControl', 'unlikeControl'].includes(command) &&
         input.action === 'resume')
@@ -641,7 +687,15 @@ export class Application {
         'favoriteEditor',
         'favoriteSave',
         'favoriteCreateFolder',
+        'favoriteFolderCreateLocal',
+        'favoriteFolderEditLocal',
+        'favoriteFolderDeleteLocal',
         'aiClassifyFavorites',
+        'aiSuggestFolders',
+        'aiResumeClassification',
+        'aiImportClassificationLog',
+        'favoriteFoldersRefresh',
+        'favoriteSyncToCloud',
         'unlikeVerify'
       ].includes(command)
     )
@@ -657,6 +711,13 @@ export class Application {
         return this.database.call('checkDatabase', {})
       case 'copyText':
         clipboard.writeText(input.text)
+        return null
+      case 'openAuthorProfile':
+        try {
+          await shell.openExternal(`https://www.douyin.com/user/${input.authorId}`)
+        } catch {
+          throw new AppError('OPEN_BROWSER_FAILED', '无法打开作者主页，请稍后重试。')
+        }
         return null
       case 'copyDiagnostics': {
         const diagnostic = await this.execute('diagnostics', {})
@@ -768,7 +829,7 @@ export class Application {
           if (error instanceof AppError)
             this.health.observe(
               input.accountId,
-              input.source === 'likes' ? 'likes' : 'favorites',
+              input.source === 'likes' ? 'likes' : input.action === 'folders' ? 'folders' : 'favorites',
               error.code,
               error.retryAt
             )
@@ -852,6 +913,71 @@ export class Application {
       case 'favoriteFolders':
         await this.active(input.accountId)
         return this.database.call('favoriteFolders', input)
+      case 'favoriteFolderCreateLocal': {
+        const account = await this.active(input.accountId)
+        const preferences = await this.database.call('appPreferences', {})
+        const folder = await this.database.call('favoriteLocalFolderCreate', {
+          accountId: input.accountId,
+          remoteId: account.remoteId ?? '',
+          id: `local-${randomUUID()}`,
+          title: input.title,
+          private: input.private,
+          queueWrite: !!account.remoteId && preferences.syncFavoritesToCloud
+        })
+        this.libraryRevision++
+        this.changed()
+        return folder
+      }
+      case 'favoriteFolderEditLocal':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.favoriteActions.renameFolder(input.accountId, input.folderId, input.title)
+      case 'favoriteFolderDeleteLocal':
+        await this.active(input.accountId)
+        {
+          const result = await this.database.call('favoriteLocalFolderDelete', input)
+          this.libraryRevision++
+          this.changed()
+          return result
+        }
+      case 'favoriteFoldersRefresh':
+        await this.active(input.accountId)
+        this.assertAvailable(input.accountId, ['folders'])
+        if (this.collection.running || this.favorites.running || this.unlike.running)
+          throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务，再核实收藏夹。')
+        return this.favoriteActions.refreshFolders(input.accountId)
+      case 'favoriteSyncToCloud':
+        await this.active(input.accountId)
+        if (!(await this.database.call('appPreferences', {})).syncFavoritesToCloud)
+          throw new AppError('SYNC_DISABLED', '请先在设置中启用收藏夹云端写回。')
+        this.assertAvailable(input.accountId, [
+          'folders',
+          'folderItems',
+          'favoriteAdd',
+          'favoriteFolderAdd',
+          'favoriteFolderRemove',
+          'favoriteFolderCreate',
+          'detail'
+        ])
+        await Promise.all([this.collection.pause(), this.favorites.pause()])
+        await this.favoriteActions.idle()
+        await this.lane.idle()
+        if (this.collection.running || this.favorites.running || this.unlike.running)
+          throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务，再写回收藏夹。')
+        return this.run(input.accountId, (check) =>
+          this.favoriteActions.syncToCloud(input.accountId, check, {
+            folderIds: input.folderIds,
+            includeDefault: input.includeDefault
+          })
+        )
+      case 'favoriteFolderRemoveWorks':
+        await this.active(input.accountId)
+        await Promise.all([this.collection.pause(), this.favorites.pause()])
+        await this.favoriteActions.idle()
+        await this.lane.idle()
+        if (this.collection.running || this.favorites.running || this.unlike.running)
+          throw new AppError('BUSY', '请先停止其他采集或取消点赞 / 收藏任务，再移出收藏夹。')
+        return this.favoriteActions.removeFromFolder(input.accountId, input.folderId, input.workIds)
       case 'favoriteStatus':
         await this.active(input.accountId)
         return this.database.call('favoriteStatus', input)
@@ -872,7 +998,33 @@ export class Application {
       case 'aiClassifyFavorites':
         await this.active(input.accountId)
         await this.favorites.pause()
-        return this.aiClassifier.runClassification(input.accountId)
+        return this.aiClassifier.runClassification(input.accountId, {
+          folderIds: input.folderIds,
+          createAiFolders: input.createAiFolders,
+          aiFolderNames: input.aiFolderNames,
+          source: input.source,
+          onlyUnclassified: input.onlyUnclassified
+        })
+      case 'aiSuggestFolders':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.aiClassifier.suggestFolderNames(input.accountId, input.source)
+      case 'aiResumeClassification':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.run(input.accountId, (check) =>
+          this.aiClassifier.resumeClassification(input.accountId, input.source, check, {
+            createMissingFolders: input.createMissingFolders
+          })
+        )
+      case 'aiImportClassificationLog':
+        await this.active(input.accountId)
+        await this.favorites.pause()
+        return this.run(input.accountId, (check) =>
+          this.aiClassifier.importClassificationLog(input.accountId, input.source, input.text, check, {
+            createMissingFolders: input.createMissingFolders
+          })
+        )
       case 'scanTextWorks':
         return this.run(input.accountId, async (check) => {
           await this.favorites.pause()
@@ -907,8 +1059,19 @@ export class Application {
             }
             if (!page.items.length || works.length >= page.total) break
           }
+          this.textScan = {
+            accountId: input.accountId,
+            source: input.source,
+            current: 0,
+            total: works.length,
+            startedAt: Date.now()
+          }
+          this.changed()
           let text = 0
+          let addedText = 0
+          let succeeded = 0
           let failed = 0
+          let deferred = 0
           for (const [index, work] of works.entries()) {
             try {
               check()
@@ -920,9 +1083,12 @@ export class Application {
                 })
               )
               check()
-              if (media.work.id !== work.id) throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
+              if (media.work.id !== work.id)
+                throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
               await this.database.call('updateWork', { work: media.work })
+              succeeded++
               if (media.work.mediaType === 'text') text++
+              if (work.mediaType !== 'text' && media.work.mediaType === 'text') addedText++
               if ((index + 1) % 10 === 0 || index + 1 === works.length)
                 this.record(input.accountId, {
                   kind: 'task',
@@ -932,6 +1098,29 @@ export class Application {
                 })
             } catch (error) {
               if (error instanceof AppError && error.code === 'CANCELLED') throw error
+              if (
+                error instanceof AppError &&
+                ['RATE_LIMITED', 'UPSTREAM_RISK_CONTROL', 'AUTH_REQUIRED', 'VERIFICATION_REQUIRED'].includes(
+                  error.code
+                )
+              ) {
+                deferred = works.length - index
+                this.textScan = {
+                  accountId: input.accountId,
+                  source: input.source,
+                  current: index,
+                  total: works.length,
+                  startedAt: this.textScan?.startedAt ?? Date.now()
+                }
+                this.changed()
+                this.record(input.accountId, {
+                  kind: 'task',
+                  operation: 'textScan',
+                  message: `平台暂时限制详情读取，已完成 ${index} 条，剩余 ${deferred} 条待稍后继续。`,
+                  code: error.code
+                })
+                break
+              }
               failed++
               if (error instanceof AppError && error.code === 'EMPTY_RESPONSE') {
                 this.record(input.accountId, {
@@ -950,17 +1139,28 @@ export class Application {
                 code: 'TEXT_SCAN_FAILED'
               })
             }
+            this.textScan = {
+              accountId: input.accountId,
+              source: input.source,
+              current: index + 1,
+              total: works.length,
+              startedAt: this.textScan?.startedAt ?? Date.now()
+            }
+            if ((index + 1) % 10 === 0 || index + 1 === works.length || index === 0) this.changed()
           }
           this.record(input.accountId, {
             kind: 'task',
             operation: 'textScan',
-            message: `扫描完成：检查 ${works.length} 条，识别文字 ${text} 条，失败 ${failed} 条。`,
+            message: `扫描结束：尝试 ${succeeded + failed} 条，扫描成功 ${succeeded} 条，扫描失败 ${failed} 条，待稍后扫描 ${deferred} 条，识别文字 ${text} 条，新增文字 ${addedText} 条。`,
             code: 'END_CONFIRMED',
             count: text
           })
           this.libraryRevision++
           this.changed()
-          return { scanned: works.length, text, failed }
+          return { scanned: succeeded + failed, succeeded, text, addedText, failed, deferred }
+        }).finally(() => {
+          this.textScan = null
+          this.changed()
         })
       case 'aiTestConnection':
         return this.aiClassifier.testConnection(input.provider)
@@ -968,11 +1168,15 @@ export class Application {
         return this.exclusive(async () => {
           await this.active(input.accountId)
           this.assertAvailable(input.accountId, [
-            await this.favoriteReadOperation(input.accountId, input.mode)
+            input.stage === 'folders'
+              ? 'folders'
+              : await this.favoriteReadOperation(input.accountId, input.mode)
           ])
           if (this.collection.running || this.unlike.running)
             throw new AppError('BUSY', '请先暂停喜欢采集或取消点赞 / 收藏任务。')
-          return this.favorites.start(input.accountId, input.mode)
+          return input.stage
+            ? this.favorites.start(input.accountId, input.mode, input.stage)
+            : this.favorites.start(input.accountId, input.mode)
         })
       case 'favoritesProbe':
         await this.active(input.accountId)
@@ -1107,6 +1311,16 @@ export class Application {
           const result = await this.database.call(command, input)
           if (command !== 'queueProgress') {
             if (['queueCreate', 'queueDismiss'].includes(command)) this.mediaEpoch++
+            const comments = this.activeComments
+            if (
+              comments &&
+              (comments.queueId !== result.queueId ||
+                comments.revision !== result.revision ||
+                command === 'queueDismiss')
+            ) {
+              comments.cancelled = true
+              this.engine.cancel()
+            }
             const active = this.activeMedia
             // A prefetched next item becomes the current item when advancing.
             // Keep that read alive; unrelated targets still cancel immediately.
@@ -1136,7 +1350,8 @@ export class Application {
           if (!queue || queue.queueId !== input.queueId || queue.revision !== input.revision)
             throw new AppError('QUEUE_CHANGED', '播放会话已变化。')
           this.mediaEpoch++
-          if (this.activeMedia) this.engine.cancel()
+          if (this.activeComments) this.activeComments.cancelled = true
+          if (this.activeMedia || this.activeComments) this.engine.cancel()
           return null
         })
       case 'playbackPreferences': {
@@ -1218,26 +1433,44 @@ export class Application {
           }
         })
       }
-      case 'original': {
-        const epoch = this.epoch
-        await this.active(input.accountId)
-        if (input.playback) {
-          const queue = await this.database.call('queueState', { accountId: input.accountId })
-          if (
-            !queue ||
-            queue.queueId !== input.playback.queueId ||
-            queue.revision !== input.playback.revision ||
-            queue.work.id !== input.workId
-          )
-            throw new AppError('QUEUE_CHANGED', '播放目标已变化，请重新打开原页。')
-        }
-        if (epoch !== this.epoch) throw new AppError('ACCOUNT_CHANGED', '当前账号已变化，请重新打开原页。')
-        try {
-          await shell.openExternal(`https://www.douyin.com/video/${input.workId}`)
-        } catch {
-          throw new AppError('OPEN_BROWSER_FAILED', '无法打开系统默认浏览器，请检查默认浏览器设置后重试。')
-        }
-        return null
+      case 'comments': {
+        const { accountId, workId, queueId, revision, commentId, cursor } = input
+        const operation = commentId ? 'commentReplies' : 'comments'
+        return this.run(accountId, async (check) => {
+          const request = { queueId, revision, cancelled: false }
+          const assertScope = async () => {
+            check()
+            if (request.cancelled) throw new AppError('CANCELLED', '作品已切换，旧评论请求已取消。')
+            const queue = await this.database.call('queueState', { accountId })
+            if (
+              !queue ||
+              queue.queueId !== queueId ||
+              queue.revision !== revision ||
+              queue.work.id !== workId
+            )
+              throw new AppError('QUEUE_CHANGED', '作品已切换，请重新加载评论。')
+          }
+          await assertScope()
+          this.engine.assertAvailable(accountId, operation)
+          this.activeComments = request
+          try {
+            await this.identity(accountId, check)
+            await assertScope()
+            const parameters: Record<string, string> = { cursor, count: '20', item_type: '0' }
+            if (commentId) {
+              parameters.item_id = workId
+              parameters.comment_id = commentId
+            } else {
+              Object.assign(parameters, { aweme_id: workId, insert_ids: '', rcFT: '' })
+            }
+            await assertScope()
+            const data = await this.engine.request(accountId, operation, parameters)
+            await assertScope()
+            return parseCommentPage(data, workId, cursor)
+          } finally {
+            if (this.activeComments === request) this.activeComments = null
+          }
+        })
       }
       case 'theme':
         await this.database.call('setting', { key: 'theme', value: input.theme })

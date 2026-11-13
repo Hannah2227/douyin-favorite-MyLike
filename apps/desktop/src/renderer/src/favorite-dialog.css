@@ -154,6 +154,62 @@
 .favorite-dialog .favorite-save:hover:not(:disabled) {
   background: #ff426a;
 }
+.favorite-writeback-dialog {
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(860px, calc(100vw - 36px));
+}
+.favorite-writeback-dialog .favorite-folder-list {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+.favorite-writeback-dialog .favorite-folder-row {
+  min-height: 56px;
+  gap: 10px;
+  padding: 8px 10px;
+}
+.favorite-writeback-dialog .favorite-folder-cover {
+  flex-basis: 34px;
+  height: 34px;
+}
+.favorite-writeback-dialog .favorite-folder-name {
+  font-size: 13px;
+}
+.favorite-writeback-dialog .favorite-folder-name small {
+  font-size: 11px;
+}
+.favorite-writeback-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 14px 4px;
+  color: #888894;
+  font-size: 13px;
+  text-align: center;
+}
+.favorite-writeback-note {
+  margin: 0 0 12px;
+  color: #b6b6c2;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.favorite-writeback-selection {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.favorite-writeback-selection button {
+  padding: 5px 8px;
+  border: 1px solid #ffffff20;
+  border-radius: 7px;
+  color: #d4d4dc;
+  background: #ffffff08;
+  font-size: 12px;
+}
+.favorite-writeback-row .favorite-folder-name {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
 .favorite-loading {
   display: flex;
   align-items: center;
@@ -208,4 +264,62 @@
 .favorite-create-form button {
   padding: 7px 16px;
   font-size: 12px;
+}
+.local-folders-dialog {
+  width: min(520px, calc(100vw - 36px));
+}
+.local-folders-note,
+.local-folders-empty {
+  color: #b6b6c2;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.local-folders-dialog .favorite-create-form > label:first-child {
+  display: block;
+  margin-bottom: 6px;
+  color: #b6b6c2;
+  font-size: 12px;
+}
+.local-folders-dialog .favorite-create-form > input {
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #ffffff20;
+  border-radius: 8px;
+}
+.local-folders-dialog .favorite-create-form .local-folder-private {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.local-folder-private input {
+  accent-color: #ff2b58;
+}
+.local-folders-dialog .local-folder-form-actions {
+  justify-content: flex-end;
+}
+.local-folders-dialog .favorite-folder-list {
+  max-height: min(360px, calc(100dvh - 420px));
+}
+.local-folders-dialog .local-folder-row {
+  cursor: default;
+}
+.local-folder-row .favorite-folder-name {
+  flex-wrap: wrap;
+}
+.local-folder-row .favorite-folder-name small {
+  flex-basis: 100%;
+}
+.local-folder-row > button {
+  display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+}
+.local-folders-empty {
+  margin: 0;
+  padding: 18px 4px;
 }

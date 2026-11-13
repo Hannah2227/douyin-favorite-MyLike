@@ -16,15 +16,69 @@ export function taskRecovery(code?: string | null, unknown = false): TaskRecover
       actionLabel: '检查结果'
     }
   switch (code) {
+    case 'AI_NETWORK_ERROR':
+      return {
+        title: '无法连接 AI 服务',
+        message: '请检查网络连接和 API Key 格式，再重新开始 AI 分类。',
+        action: 'retry',
+        actionLabel: '检查后重试'
+      }
+    case 'AI_API_REJECTED':
+      return {
+        title: 'AI 服务未接受请求',
+        message: '请检查 AI 服务的 API Key、账户额度或服务状态，再重新开始 AI 分类。',
+        action: 'retry',
+        actionLabel: '检查后重试'
+      }
+    case 'AI_RESPONSE_INVALID':
+      return {
+        title: 'AI 返回了无效分类结果',
+        message: 'AI 服务已返回响应，但分类内容无法解析；这不是抖音登录错误，请稍后重试。',
+        action: 'retry',
+        actionLabel: '重试分类'
+      }
+    case 'AI_AUTH_REJECTED':
+      return {
+        title: 'AI 服务拒绝 API Key',
+        message: '请确认 API Key 是在对应 AI 平台签发、未被撤销，并且账户可用；修改后重新测试连接。',
+        action: 'retry',
+        actionLabel: '检查后重试'
+      }
+    case 'AI_DEEPSEEK_KEY_REQUIRED':
+      return {
+        title: '需要配置 AI 服务',
+        message: '请先在设置中填写 DeepSeek API Key，再重新开始 AI 分类。',
+        action: 'retry',
+        actionLabel: '填写后重试'
+      }
+    case 'AI_SILICONFLOW_KEY_REQUIRED':
+      return {
+        title: '需要配置语音识别服务',
+        message: '有短标题视频需要语音识别，请先在设置中填写 SiliconFlow API Key，再重新开始 AI 分类。',
+        action: 'retry',
+        actionLabel: '填写后重试'
+      }
     case 'AUTH_REQUIRED':
     case 'LOGIN_PENDING':
-    case 'IDENTITY_MISMATCH':
-    case 'DUPLICATE_ACCOUNT':
       return {
         title: '需要登录抖音',
-        message: '请登录正确的抖音账号，再继续操作。已同步的内容会保留。',
+        message: '暂时无法读取抖音登录身份，请在抖音窗口完成登录或核验后重试。已同步的内容会保留。',
         action: 'login',
         actionLabel: '去登录'
+      }
+    case 'IDENTITY_MISMATCH':
+      return {
+        title: '抖音账号身份不匹配',
+        message: '当前登录身份与所选本地账号绑定不一致，请核对账号绑定后重试。已同步的内容会保留。',
+        action: 'login',
+        actionLabel: '核对账号'
+      }
+    case 'DUPLICATE_ACCOUNT':
+      return {
+        title: '抖音账号已绑定',
+        message: '当前抖音身份已绑定到另一个本地账号，请切换到已绑定的本地账号。已同步的内容会保留。',
+        action: 'login',
+        actionLabel: '切换账号'
       }
     case 'VERIFICATION_REQUIRED':
       return {

@@ -387,7 +387,11 @@
   max-width: calc(100% - 130px);
   font-size: 15px;
 }
-.caption-author strong {
+.caption-author-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  pointer-events: auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

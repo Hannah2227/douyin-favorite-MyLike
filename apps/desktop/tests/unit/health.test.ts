@@ -57,6 +57,21 @@ it('marks explicit refusal immediately and ignores cancellations and unrelated w
   expect(h.snapshot('a').checkedAt).toBeNull()
 })
 
+it('treats a first favorites API rejection as uncertain, then escalates repeated manual checks', () => {
+  const h = new HealthMonitor()
+  for (let round = 1; round <= 3; round++) {
+    h.begin('a')
+    h.observe('a', 'favorites', 'API_REJECTED', undefined, true)
+    h.finish('a')
+    expect(h.snapshot('a').entries[0]).toMatchObject({
+      status: round === 3 ? 'abnormal' : 'uncertain',
+      failures: round
+    })
+  }
+  h.observe('b', 'self', 'API_REJECTED')
+  expect(h.snapshot('b').entries[0]).toMatchObject({ status: 'abnormal' })
+})
+
 it('counts multiple failed folders once per round without losing the already counted failure', () => {
   const h = new HealthMonitor()
   for (let round = 1; round <= 3; round++) {

@@ -17,6 +17,7 @@ import {
 import { MAX_BATCH_SIZE, type Account, type Work, type QueueState } from '../../shared/contracts'
 import type { Library } from './useLibrary'
 import { Select } from './Select'
+import { AuthorName } from './AuthorName'
 
 type Props = {
   readOnly?: boolean
@@ -32,7 +33,10 @@ type Props = {
   selectAll: () => void
   remove: () => void
   unlike: () => void
+  folderId?: string | null
+  removeFromFolder?: () => void
   copyAuthor: (author: string) => void
+  openAuthor: (authorId: string | null, author: string, workId: string, accountId: string | null) => void
   playRange: (mode: 'sequence' | 'shuffle') => void
   resume: QueueState | null
   continuePlayback: () => void
@@ -52,7 +56,10 @@ export function LibraryView({
   selectAll,
   remove,
   unlike,
+  folderId,
+  removeFromFolder,
   copyAuthor,
+  openAuthor,
   playRange,
   resume,
   continuePlayback,
@@ -173,6 +180,15 @@ export function LibraryView({
             <button disabled={!selection.ids.size || mutationBusy} onClick={remove}>
               <Trash2 size={14} />
               删除本地条目
+            </button>
+          )}
+          {readOnly && folderId && removeFromFolder && (
+            <button
+              disabled={!selection.ids.size || selection.ids.size > MAX_BATCH_SIZE || mutationBusy}
+              onClick={removeFromFolder}
+              title="从当前筛选的收藏夹中移出所选作品，保留默认收藏"
+            >
+              从收藏夹中移除
             </button>
           )}
           {pendingChanges && <span>内容有更新，清空选择后刷新。</span>}
@@ -328,33 +344,14 @@ export function LibraryView({
                         </div>
                         <h3>{work.title || '未命名作品'}</h3>
                         <p>
-                          <span
-                            className={work.author ? 'copyable-author' : undefined}
-                            role={work.author ? 'button' : undefined}
-                            tabIndex={work.author ? 0 : undefined}
-                            aria-label={work.author ? `复制作者 ${work.author}` : undefined}
-                            onClick={
-                              work.author
-                                ? (event) => {
-                                    event.stopPropagation()
-                                    copyAuthor(work.author)
-                                  }
-                                : undefined
-                            }
-                            onKeyDown={
-                              work.author
-                                ? (event) => {
-                                    if (event.key === 'Enter' || event.key === ' ') {
-                                      event.preventDefault()
-                                      event.stopPropagation()
-                                      copyAuthor(work.author)
-                                    }
-                                  }
-                                : undefined
-                            }
-                          >
-                            @{work.author || '未知作者'}
-                          </span>
+                          <AuthorName
+                            author={work.author}
+                            authorId={work.authorId ?? null}
+                            workId={work.id}
+                            accountId={account?.id ?? null}
+                            openAuthor={openAuthor}
+                            copyAuthor={copyAuthor}
+                          />
                           <time>
                             {work.publishedAt
                               ? new Date(work.publishedAt * 1000).toLocaleDateString('zh-CN')

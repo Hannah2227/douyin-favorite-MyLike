@@ -85,7 +85,9 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
           </button>
         ))}
       </div>
-      <p className="task-note">记录关键异常、采集确认结束与批量扫描结果，5 分钟内同原因合并，最多保留 300 条。</p>
+      <p className="task-note">
+        记录关键异常、采集确认结束与批量扫描结果，5 分钟内同原因合并，最多保留 300 条。
+      </p>
       {events.length ? (
         <ul className="history" aria-label="运行记录">
           {events.map((event) => (
@@ -101,7 +103,7 @@ export function RuntimeHistory({ accountId, revision }: { accountId: string | nu
               </time>
               <div>
                 <span>
-                  {event.kind === 'request' && event.operation
+                  {(event.kind === 'request' || event.operation === 'aiClassify') && event.operation
                     ? `${operationLabels[event.operation] ?? event.operation}：`
                     : ''}
                   {eventMessage(event)}

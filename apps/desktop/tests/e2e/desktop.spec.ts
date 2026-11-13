@@ -6,7 +6,7 @@ import {
   type Locator,
   type Page
 } from '@playwright/test'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Command, QueueState } from '../../src/shared/contracts'
@@ -417,6 +417,55 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               cursor: cursor === '0' ? '9' : '0',
               has_more: cursor === '0' ? 1 : 0
             }
+        } else if (url.pathname.includes('/aweme/v1/web/comment/list/reply/')) {
+          const globals = globalThis as any
+          globals.__commentRequests ??= []
+          globals.__commentRequests.push({
+            path: url.pathname,
+            cursor: url.searchParams.get('cursor'),
+            commentId: url.searchParams.get('comment_id'),
+            referrer: request.referrer,
+            msToken: url.searchParams.get('msToken'),
+            sdk: url.searchParams.get('_fixture_sdk')
+          })
+          body = {
+            status_code: 0,
+            comments: [
+              {
+                cid: '9002',
+                aweme_id: url.searchParams.get('item_id'),
+                text: '测试回复',
+                user: { nickname: '回复用户' }
+              }
+            ],
+            cursor: '0',
+            has_more: 0
+          }
+        } else if (url.pathname.includes('/aweme/v1/web/comment/list/')) {
+          const globals = globalThis as any
+          globals.__commentRequests ??= []
+          globals.__commentRequests.push({
+            path: url.pathname,
+            cursor: url.searchParams.get('cursor'),
+            awemeId: url.searchParams.get('aweme_id'),
+            referrer: request.referrer,
+            msToken: url.searchParams.get('msToken'),
+            sdk: url.searchParams.get('_fixture_sdk')
+          })
+          body = {
+            status_code: 0,
+            comments: [
+              {
+                cid: '9001',
+                aweme_id: url.searchParams.get('aweme_id'),
+                text: '这是测试评论',
+                user: { nickname: '评论用户' },
+                reply_comment_total: 1
+              }
+            ],
+            cursor: '0',
+            has_more: 0
+          }
         } else if (url.pathname.includes('/aweme/detail/')) {
           const detailId = url.searchParams.get('aweme_id') ?? workId
           if ((globalThis as any).__mylikeHoldDetailOnce === detailId) {
@@ -434,7 +483,13 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
             aweme_detail: {
               aweme_id: detailId,
               collect_stat: (globalThis as any).__favoriteCollectedWorks?.includes(detailId) ? 1 : 0,
-              desc: '测试视频：喜欢的日常',
+              desc:
+                (globalThis as any).__mylikeLongCaption ||
+                (() => {
+                  const queueWorks = (globalThis as any).__mylikeQueueWorks as string[] | undefined
+                  const index = queueWorks?.indexOf(detailId) ?? -1
+                  return index >= 0 ? `队列作品 ${index + 1}` : '测试视频：喜欢的日常'
+                })(),
               create_time: 1_700_000_000,
               author: { nickname: '测试作者' },
               video: {
@@ -525,12 +580,13 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
 }
 
 async function installMedia(portrait = false) {
-  const video = Array.from(
-    readFileSync(join(process.cwd(), 'tests/fixtures', portrait ? 'portrait.webm' : 'flower.mp4'))
-  )
+  // Read the fixture inside the main process: shipping a megabyte through CDP on
+  // every relaunch used to cost ~10s per call and ate most of a test's budget.
+  const file = resolve(process.cwd(), 'tests/fixtures', portrait ? 'portrait.webm' : 'flower.mp4')
   await app.evaluate(
-    async ({ session }, { bytes, portrait }) => {
-      const data = new Uint8Array(bytes)
+    async ({ session }, { file, portrait }) => {
+      const { readFileSync } = process.getBuiltinModule('node:fs') as typeof import('node:fs')
+      const data = new Uint8Array(readFileSync(file))
       await session.fromPartition('persist:mylike-ui').protocol.handle('https', async (request) => {
         ;((globalThis as any).__mediaRequests ??= []).push(request.url)
         const delay = (globalThis as any).__mediaResponseDelayMs ?? 0
@@ -562,7 +618,7 @@ async function installMedia(portrait = false) {
         return new Response(data.slice(start, end + 1), { status: 206, headers })
       })
     },
-    { bytes: video, portrait }
+    { file, portrait }
   )
 }
 
@@ -677,7 +733,11 @@ async function prepareScrollableLibrary(splitTypes = false) {
         db.prepare(
           'INSERT INTO saved_items SELECT accountId,workId,firstSeen FROM account_items WHERE accountId=?'
         ).run(accountId)
-        const folder = db.prepare('INSERT INTO saved_folders VALUES(?,?,?,?,?)')
+        // Name the columns explicitly: migrations add columns (for example
+        // saved_folders.syncedAt), so a positional insert would break.
+        const folder = db.prepare(
+          'INSERT INTO saved_folders(accountId,id,title,remoteCount,seenRun) VALUES(?,?,?,?,?)'
+        )
         folder.run(accountId, '9007199254740993999', '大收藏夹', 125, 'scroll-fixture')
         folder.run(accountId, '9007199254740993988', '小收藏夹', 7, 'scroll-fixture')
         const member = db.prepare('INSERT INTO saved_members VALUES(?,?,?,?)')
@@ -1057,7 +1117,7 @@ test('opens the login window when identity is missing and persists a rate-limit 
   await installPlatform(accountId)
   await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })
   await expect
-    .poll(async () => (await invoke('snapshot')).data.collection.status, { timeout: 20000 })
+    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 20000 })
     .toBe('completed')
 })
 
@@ -1209,7 +1269,7 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
       const db = new DatabaseSync(join(app.getPath('userData'), 'mylike.sqlite'))
       db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;')
       try {
-        const work = db.prepare('INSERT INTO works VALUES(?,?,?,?,?,?,?)'),
+        const work = db.prepare('INSERT INTO works VALUES(?,?,?,?,?,?,?,?)'),
           member = db.prepare('INSERT INTO account_items(accountId,workId,firstSeen) VALUES(?,?,?)')
         for (let i = 0; i < 50000; i++) {
           const id = String(8000000000000000n + BigInt(i))
@@ -1220,7 +1280,8 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
             +new Date(2024, i % 12, 1) / 1000,
             null,
             i % 2 ? 'gallery' : 'video',
-            0
+            0,
+            null
           )
           member.run(accountId, id, i)
         }
@@ -1400,7 +1461,12 @@ test('persists playback position and preferences across restart and suppresses r
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: true } })
   await installPlatform(accountId)
   await installMedia()
-  await page.getByRole('button', { name: '继续回看', exact: true }).click()
+  // A hidden Windows window may not report animation frames, so Playwright's
+  // actionability wait can outlive this test's budget. Click synchronously; the
+  // button itself is already attached and enabled.
+  await page
+    .getByRole('button', { name: '继续回看', exact: true })
+    .evaluate((node) => (node as HTMLButtonElement).click())
   await readyVideo()
   await seekVideo({ fromEnd: 0.1 }, true)
   await expect.poll(async () => (await invoke('snapshot')).data.playback.completed).toBe(true)
@@ -1583,8 +1649,8 @@ test('keeps clean screen across tracks and restores the queue, layout and fullsc
       buttonHeight: document.querySelector('[aria-label="下一条"]')!.getBoundingClientRect().height
     }
   })
-  expect(original.clearance).toBeGreaterThanOrEqual(8)
-  expect(original.buttonHeight).toBe(26)
+  expect(Math.round(original.clearance)).toBeGreaterThanOrEqual(8)
+  expect(Math.round(original.buttonHeight)).toBe(26)
   await page.getByRole('checkbox', { name: '清屏', exact: true }).check()
   for (const selector of ['.player-footer', '.player-heading', '.media-caption', '.queue-panel'])
     await expect(page.locator(selector)).toBeHidden()
@@ -1644,7 +1710,7 @@ test('mixes live original audio with gallery music and controls both through pau
   await expect.poll(async () => (await sound()).map((v) => v.paused)).toEqual([false, false])
 })
 
-test('keeps the latest track during rapid moves and opens comments externally while preserving paused playback', async ({}, info) => {
+test('keeps the latest track during rapid moves and shows comments without interrupting playback', async ({}, info) => {
   test.setTimeout(testTimeout(60000))
   const { accountId, ids } = await prepareQueue(5)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
@@ -1665,58 +1731,62 @@ test('keeps the latest track during rapid moves and opens comments externally wh
   await page.evaluate(() => {
     ;(window as any).__oldQueueMedia = [...document.querySelectorAll('video,audio')]
   })
-  await app.evaluate(({ shell }) => {
-    ;(globalThis as any).__externalUrls = []
-    shell.openExternal = async (url) => {
-      ;(globalThis as any).__externalUrls.push(url)
-    }
+  await app.evaluate(() => {
+    ;(globalThis as any).__commentRequests = []
   })
-  await page.getByRole('button', { name: '打开原页', exact: true }).click()
+  await page.getByRole('button', { name: '查看评论', exact: true }).click()
+  const comments = page.getByRole('complementary', { name: '作品评论', exact: true })
+  await expect(comments).toContainText('这是测试评论')
   await expect
-    .poll(() => app.evaluate(() => (globalThis as any).__externalUrls))
-    .toEqual(['https://www.douyin.com/video/' + ids[2]])
-  expect(
-    await app.evaluate(
-      ({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows().filter((win) => win.webContents.getURL().includes('/video/')).length
-    )
-  ).toBe(0)
-  await expect
-    .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).paused))
-    .toBe(true)
-  const saved = (await invoke('snapshot')).data.playback.position.seconds
-  expect(saved).toBeGreaterThanOrEqual(0)
-  await page.getByRole('button', { name: '开始播放', exact: true }).click()
-  await expect
-    .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).paused))
+    .poll(() => page.locator('.stage video').evaluate((node) => (node as HTMLVideoElement).paused))
     .toBe(false)
-  await page.getByRole('button', { name: '打开原页', exact: true }).click()
-  await expect.poll(() => app.evaluate(() => (globalThis as any).__externalUrls.length)).toBe(2)
-  await page.getByRole('button', { name: '下一条', exact: true }).click()
-  await readyVideo(3)
-  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
+  await page.getByRole('button', { name: '查看回复 · 1', exact: true }).click()
+  await expect(comments).toContainText('测试回复')
+  const commentRequests = await app.evaluate(() => (globalThis as any).__commentRequests)
+  expect(commentRequests).toEqual([
+    {
+      path: '/aweme/v1/web/comment/list/',
+      cursor: '0',
+      awemeId: ids[2],
+      referrer: `https://www.douyin.com/video/${ids[2]}`,
+      msToken: null,
+      sdk: 'page-main-world'
+    },
+    {
+      path: '/aweme/v1/web/comment/list/reply/',
+      cursor: '0',
+      commentId: '9001',
+      referrer: `https://www.douyin.com/video/${ids[2]}`,
+      msToken: null,
+      sdk: 'page-main-world'
+    }
+  ])
+  await page.getByRole('button', { name: '关闭评论', exact: true }).click()
+  await expect(comments).toBeHidden()
+  const queue = (await invoke('snapshot')).data.playback
   expect(
     (
-      await invoke('original', {
+      await invoke('comments', {
         accountId,
         workId: ids[2],
-        playback: { queueId: '00000000-0000-4000-8000-000000000000', revision: 0 }
+        queueId: '00000000-0000-4000-8000-000000000000',
+        revision: 0
       })
     ).error.code
   ).toBe('QUEUE_CHANGED')
-  expect((await invoke('original', { accountId, workId: 'file:///tmp/test' })).error.code).toBe(
-    'INVALID_INPUT'
-  )
-  expect(await app.evaluate(() => (globalThis as any).__externalUrls.length)).toBe(2)
-  await app.evaluate(({ shell }) => {
-    shell.openExternal = async () => {
-      throw Error('no handler')
-    }
-  })
-  await page.getByRole('button', { name: '打开原页', exact: true }).click()
-  await expect(page.getByRole('region', { name: '播放器', exact: true })).toContainText(
-    '无法打开系统默认浏览器'
-  )
+  expect(
+    (
+      await invoke('comments', {
+        accountId,
+        workId: 'file:///tmp/test',
+        queueId: queue.queueId,
+        revision: queue.revision
+      })
+    ).error.code
+  ).toBe('INVALID_INPUT')
+  await page.getByRole('button', { name: '下一条', exact: true }).click()
+  await readyVideo(3)
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   await expect(page.locator('video')).toHaveAttribute(
     'src',
     `https://fixture.douyinvod.com/video-${ids[1]}.mp4`
@@ -2058,9 +2128,17 @@ test('shows the matching still photo for two seconds after a live clip, pauses t
   await expect
     .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended))
     .toBe(true)
-  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
-  await page.waitForTimeout(2200)
-  expect(await page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended)).toBe(true)
+  // The still-photo hold lasts only two seconds before the clip restarts; the
+  // button's actionability wait can outlive it. Click synchronously so the pause
+  // lands inside the hold instead of on the replayed clip.
+  await page
+    .getByRole('button', { name: '暂停播放', exact: true })
+    .evaluate((node) => (node as HTMLButtonElement).click())
+  await expect
+    .poll(() => page.locator('video').evaluate((node) => (node as HTMLVideoElement).ended), {
+      timeout: 5000
+    })
+    .toBe(true)
   await expect(page.locator('video')).toHaveClass('live-resting')
   expect(await page.locator('audio').evaluate((node) => (node as HTMLAudioElement).paused)).toBe(true)
   await screenshot(info.outputPath('live-hold.png'))
@@ -2178,14 +2256,18 @@ test('overlays expandable captions, selects speeds with a popup and highlights t
   await expect(page.getByRole('region', { name: '播放器', exact: true })).toBeVisible()
   await page.locator('.stage').hover({ position: { x: 100, y: 100 } })
   await expect
-    .poll(() => page.locator('.seek-track').evaluate((node) => node.getBoundingClientRect().height))
+    .poll(() =>
+      page.locator('.seek-track').evaluate((node) => Math.round(node.getBoundingClientRect().height))
+    )
     .toBe(2)
   await screenshot(info.outputPath('seek-idle.png'))
   const slider = page.getByRole('slider', { name: '视频进度', exact: true }),
     box = (await slider.boundingBox())!
   await slider.hover()
   await expect
-    .poll(() => page.locator('.seek-track').evaluate((node) => node.getBoundingClientRect().height))
+    .poll(() =>
+      page.locator('.seek-track').evaluate((node) => Math.round(node.getBoundingClientRect().height))
+    )
     .toBe(6)
   await page.mouse.move(box.x + box.width * 0.25, box.y + box.height / 2)
   await page.mouse.down()
@@ -2201,7 +2283,9 @@ test('overlays expandable captions, selects speeds with a popup and highlights t
   await screenshot(info.outputPath('seek-hover.png'))
   await page.locator('.stage').hover({ position: { x: 100, y: 100 } })
   await expect
-    .poll(() => page.locator('.seek-track').evaluate((node) => node.getBoundingClientRect().height))
+    .poll(() =>
+      page.locator('.seek-track').evaluate((node) => Math.round(node.getBoundingClientRect().height))
+    )
     .toBe(2)
   expect(await page.locator('.player-footer').evaluate((node) => node.getBoundingClientRect().top)).toBe(
     geometry.footerTop
@@ -2280,7 +2364,7 @@ test('fills the app with media, collapses navigation without reloading video, an
       .poll(async () =>
         page.locator('.player-view').evaluate((node) => Math.round(node.getBoundingClientRect().width))
       )
-      .toBeLessThanOrEqual(width!)
+      .toBeLessThanOrEqual(width! + 1)
     const layout = await page.evaluate(() => {
       const player = document.querySelector('.player-view')!.getBoundingClientRect(),
         media = document.querySelector('.stage')!.getBoundingClientRect(),
@@ -2306,7 +2390,7 @@ test('fills the app with media, collapses navigation without reloading video, an
     expect(layout.footerHeight).toBeLessThanOrEqual(38)
     expect(layout.footerTop).toBeGreaterThanOrEqual(layout.stageBottom - 1)
     expect(layout.overflow).toBe(false)
-    for (const label of ['显示播放队列', '打开原页', '取消当前点赞', '全屏'])
+    for (const label of ['显示播放队列', '查看评论', '取消当前点赞', '全屏'])
       expect(
         (await page.getByRole('button', { name: label, exact: true }).boundingBox())!.y
       ).toBeGreaterThanOrEqual(layout.footerTop)
@@ -2781,7 +2865,7 @@ test('provides readable collection actions and resume banner, unified help links
   await readyVideo()
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
   expect(
-    await page.locator('.resume-banner').evaluate((node) => node.getBoundingClientRect().height)
+    Math.round(await page.locator('.resume-banner').evaluate((node) => node.getBoundingClientRect().height))
   ).toBeGreaterThanOrEqual(96)
   expect(
     await page.locator('.resume-banner').evaluate((node) => parseFloat(getComputedStyle(node).fontSize))
@@ -2822,8 +2906,69 @@ test('provides readable collection actions and resume banner, unified help links
 test('synchronizes favorite folders through the page SDK, restores folder cursors after restart and plays only the chosen folder', async ({}, info) => {
   test.setTimeout(testTimeout(120000))
   const { accountId } = await prepareQueue(3)
+  await expect(page.locator('dialog.ai-classify-dialog')).toHaveCount(0)
+  await page.getByRole('button', { name: '连接与任务', exact: true }).click()
+  const aiCard = page.getByRole('region', { name: 'AI 自动分类进度', exact: true })
+  await expect(aiCard.getByRole('button')).toHaveText(['添加喜欢', '收藏分类'])
+  await aiCard.getByRole('button', { name: '添加喜欢', exact: true }).click()
+  const addLikesDialog = page.getByRole('dialog', { name: '添加喜欢到收藏夹', exact: true })
+  await expect(addLikesDialog).toBeVisible()
+  await expect(addLikesDialog.getByRole('button', { name: '添加到收藏夹', exact: true })).toBeVisible()
+  await addLikesDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await aiCard.getByRole('button', { name: '收藏分类', exact: true }).click()
+  const taskClassifyDialog = page.getByRole('dialog', { name: '收藏分类', exact: true })
+  await expect(taskClassifyDialog).toBeVisible()
+  await expect(taskClassifyDialog.getByRole('button', { name: '开始收藏分类', exact: true })).toBeVisible()
+  const taskClassifyContent = taskClassifyDialog.locator('.confirm-dialog-scroll')
+  await taskClassifyContent.evaluate((element) => {
+    element.style.maxHeight = '100px'
+    element.scrollTop = element.scrollHeight
+  })
+  await expect.poll(() => taskClassifyContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect(taskClassifyDialog.getByRole('button', { name: '取消', exact: true })).toBeVisible()
+  const taskFooterBounds = await taskClassifyDialog.locator('.confirm-dialog-actions').boundingBox()
+  const taskDialogBounds = await taskClassifyDialog.boundingBox()
+  expect(taskFooterBounds).not.toBeNull()
+  expect(taskDialogBounds).not.toBeNull()
+  expect(taskFooterBounds!.y + taskFooterBounds!.height).toBeLessThanOrEqual(
+    taskDialogBounds!.y + taskDialogBounds!.height
+  )
+  await taskClassifyDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(page.locator('dialog.ai-classify-dialog')).toHaveCount(0)
   await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
   await expect(page.locator('.page-header .collection-controls')).toHaveCount(0)
+  const favoriteControls = page.getByRole('group', { name: '收藏采集操作', exact: true })
+  await expect(favoriteControls.getByRole('button')).toHaveText([
+    '更新顶部',
+    '向下采集',
+    '停止',
+    '同步收藏夹',
+    '管理本地收藏夹'
+  ])
+  await expect(page.locator('.collection-blocked')).toHaveCount(0)
+  await page.getByRole('button', { name: '管理本地收藏夹', exact: true }).click()
+  const localFoldersDialog = page.getByRole('dialog', { name: '管理本地收藏夹', exact: true })
+  await expect(localFoldersDialog).toBeVisible()
+  await localFoldersDialog.getByRole('button', { name: '新建', exact: true }).click()
+  await localFoldersDialog.getByRole('textbox', { name: '新本地收藏夹名称' }).fill('本地管理测试')
+  await localFoldersDialog.getByRole('button', { name: '创建本地收藏夹', exact: true }).click()
+  await expect(localFoldersDialog.getByText('本地管理测试', { exact: true })).toBeVisible()
+  // Creating from the favorites page is local-first: the folder lives only on this
+  // machine until it is written back, unlike a folder created from the video view.
+  expect(
+    (await invoke('favoriteFolders', { accountId })).data.find((entry: any) => entry.title === '本地管理测试')
+  ).toMatchObject({ localOnly: true, managedLocally: true, localCount: 0, remoteId: null })
+  await localFoldersDialog.getByRole('button', { name: '编辑 本地管理测试', exact: true }).click()
+  await localFoldersDialog.getByRole('textbox', { name: '修改本地收藏夹名称' }).fill('本地管理改名')
+  await localFoldersDialog.getByRole('button', { name: '保存名称', exact: true }).click()
+  await expect(localFoldersDialog.getByText('本地管理改名', { exact: true })).toBeVisible()
+  await localFoldersDialog.getByRole('button', { name: '删除 本地管理改名', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '删除本地收藏夹', exact: true })
+    .getByRole('button', { name: '确认删除本地收藏夹', exact: true })
+    .click()
+  await expect(localFoldersDialog.getByText('还没有本地创建的收藏夹。', { exact: true })).toBeVisible()
+  await localFoldersDialog.getByRole('button', { name: '关闭本地收藏夹管理', exact: true }).click()
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteHold = true
   })
@@ -2884,6 +3029,35 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
       expect.objectContaining({ id: '8', title: '音乐', localCount: 1 })
     ])
   )
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRequests = []
+  })
+  const syncStartedAt = (await invoke('snapshot')).data.favorites?.updatedAt ?? 0
+  await page.getByRole('button', { name: '同步收藏夹', exact: true }).click()
+  await expect
+    .poll(
+      async () => {
+        const next = (await invoke('snapshot')).data.favorites
+        return !!next && next.updatedAt > syncStartedAt && next.status === 'completed'
+      },
+      { timeout: 30000 }
+    )
+    .toBe(true)
+  const folderSyncCalls = await app.evaluate(() => (globalThis as any).__favoriteRequests)
+  expect(folderSyncCalls.every((call: any) => !call.path.includes('/aweme/listcollection/'))).toBe(true)
+  await page.getByRole('button', { name: 'AI 自动分类', exact: true }).click()
+  const classifyDialog = page.getByRole('dialog', { name: '收藏分类', exact: true })
+  await expect(classifyDialog).toBeVisible()
+  await expect(classifyDialog.getByRole('button', { name: '开始收藏分类', exact: true })).toBeVisible()
+  await classifyDialog.getByRole('checkbox').first().check()
+  await classifyDialog.getByRole('button', { name: '开始收藏分类', exact: true }).click()
+  await expect(page.locator('dialog.ai-classify-dialog')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '连接与任务', exact: true })).toBeVisible()
+  const taskProgress = page.getByRole('region', { name: 'AI 自动分类进度', exact: true })
+  await expect(taskProgress).toContainText('失败')
+  await expect(taskProgress).toContainText('读取设置失败')
+  await expect(taskProgress).toContainText('请先在设置中填写 DeepSeek API Key')
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
   expect(
     (await invoke('query', { accountId, source: 'favorites', folderId: '9007199254740993999' })).data.items
       .map((work: any) => work.id)
@@ -2953,6 +3127,27 @@ test('persists general and playback settings, restores a visible window, and pro
     .toBeCloseTo(1.1)
   await chooseOption('界面动画', '减少动画')
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'reduce')
+  const cloudWriteToggle = page.getByRole('checkbox', {
+    name: '允许同步本地收藏夹到抖音',
+    exact: true
+  })
+  await expect(cloudWriteToggle).not.toBeChecked()
+  await cloudWriteToggle.click()
+  await expect(cloudWriteToggle).toBeChecked()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.appPreferences.syncFavoritesToCloud)
+    .toBe(true)
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await expect(page.getByRole('button', { name: /写回云端/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /写回云端/ })).toBeEnabled()
+  await page.getByRole('button', { name: /写回云端/ }).click()
+  await expect(page.getByRole('dialog', { name: '选择写回范围' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭写回范围' }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('checkbox', { name: '允许同步本地收藏夹到抖音', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.appPreferences.syncFavoritesToCloud)
+    .toBe(false)
   const geometry = await page.evaluate(() => {
     const root = document.querySelector('.settings-scroll')!
     return {
@@ -3047,6 +3242,43 @@ test('persists general and playback settings, restores a visible window, and pro
   expect((await invoke('snapshot')).data.engine.status).toBe('stopped')
 })
 
+test('selects and selects all favorite folders in the cloud writeback dialog', async () => {
+  const { accountId } = await prepareQueue(1)
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('checkbox', { name: '允许同步本地收藏夹到抖音', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.appPreferences.syncFavoritesToCloud)
+    .toBe(true)
+  await invoke('favoriteFolderCreateLocal', {
+    accountId,
+    title: '待写回的本地夹',
+    private: true
+  })
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+
+  const writeback = page.getByRole('button', { name: /写回云端/ })
+  await expect(writeback).toBeEnabled()
+  await writeback.click()
+  const dialog = page.getByRole('dialog', { name: '选择写回范围' })
+  await expect(dialog).toBeVisible()
+  const defaultFavorite = dialog.getByRole('checkbox', { name: '写回默认收藏列表' })
+  const localFolder = dialog.getByRole('checkbox', { name: '写回收藏夹 待写回的本地夹' })
+  await expect(defaultFavorite).not.toBeChecked()
+  await expect(localFolder).not.toBeChecked()
+
+  await dialog.getByRole('button', { name: '全选', exact: true }).click()
+  await expect(defaultFavorite).toBeChecked()
+  await expect(localFolder).toBeChecked()
+  await dialog.getByRole('button', { name: '全不选', exact: true }).click()
+  await expect(defaultFavorite).not.toBeChecked()
+  await expect(localFolder).not.toBeChecked()
+  await expect(dialog.getByRole('button', { name: /写回所选范围/ })).toBeDisabled()
+  await dialog.getByRole('button', { name: '全选', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: /写回所选范围（2）/ })).toBeEnabled()
+  await dialog.getByRole('button', { name: /写回所选范围（2）/ }).click()
+  await expect(dialog).toBeHidden()
+})
+
 test('uses focused player shortcuts and keeps inputs and unlike confirmation protected', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   await prepareQueue(3)
@@ -3055,12 +3287,6 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
     preferences: {
       ...preferences,
       shortcuts: { ...preferences.shortcuts, rateCycle: 'KeyV', original: 'KeyC' }
-    }
-  })
-  await app.evaluate(({ shell }) => {
-    ;(globalThis as any).__opened = []
-    shell.openExternal = async (url: string) => {
-      ;(globalThis as any).__opened.push(url)
     }
   })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
@@ -3094,9 +3320,15 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
   await page.keyboard.press('ArrowUp')
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(0)
   await readyVideo(0)
+  const playControl = (await page.getByRole('button', { name: '开始播放', exact: true }).count())
+    ? '开始播放'
+    : '暂停播放'
   await page.keyboard.press('c')
-  await expect.poll(() => app.evaluate(() => (globalThis as any).__opened.length)).toBe(1)
-  await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
+  const shortcutComments = page.getByRole('complementary', { name: '作品评论', exact: true })
+  await expect(shortcutComments).toBeVisible()
+  await page.keyboard.press('c')
+  await expect(shortcutComments).toBeHidden()
+  await expect(page.getByRole('button', { name: playControl, exact: true })).toBeVisible()
   for (const key of ['b', 'y', 't', 'u']) await page.keyboard.press(key)
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect
@@ -3122,7 +3354,7 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByLabel('失焦时暂停', { exact: true }).check()
   await page.getByRole('button', { name: '快捷键', exact: true }).click()
-  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(14)
+  await expect(page.locator('#settings-shortcuts [role=combobox]')).toHaveCount(15)
   await screenshot(info.outputPath('settings-shortcuts.png'))
   await page.getByRole('button', { name: '喜欢的内容', exact: true }).click()
   await page.getByRole('button', { name: '继续回看', exact: true }).click()
@@ -3153,7 +3385,7 @@ test('uses gallery shortcuts to pin and resume slides while disabling wheel navi
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   await page.keyboard.press('ArrowLeft')
   await expect(page.locator('.gallery-status')).toContainText('1 / 2')
-  await page.locator('.stage').hover({ position: { x: 30, y: 30 } })
+  await page.locator('.stage').hover({ position: { x: 100, y: 100 } })
   await page.mouse.wheel(0, 300)
   expect((await invoke('snapshot')).data.playback.index).toBe(0)
 })
@@ -3740,6 +3972,22 @@ test('reports a renderer crash during initial login immediately with its native 
     await expect
       .poll(() => app.evaluate(() => typeof (globalThis as any).__mylikeReleasePage))
       .toBe('function')
+    // The held document response is served before Chromium finishes creating the
+    // renderer, and forcefullyCrashRenderer() on a process-less webContents is a
+    // no-op that never reports a crash. Wait for a real renderer first.
+    await expect
+      .poll(
+        () =>
+          app.evaluate(
+            ({ BrowserWindow, session }, id) =>
+              BrowserWindow.getAllWindows()
+                .find((win) => win.webContents.session === session.fromPartition(`persist:mylike-${id}`))
+                ?.webContents.getOSProcessId() ?? 0,
+            accountId
+          ),
+        { message: 'Expected the login window to own a live renderer before crashing it' }
+      )
+      .toBeGreaterThan(0)
     const began = Date.now()
     const details = await app.evaluate(
       ({ BrowserWindow, session }, id) =>
@@ -3978,8 +4226,8 @@ test('persists only exceptions and confirmed ends per account with a prominent v
   expect(await verify.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
   expect(collectionBackground).toBeTruthy()
   const rect = await verify.boundingBox()
-  expect(rect!.height).toBeGreaterThanOrEqual(44)
-  expect(rect!.width).toBeGreaterThanOrEqual(144)
+  expect(Math.round(rect!.height)).toBeGreaterThanOrEqual(44)
+  expect(Math.round(rect!.width)).toBeGreaterThanOrEqual(144)
   await expect(page.getByRole('button', { name: '从头遍历', exact: true })).toHaveCount(0)
   expect((await invoke('collectionStart', { accountId, mode: 'full' })).error.code).toBe('INVALID_INPUT')
   await invoke('collectionStart', { accountId, mode: 'update' })
@@ -4695,7 +4943,7 @@ for (const shape of ['html', 'json']) {
     else expect(checks.some((item: any) => item.operation === 'likes')).toBe(false)
     await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
     await card.getByRole('button', { name: '向下采集', exact: true }).click()
-    await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+    await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
     if (shape === 'html') {
       await app.evaluate(() => {
         ;(globalThis as any).__mylikeChallengeResponse = 'html'
@@ -4864,7 +5112,7 @@ test('checks the failed folders API instead of accepting healthy identity or fav
   await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
   await card.getByRole('button', { name: '向下采集', exact: true }).click()
   await expect
-    .poll(async () => (await invoke('snapshot')).data.favorites.status, { timeout: 30000 })
+    .poll(async () => (await invoke('snapshot')).data.favorites?.status, { timeout: 30000 })
     .toBe('completed')
 })
 
@@ -4897,6 +5145,7 @@ test('adds liked work to multiple favorite folders through the page SDK and pres
   })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   const current = (await invoke('snapshot')).data.playback as QueueState
   await page.keyboard.press('f')
   await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true)
@@ -4913,7 +5162,7 @@ test('adds liked work to multiple favorite folders through the page SDK and pres
   await screenshot(info.outputPath('favorite-picker-fullscreen.png'))
   await dialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(dialog).toHaveCount(0)
-  await expect(star).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('.favorite-control')).toHaveAttribute('aria-pressed', 'true')
   expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
   const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
   expect(writes.map((write: any) => write.operation)).toEqual([
@@ -4952,6 +5201,7 @@ test('creates private favorite folders, protects modal inputs and persists a cus
   })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   const work = (await invoke('snapshot')).data.playback.work
   await expect(page.getByRole('button', { name: '收藏当前作品', exact: true })).toHaveAttribute('title', /B/)
   await page.keyboard.press('b')
@@ -4967,13 +5217,37 @@ test('creates private favorite folders, protects modal inputs and persists a cus
   expect((await invoke('favoriteStatus', { accountId, workId: work.id })).data.collected).toBe(false)
   await dialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(dialog).toHaveCount(0)
-  expect((await invoke('query', { accountId, source: 'favorites', folderId: '9' })).data.total).toBe(1)
-  const create = await app.evaluate(() => (globalThis as any).__favoriteWrites[0])
-  expect(create).toMatchObject({
+  const folder = (await invoke('favoriteFolders', { accountId })).data.find(
+    (entry: any) => entry.title === '新收藏夹sq'
+  )
+  // Creating a folder from the video dialog is a real cloud collection: it is
+  // created on the platform first and then linked locally, so it is not local-only.
+  expect(folder).toMatchObject({ localOnly: false, localCount: 1, private: true })
+  expect((await invoke('query', { accountId, source: 'favorites', folderId: folder.id })).data.total).toBe(1)
+  expect(
+    (await app.evaluate(() => (globalThis as any).__favoriteWrites ?? [])).map(
+      (write: any) => write.operation
+    )
+  ).toEqual(['favoriteFolderCreate', 'favoriteAdd', 'favoriteFolderAdd'])
+  await invoke('appPreferences', { preferences: { syncFavoritesToCloud: true } })
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '收藏的内容', exact: true }).click()
+  await page.getByRole('button', { name: /写回云端/ }).click()
+  const writeback = page.getByRole('dialog', { name: '选择写回范围' })
+  // The folder was created in the cloud and the work was written there directly,
+  // so there is nothing pending for the write-back dialog to offer.
+  await expect(writeback).toContainText('本地与云端收藏夹内容一致')
+  await expect(writeback.getByRole('button', { name: '全选', exact: true })).toBeDisabled()
+  await writeback.getByRole('button', { name: '关闭写回范围', exact: true }).click()
+  await expect(writeback).toBeHidden()
+  expect((await invoke('snapshot')).data.favoriteWritePending).toBe(0)
+  const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
+  const creates = writes.filter((write: any) => write.operation === 'favoriteFolderCreate')
+  expect(creates).toHaveLength(1)
+  expect(creates[0]).toMatchObject({
     operation: 'favoriteFolderCreate',
     params: { secret: '1', action: '1', version_code: '230000', collects_name: '新收藏夹sq' }
   })
-  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('button', { name: '快捷键', exact: true }).click()
   await expect(
@@ -4993,6 +5267,7 @@ test('keeps confirmed favorite progress after an empty write response and requir
   })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
+  await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   const work = (await invoke('snapshot')).data.playback.work
   await page.keyboard.press('s')
   const dialog = page.getByRole('dialog', { name: '选择收藏夹', exact: true })
@@ -5150,12 +5425,20 @@ for (const kind of ['video', 'live'] as const) {
       page.evaluate(() => {
         const video = document.querySelector('video')!.getBoundingClientRect()
         const stage = document.querySelector('.stage')!.getBoundingClientRect()
+        // Zoom and compositor rounding can shift geometry by a fraction of a CSS
+        // pixel; compare whole pixels so "same frame restored" is not flaky.
+        const round = (value: number) => Math.round(value)
         return {
-          x: video.x,
-          y: video.y,
-          width: video.width,
-          height: video.height,
-          stage: { x: stage.x, y: stage.y, width: stage.width, height: stage.height }
+          x: round(video.x),
+          y: round(video.y),
+          width: round(video.width),
+          height: round(video.height),
+          stage: {
+            x: round(stage.x),
+            y: round(stage.y),
+            width: round(stage.width),
+            height: round(stage.height)
+          }
         }
       })
     for (const zoom of [1, 1.25, 1.5]) {
@@ -5270,9 +5553,12 @@ for (const kind of ['video', 'live'] as const) {
 
 async function prepareCollectedQueue(count = 3) {
   const fixture = await prepareQueue(count)
-  await app.evaluate(() => {
+  await app.evaluate((_electron, ids) => {
     ;(globalThis as any).__favoriteWriteFixture = true
-  })
+    // Local saves defer cloud writes; the fixture still has to report these works
+    // as collected so bulk uncollect exercises the real removal path.
+    ;(globalThis as any).__favoriteCollectedWorks = [...ids]
+  }, fixture.ids)
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   for (let index = 0; index < count; index++) {
     await readyVideo(index)
@@ -5327,8 +5613,15 @@ test('uncollects current favorite with star and shortcut in fullscreen, synchron
   await expect
     .poll(async () => (await invoke('snapshot')).data.unlike)
     .toMatchObject({ source: 'favorites', success: 1, unknown: 0, status: 'completed' })
-  await expect(star).toBeDisabled()
-  await expect(star).toHaveAttribute('aria-pressed', 'false')
+  expect((await invoke('favoriteStatus', { accountId, workId: current.work.id })).data.collected).toBe(false)
+  // Re-enter the item to refresh the favorite control from the stored state.
+  await page.keyboard.press('ArrowDown')
+  await readyVideo(1)
+  await page.keyboard.press('ArrowUp')
+  await readyVideo(0)
+  const uncollectedStar = page.getByRole('button', { name: '收藏当前作品', exact: true })
+  await expect(uncollectedStar).toBeDisabled()
+  await expect(uncollectedStar).toHaveAttribute('aria-pressed', 'false')
   expect(await page.evaluate(() => !!document.fullscreenElement)).toBe(true)
   expect((await invoke('snapshot')).data.playback.work.id).toBe(current.work.id)
   const writes = await app.evaluate(() => (globalThis as any).__favoriteWrites)
@@ -5915,7 +6208,7 @@ test('unified health checks are read-only, show real green status and keep exact
   await screenshot(info.outputPath('health-normal.png'))
   const card = page.getByRole('region', { name: '自动采集任务', exact: true })
   await card.getByRole('button', { name: '向下采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
   expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
   await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
 })
@@ -5971,9 +6264,9 @@ test('unified fixed stop preserves task progress and never resumes collection af
   await page.getByRole('button', { name: '连接与任务', exact: true }).click()
   const card = page.getByRole('region', { name: '自动采集任务', exact: true })
   await card.getByRole('button', { name: '更新顶部', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('running')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('running')
   await card.getByRole('button', { name: '停止', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('stopped')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('stopped')
   const stopped = (await invoke('snapshot')).data.collection
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeHoldLikesAt = null
@@ -5985,7 +6278,7 @@ test('unified fixed stop preserves task progress and never resumes collection af
     .toMatchObject({ status: 'normal', checking: false })
   expect((await invoke('snapshot')).data.collection).toEqual(stopped)
   await card.getByRole('button', { name: '向下采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
   expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
 })
 

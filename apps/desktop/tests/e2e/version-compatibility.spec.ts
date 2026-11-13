@@ -41,14 +41,15 @@ test('opens the same library in released v2.0.2 and the new package, preserving 
       try {
         db.exec('PRAGMA foreign_keys=ON;BEGIN IMMEDIATE')
         for (const id of ['7381234567890123456', '7381234567890123457']) {
-          db.prepare('INSERT INTO works VALUES(?,?,?,?,?,?,?)').run(
+          db.prepare('INSERT INTO works VALUES(?,?,?,?,?,?,?,?)').run(
             id,
             `兼容作品 ${id.slice(-1)}`,
             '测试作者',
             1700000000,
             null,
             'video',
-            0
+            0,
+            null
           )
           db.prepare('INSERT INTO account_items VALUES(?,?,?,?)').run(accountId, id, Date.now(), 1)
           db.prepare('INSERT INTO saved_items VALUES(?,?,?)').run(accountId, id, Date.now())

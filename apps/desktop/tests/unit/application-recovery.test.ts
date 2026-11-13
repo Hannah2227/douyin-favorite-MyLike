@@ -71,6 +71,10 @@ function fixture(blocked: string) {
         return playbackPreferencesSchema.parse({})
       case 'appPreferences':
         return appPreferencesSchema.parse({})
+      case 'favoriteWriteOps':
+        return []
+      case 'favoriteWritePending':
+        return 0
       default:
         return null
     }

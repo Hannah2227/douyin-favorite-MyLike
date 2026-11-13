@@ -28,7 +28,12 @@ export function responseSummary(
         ? String(data.status_code)
         : ''
     const platformCode = /^-?\d{1,12}$/.test(rawCode) ? rawCode : undefined
-    const items = operation === 'folders' ? data.collects_list : data.aweme_list
+    const items =
+      operation === 'comments' || operation === 'commentReplies'
+        ? data.comments
+        : operation === 'folders'
+          ? data.collects_list
+          : data.aweme_list
     const fieldType = (value: unknown) =>
       value === undefined
         ? '缺失'

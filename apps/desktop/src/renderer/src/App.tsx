@@ -20,6 +20,7 @@ import { usePlaybackPreferences } from './usePlaybackPreferences'
 import { Dashboard } from './Dashboard'
 import { useOverview } from './useOverview'
 import { HelpPage } from './HelpPage'
+import { AiClassifyDialog, type AiClassificationSource } from './AiClassifyDialog'
 
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -27,9 +28,10 @@ export function App() {
   const [folderId, setFolderId] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const [operation, setOperation] = useState('')
-  const [textScanStatus, setTextScanStatus] = useState<'running' | 'completed' | undefined>()
+  const [textScanStatus, setTextScanStatus] = useState<'running' | 'completed' | 'stopped' | undefined>()
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [classificationSource, setClassificationSource] = useState<AiClassificationSource | null>(null)
   const [adding, setAdding] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const [name, setName] = useState('')
@@ -67,9 +69,11 @@ export function App() {
     setError,
     { source: 'favorites', folderId }
   )
-  const favoriteFolders = useFavoriteFolders(accountId, revision)
+  const favoriteFolders = useFavoriteFolders(accountId, revision, setError)
   const library = tab === 'favorites' ? favoritesLibrary : likesLibrary
-  useEffect(() => setFolderId(null), [accountId])
+  useEffect(() => {
+    setFolderId(null)
+  }, [accountId])
   useEffect(() => {
     if (
       favoriteFolders.loaded &&
@@ -88,11 +92,18 @@ export function App() {
     setTextScanStatus('running')
     void perform('扫描文字作品', async () => {
       const result = await call(window.mylike.invoke('scanTextWorks', { accountId, source }))
-      setNotice(`扫描完成：检查 ${result.scanned} 条，识别文字 ${result.text} 条，失败 ${result.failed} 条。`)
+      setNotice(
+        `扫描结束：尝试 ${result.scanned} 条，扫描成功 ${result.succeeded} 条，扫描失败 ${result.failed} 条，待稍后扫描 ${result.deferred} 条，识别文字 ${result.text} 条，新增文字 ${result.addedText} 条。`
+      )
     }).then((success) => {
       if (success) setTextScanStatus('completed')
-      else setTextScanStatus(undefined)
+      else setTextScanStatus((current) => (current === 'running' ? undefined : current))
     })
+  }
+  const stopTextScan = () => {
+    if (textScanStatus !== 'running') return
+    setTextScanStatus('stopped')
+    void perform('停止扫描', () => call(window.mylike.invoke('stopRequest', {})))
   }
   const collecting =
     snapshot?.collection?.status === 'running' ||
@@ -148,6 +159,11 @@ export function App() {
     const timer = setTimeout(() => setNotice(''), 8000)
     return () => clearTimeout(timer)
   }, [notice])
+  useEffect(() => {
+    if (!error) return
+    const timer = setTimeout(() => setError(''), 3000)
+    return () => clearTimeout(timer)
+  }, [error])
   async function perform(label: string, fn: () => Promise<unknown>) {
     setOperation(label)
     setError('')
@@ -164,12 +180,49 @@ export function App() {
       setOperation('')
     }
   }
+  const openClassification = (source: AiClassificationSource) => {
+    if (!accountId) return
+    void perform('核实收藏夹', async () => {
+      await favoriteFolders.refresh()
+      setClassificationSource(source)
+    })
+  }
   const login = () =>
     accountId &&
     void perform('打开抖音窗口', async () => {
       await call(window.mylike.invoke('login', { accountId }))
       setNotice('完成登录后，抖音窗口会自动收起。')
     })
+  const copyAuthor = (author: string) => {
+    void call(window.mylike.invoke('copyText', { text: author }))
+      .then(() => setNotice(`作者“${author}”已复制。`))
+      .catch((e) => setError(`复制作者失败：${e instanceof Error ? e.message : String(e)}`))
+  }
+  const openAuthor = (
+    authorId: string | null,
+    author: string,
+    workId: string,
+    targetAccountId: string | null
+  ) => {
+    void (async () => {
+      try {
+        let profileId = authorId
+        if (!profileId && targetAccountId) {
+          setNotice(`正在读取作者“${author}”的主页信息…`)
+          const media = await call(window.mylike.invoke('media', { accountId: targetAccountId, workId }))
+          profileId = media.work.authorId ?? null
+        }
+        if (!profileId) {
+          setNotice(`无法读取作者“${author}”的主页信息，请确认已登录抖音后重试。`)
+          return
+        }
+        await call(window.mylike.invoke('openAuthorProfile', { authorId: profileId }))
+        setNotice(`已打开作者“${author}”的主页。`)
+      } catch (e) {
+        setError(`打开作者主页失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    })()
+  }
   const probe = () => {
     if (!accountId) return
     setTab('tasks')
@@ -284,6 +337,17 @@ export function App() {
             </button>
           </div>
         )}
+        <AiClassifyDialog
+          accountId={accountId}
+          source={classificationSource}
+          folders={favoriteFolders.folders}
+          busy={busy}
+          perform={perform}
+          close={() => setClassificationSource(null)}
+          onStart={() => setTab('tasks')}
+          notice={setNotice}
+          aiPending={snapshot?.aiPendingAssignments}
+        />
         {tab === 'dashboard' && (
           <Dashboard
             account={account}
@@ -316,7 +380,8 @@ export function App() {
             perform={perform}
             start={startFavorites}
             folders={favoriteFolders.folders}
-            error={favoriteFolders.error}
+            foldersLoaded={favoriteFolders.loaded}
+            openClassification={openClassification}
             folderId={folderId}
             setFolderId={setFolderId}
             notice={setNotice}
@@ -358,11 +423,8 @@ export function App() {
             login={login}
             setAdding={setAdding}
             selectAll={() => void perform('选择筛选结果', library.selection.all)}
-            copyAuthor={(author) => {
-              void call(window.mylike.invoke('copyText', { text: author }))
-                .then(() => setNotice(`作者“${author}”已复制。`))
-                .catch((e) => setError(`复制作者失败：${e instanceof Error ? e.message : String(e)}`))
-            }}
+            copyAuthor={copyAuthor}
+            openAuthor={openAuthor}
             unlike={() => {
               setError('')
               if (accountId)
@@ -377,6 +439,25 @@ export function App() {
               setError('')
               if (accountId) setDeleteTarget({ accountId, ids: [...library.selection.ids] })
             }}
+            folderId={folderId}
+            removeFromFolder={() => {
+              if (!accountId || !folderId || !library.selection.ids.size) return
+              const ids = [...library.selection.ids]
+              setError('')
+              void perform('从收藏夹中移除', async () => {
+                const result = await call(
+                  window.mylike.invoke('favoriteFolderRemoveWorks', {
+                    accountId,
+                    folderId,
+                    workIds: ids
+                  })
+                )
+                library.selection.clear()
+                setNotice(
+                  `已从“${result.folderTitle}”移出 ${result.removed} 条作品，作品在默认收藏中的收藏状态保持不变。`
+                )
+              })
+            }}
           />
         )}
         {tab === 'tasks' && (
@@ -389,7 +470,10 @@ export function App() {
             probe={probe}
             scanTextWorks={scanTextWorks}
             textScanStatus={textScanStatus}
+            textScan={snapshot?.textScan ?? null}
+            stopTextScan={stopTextScan}
             perform={perform}
+            openClassification={openClassification}
           />
         )}
         {tab === 'settings' && (
@@ -428,6 +512,8 @@ export function App() {
             operationError={error}
             clearError={() => setError('')}
             login={login}
+            openAuthor={openAuthor}
+            copyAuthor={copyAuthor}
             unlikeBusy={!!operation || unliking}
             libraryRevision={snapshot?.libraryRevision ?? 0}
             unlike={(source) => {

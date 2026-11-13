@@ -23,6 +23,7 @@ import {
 import type { PlaybackPosition, PlaybackPreferences } from '../../shared/contracts'
 import type { Playback } from './usePlayback'
 import { QueuePanel } from './QueuePanel'
+import { CommentsPanel } from './CommentsPanel'
 import { GalleryProgress, MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
 import { PreparedVideo } from './PreparedVideo'
 import './player.css'
@@ -38,6 +39,8 @@ type Props = {
   operationError: string
   clearError: () => void
   login: () => void
+  openAuthor: (authorId: string | null, author: string, workId: string, accountId: string | null) => void
+  copyAuthor: (author: string) => void
   unlike: (source?: 'likes' | 'favorites') => void
   unlikeBusy: boolean
   libraryRevision: number
@@ -59,6 +62,8 @@ export function Player({
   operationError,
   clearError,
   login,
+  openAuthor,
+  copyAuthor,
   unlike,
   unlikeBusy,
   libraryRevision,
@@ -91,6 +96,8 @@ export function Player({
     [videoDuration, setVideoDuration] = useState(0),
     [musicWarning, setMusicWarning] = useState('')
   const [captionExpanded, setCaptionExpanded] = useState(false)
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const commentsButton = useRef<HTMLButtonElement>(null)
   const [favoriteOpen, setFavoriteOpen] = useState(false),
     [collected, setCollected] = useState(false)
   useEffect(() => {
@@ -126,6 +133,7 @@ export function Player({
     coverUrl = media?.work.coverUrl || work.coverUrl,
     textCover = textual && !slide ? coverUrl : null,
     captionAuthor = media?.work.author || work.author,
+    captionAuthorId = media?.work.authorId ?? work.authorId ?? null,
     captionTitle = media?.caption || media?.work.title || work.title,
     captionPublishedAt = media?.work.publishedAt || work.publishedAt
   const position = (): PlaybackPosition => {
@@ -319,9 +327,26 @@ export function Player({
     pause()
     void playback.move(target)
   }
-  const openOriginal = () => {
-    pause()
-    void playback.original(scope).catch((e) => setMusicWarning(e.message))
+  const closeComments = () => {
+    setCommentsOpen(false)
+    commentsButton.current?.focus()
+  }
+  const toggleComments = () => {
+    if (clean || !playback.isCurrent(scope)) return
+    if (commentsOpen) {
+      closeComments()
+      return
+    }
+    setQueueOpen(false)
+    setCommentsOpen(true)
+  }
+  const toggleQueue = () => {
+    setCommentsOpen(false)
+    setQueueOpen(!queueOpen)
+  }
+  const changeClean = (value: boolean) => {
+    if (value) setCommentsOpen(false)
+    setClean(value)
   }
   const openFavorite = () => {
     if (unlikeBusy || favoriteOpen) return
@@ -381,12 +406,12 @@ export function Player({
           ? media && image + 1 < media.images.length && changeSlide(image + 1, true)
           : seek(preferences.seekStep),
       fullscreen,
-      queue: () => setQueueOpen(!queueOpen),
+      queue: toggleQueue,
       clean: () => setClean(!clean),
       continuous: () => updatePreferences({ continuous: !preferences.continuous }),
       rateCycle: cycleSpeed,
       mute: toggleMute,
-      original: openOriginal,
+      original: toggleComments,
       favorite: openFavorite,
       favoriteFolders: openFavoriteFolders,
       unlike: () => {
@@ -399,9 +424,15 @@ export function Player({
     stage,
     back,
     () => {
-      if (!clean) return false
-      setClean(false)
-      return true
+      if (clean) {
+        setClean(false)
+        return true
+      }
+      if (commentsOpen) {
+        closeComments()
+        return true
+      }
+      return false
     }
   )
   const wheelAction = useRef<(delta: number) => void>(() => {})
@@ -490,7 +521,7 @@ export function Player({
             <div className="stage-message">
               <ImageIcon size={30} />
               <h2>未取得可播放资源</h2>
-              <p>可以打开原页查看作品状态。</p>
+              <p>可以刷新地址重试，或稍后重新打开作品。</p>
             </div>
           )}
           {source && !mediaError && (
@@ -558,7 +589,7 @@ export function Player({
                   setCandidate(candidate + 1)
                   setReady(false)
                 } else {
-                  setMediaError('媒体地址不可用或解码失败。请刷新地址或打开原页。')
+                  setMediaError('媒体地址不可用或解码失败。请刷新地址重试。')
                   pause()
                 }
               }}
@@ -683,12 +714,17 @@ export function Player({
           {media && hasContent && !mediaError && (
             <MediaCaption
               author={captionAuthor}
+              authorId={captionAuthorId}
+              workId={work.id}
+              accountId={queue.accountId}
               title={captionTitle}
               publishedAt={captionPublishedAt}
               gallery={gallery}
               expanded={captionExpanded}
               toggle={() => setCaptionExpanded(!captionExpanded)}
               hint="展开 / 收起文案"
+              openAuthor={openAuthor}
+              copyAuthor={copyAuthor}
             />
           )}
           {gallery && media && (
@@ -705,6 +741,19 @@ export function Player({
           )}
         </div>
         {queueOpen && <QueuePanel queue={queue} jump={move} close={() => setQueueOpen(false)} />}
+        {commentsOpen && !clean && (
+          <CommentsPanel
+            scope={{
+              accountId: queue.accountId,
+              queueId: queue.queueId,
+              revision: queue.revision,
+              workId: work.id
+            }}
+            isCurrent={() => playback.isCurrent(scope)}
+            close={closeComments}
+            login={login}
+          />
+        )}
       </div>
       <footer className="player-footer">
         {gallery && media && media.images.length > 0 && (
@@ -793,7 +842,7 @@ export function Player({
                 type="checkbox"
                 checked={clean}
                 onChange={(event) => {
-                  setClean(event.target.checked)
+                  changeClean(event.target.checked)
                   event.target.blur()
                 }}
               />
@@ -840,9 +889,11 @@ export function Player({
               </button>
             )}
             <button
-              aria-label="打开原页"
-              title={hint('original', '在系统浏览器打开原页看评论')}
-              onClick={openOriginal}
+              ref={commentsButton}
+              aria-label="查看评论"
+              aria-pressed={commentsOpen}
+              title={hint('original', '查看评论')}
+              onClick={toggleComments}
             >
               <MessageCircle size={19} />
             </button>

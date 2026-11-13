@@ -127,7 +127,8 @@ export function QueuePanel({
                     {work && (
                       <span>
                         {' '}
-                        · {work.mediaType === 'text'
+                        ·{' '}
+                        {work.mediaType === 'text'
                           ? '文字'
                           : work.mediaType === 'gallery'
                             ? work.isLive

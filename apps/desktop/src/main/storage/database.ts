@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Account, CollectionTask, Filter, Query } from '../../shared/contracts'
+import type { Account, CollectionTask, Filter, Query, Work } from '../../shared/contracts'
 import { MAX_BATCH_SIZE } from '../../shared/contracts'
 import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
@@ -26,7 +26,7 @@ export class Store {
     try {
       this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
       const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
-      if (version.user_version > 7) throw new Error('Database version is newer than this application')
+      if (version.user_version > 8) throw new Error('Database version is newer than this application')
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;')
       if (version.user_version > 0 && version.user_version < 6) {
         this.backup('before-v6')
@@ -93,6 +93,13 @@ export class Store {
         this.db.exec(
           "BEGIN IMMEDIATE; ALTER TABLE unlike_tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'likes' CHECK(source IN ('likes','favorites')); PRAGMA user_version=7; COMMIT;"
         )
+      if (version.user_version < 8) {
+        this.db.exec('BEGIN IMMEDIATE;')
+        const workColumns = this.db.prepare('PRAGMA table_info(works)').all() as { name: string }[]
+        if (!workColumns.some(({ name }) => name === 'authorId'))
+          this.db.exec('ALTER TABLE works ADD COLUMN authorId TEXT;')
+        this.db.exec('PRAGMA user_version=8; COMMIT;')
+      }
       this.db.exec('BEGIN IMMEDIATE; ' + favoriteStateSchema + ' COMMIT;')
       const favoriteState = new FavoriteState(this.db)
       const favoriteTasks = this.db.prepare('SELECT id FROM saved_tasks').all()
@@ -193,7 +200,7 @@ export class Store {
     if (this.account(input.accountId).remoteId !== input.remoteId)
       throw new AppError('IDENTITY_MISMATCH', '账号身份发生变化，本页未保存。')
     const work = this.db.prepare(
-      'INSERT INTO works VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,author=excluded.author,publishedAt=excluded.publishedAt,coverUrl=excluded.coverUrl,mediaType=excluded.mediaType,isLive=excluded.isLive'
+      'INSERT INTO works(id,title,author,publishedAt,coverUrl,mediaType,isLive,authorId) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,author=excluded.author,publishedAt=excluded.publishedAt,coverUrl=coalesce(excluded.coverUrl,works.coverUrl),mediaType=excluded.mediaType,isLive=excluded.isLive,authorId=coalesce(excluded.authorId,works.authorId)'
     )
     const member = this.db.prepare(
       'INSERT OR IGNORE INTO account_items(accountId,workId,firstSeen,platformSeen) VALUES(?,?,?,1)'
@@ -214,7 +221,8 @@ export class Store {
         item.publishedAt,
         item.coverUrl,
         item.mediaType,
-        +item.isLive
+        +item.isLive,
+        item.authorId ?? null
       )
       added += Number(member.run(input.accountId, item.id, Date.now()).changes)
       mark.run(input.accountId, item.id)
@@ -368,6 +376,28 @@ export class Store {
         return this.favorites.task(input.accountId, input.mode)
       case 'favoriteFolders':
         return this.favorites.folders(input.accountId)
+      case 'favoriteHiddenFolderIds':
+        return this.favorites.hiddenRemoteFolderIds(input.accountId)
+      case 'favoriteLocalFolderCreate':
+        return this.favorites.localFolderCreate(input)
+      case 'favoriteLocalFolderEdit':
+        return this.favorites.localFolderEdit(input)
+      case 'favoriteLocalFolderDelete':
+        return this.favorites.localFolderDelete(input)
+      case 'favoriteQueueWrite':
+        return this.favorites.queueWrite(input)
+      case 'favoriteWritePending':
+        return this.favorites.writePending(input.accountId)
+      case 'favoriteFolderWorkIds':
+        return this.favorites.folderWorkIds(input)
+      case 'favoriteStageLocalFolders':
+        return this.favorites.stageLocalFolders(input)
+      case 'favoriteWriteOps':
+        return this.favorites.writeOps(input.accountId)
+      case 'favoriteWriteComplete':
+        return this.favorites.writeComplete(input.accountId, input.operationId)
+      case 'favoriteLinkFolder':
+        return this.favorites.linkFolder(input)
       case 'favoriteStatus':
         this.account(input.accountId)
         return this.favorites.status(input.accountId, input.workId)
@@ -375,10 +405,74 @@ export class Store {
         return this.favorites.rememberFolder(input.accountId, input.remoteId, input.folder)
       case 'favoriteConfirm':
         return this.favorites.confirm(input)
+      case 'favoriteForgetFolderWork':
+        return this.favorites.forgetFolderWork(input)
+      case 'aiAssignmentSave': {
+        const statement = this.db.prepare(
+          `INSERT INTO ai_assignments(accountId,source,workId,category,updatedAt) VALUES(?,?,?,?,?)
+          ON CONFLICT(accountId,source,workId,category) DO UPDATE SET updatedAt=excluded.updatedAt`
+        )
+        const at = Date.now()
+        this.transaction(() => {
+          for (const item of input.items)
+            statement.run(input.accountId, input.source, item.workId, item.category, at)
+        })
+        return input.items.length
+      }
+      case 'aiAssignmentClear':
+        return Number(
+          this.db
+            .prepare('DELETE FROM ai_assignments WHERE accountId=? AND source=?')
+            .run(input.accountId, input.source).changes
+        )
+      case 'aiAssignmentPending':
+        return this.db
+          .prepare(
+            'SELECT workId,category FROM ai_assignments WHERE accountId=? AND source=? ORDER BY category,workId'
+          )
+          .all(input.accountId, input.source) as { workId: string; category: string }[]
+      case 'aiAssignmentComplete':
+        this.db
+          .prepare('DELETE FROM ai_assignments WHERE accountId=? AND source=? AND workId=? AND category=?')
+          .run(input.accountId, input.source, input.workId, input.category)
+        return null
+      case 'aiAssignmentStats': {
+        const rows = this.db
+          .prepare('SELECT source,count(*) AS total FROM ai_assignments WHERE accountId=? GROUP BY source')
+          .all(input.accountId) as { source: string; total: number }[]
+        const stats = { likes: 0, favorites: 0 }
+        for (const row of rows) {
+          if (row.source === 'likes') stats.likes = Number(row.total)
+          else if (row.source === 'favorites') stats.favorites = Number(row.total)
+        }
+        return stats
+      }
+      case 'unclassifiedWorkIds': {
+        const source =
+          input.source === 'likes' ? 'account_items' : input.source === 'favorites' ? 'saved_items' : null
+        if (!source) throw new AppError('INVALID_INPUT', '未知的作品来源。')
+        return (
+          this.db
+            .prepare(
+              `SELECT i.workId FROM ${source} i WHERE i.accountId=?
+              AND NOT EXISTS(SELECT 1 FROM saved_members m WHERE m.accountId=i.accountId AND m.workId=i.workId)`
+            )
+            .all(input.accountId) as { workId: string }[]
+        ).map((row) => row.workId)
+      }
+      case 'worksByIds': {
+        if (!input.workIds.length) return []
+        return this.db
+          .prepare(
+            `SELECT id,title,author,authorId,publishedAt,coverUrl,mediaType,isLive FROM works
+            WHERE id IN (${input.workIds.map(() => '?').join(',')})`
+          )
+          .all(...input.workIds) as unknown as Work[]
+      }
       case 'updateWork':
         this.db
           .prepare(
-            `UPDATE works SET title=?,author=?,publishedAt=?,coverUrl=?,mediaType=?,isLive=? WHERE id=?`
+            `UPDATE works SET title=?,author=?,publishedAt=?,coverUrl=?,mediaType=?,isLive=?,authorId=coalesce(?,authorId) WHERE id=?`
           )
           .run(
             input.work.title,
@@ -387,12 +481,13 @@ export class Store {
             input.work.coverUrl,
             input.work.mediaType,
             +input.work.isLive,
+            input.work.authorId ?? null,
             input.work.id
           )
         return null
       case 'favoritesStart':
         this.account(input.accountId)
-        return this.favorites.start(input.accountId, input.id, input.mode)
+        return this.favorites.start(input.accountId, input.id, input.mode, input.stage)
       case 'favoritesDefer':
         return this.favorites.defer(input)
       case 'favoritesUpdate':

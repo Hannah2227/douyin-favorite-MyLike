@@ -105,6 +105,9 @@ it('gives risk and explicit verification precedence over individual content abse
     ).collected
   ).toBe(true)
   code(() => parseResponse('{"status_code":8}', 200, { operation: 'self' }), 'API_REJECTED')
+  expect(() => parseResponse('{"status_code":4}', 200, { operation: 'favorites' })).toThrow(
+    '单次业务拒绝不代表账号已退出'
+  )
 })
 
 it('treats business 2053 as an unavailable detail or a definite rejected uncollect, never an unknown success', () => {
@@ -119,7 +122,14 @@ it('treats business 2053 as an unavailable detail or a definite rejected uncolle
 
 it('separates withheld reads, uncertain writes, HTTP errors and collection schema changes', () => {
   for (const body of ['', '{}']) {
-    for (const operation of ['favorites', 'folders', 'folderItems', 'detail'] as const)
+    for (const operation of [
+      'favorites',
+      'folders',
+      'folderItems',
+      'detail',
+      'comments',
+      'commentReplies'
+    ] as const)
       code(() => parseResponse(body, 200, { operation, workId: '1' }), 'UPSTREAM_RISK_CONTROL')
     code(() => parseResponse(body, 200, { operation: 'favoriteRemove', workId: '1' }), 'EMPTY_RESPONSE')
   }
