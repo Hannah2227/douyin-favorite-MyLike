@@ -19,6 +19,7 @@ import { MAX_BATCH_SIZE, type Account, type Work, type QueueState } from '../../
 import type { Library } from './useLibrary'
 import { Select } from './Select'
 import { useDragSelection } from './useDragSelection'
+import { CoverArtwork } from './CoverArtwork'
 
 type Props = {
   header: ReactNode
@@ -35,6 +36,7 @@ type Props = {
   login: () => void
   setAdding: Dispatch<SetStateAction<boolean>>
   selectAll: () => void
+  invertSelection: () => void
   remove: () => void
   unlike: () => void
   playRange: (mode: 'sequence' | 'shuffle') => void
@@ -57,6 +59,7 @@ export function LibraryView({
   login,
   setAdding,
   selectAll,
+  invertSelection,
   remove,
   unlike,
   playRange,
@@ -213,6 +216,13 @@ export function LibraryView({
               <strong aria-live="polite">已选 {selection.ids.size} 条</strong>
               <button disabled={busy || querying} onClick={selectAll}>
                 {page.total > MAX_BATCH_SIZE ? `选择前 ${MAX_BATCH_SIZE} 条` : '选择全部筛选结果'}
+              </button>
+              <button
+                disabled={busy || querying || !page.total}
+                title={`选中当前筛选结果中未选的作品，最多 ${MAX_BATCH_SIZE} 条`}
+                onClick={invertSelection}
+              >
+                反选
               </button>
               <button disabled={!selection.ids.size || busy} onClick={selection.clear}>
                 清空选择
@@ -372,19 +382,7 @@ export function LibraryView({
                             title={work.title}
                           >
                             <div className="cover">
-                              {work.coverUrl ? (
-                                <img
-                                  loading="lazy"
-                                  draggable={false}
-                                  src={work.coverUrl}
-                                  alt=""
-                                  onError={(e) => {
-                                    e.currentTarget.style.visibility = 'hidden'
-                                  }}
-                                />
-                              ) : (
-                                <Heart size={36} />
-                              )}
+                              <CoverArtwork url={work.coverUrl} />
                               <span className="type-badge">
                                 {work.mediaType === 'gallery' ? (
                                   <ImageIcon size={12} />

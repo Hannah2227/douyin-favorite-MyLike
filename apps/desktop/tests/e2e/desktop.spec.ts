@@ -496,6 +496,8 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
           const failure = (globalThis as any).__mylikeDetailFailures?.[detailId]
           if (failure === 'confirmed') return Response.json({ status_code: 2053 })
           if (failure === 'unknown') return Response.json({ status_code: 0, aweme_detail: null })
+          if (failure === 'verify')
+            return Response.json({ status_code: 8, status_msg: 'verification required' })
           if ((globalThis as any).__mylikeHoldDetailOnce === detailId) {
             ;(globalThis as any).__mylikeHoldDetailOnce = null
             await new Promise<void>((resolve) => {
@@ -515,6 +517,7 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               create_time: 1_700_000_000,
               author: { nickname: '测试作者' },
               video: {
+                cover: { url_list: [(globalThis as any).__mylikeCoverUrls?.[detailId]].filter(Boolean) },
                 play_addr_h264: { url_list: [`https://fixture.douyinvod.com/video-${detailId}.mp4`] }
               },
               ...((globalThis as any).__mylikeGallery
@@ -624,6 +627,8 @@ async function installMedia(portrait = false) {
             { headers: { 'content-type': 'image/gif' } }
           )
         }
+        if (new URL(request.url).pathname.includes('/expired-cover-'))
+          return new Response('', { status: 403 })
         if (request.url.endsWith('/missing.svg')) return new Response('', { status: 404 })
         if (request.url.endsWith('.svg'))
           return new Response(
@@ -2368,7 +2373,7 @@ test('overlays expandable captions, selects speeds with a popup and highlights t
   await expect(speed).toHaveText('0.75x')
 })
 
-test('confirms a single unlike from playback, pauses media and retains the fixed queue metadata', async () => {
+test('confirms a single unlike from playback, pauses media and retains the fixed queue metadata', async ({}, info) => {
   const { accountId } = await prepareQueue()
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo()
@@ -2377,6 +2382,8 @@ test('confirms a single unlike from playback, pauses media and retains the fixed
   const before = (await invoke('snapshot')).data.playback
   const modal = page.getByRole('dialog', { name: '取消抖音点赞' })
   await expect(modal).toContainText('1 条作品')
+  await expect(modal.getByRole('checkbox', { name: '下次不再提示', exact: true })).not.toBeChecked()
+  await screenshot(info.outputPath('single-unlike-confirm.png'))
   await modal.getByRole('button', { name: '确认取消抖音点赞', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('completed')
   const after = (await invoke('snapshot')).data
@@ -2393,6 +2400,65 @@ test('confirms a single unlike from playback, pauses media and retains the fixed
   await expect(page.getByRole('heading', { name: '任务', exact: true })).toBeVisible()
   await expect(page.getByLabel('取消点赞任务')).toContainText('已完成 1')
   expect(await page.locator('video,audio').count()).toBe(0)
+})
+
+test('remembers only confirmed single-unlike choices and restores confirmation from settings', async ({}, info) => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(4)
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  let unlike = page.getByRole('button', { name: '取消当前点赞', exact: true })
+  let modal = page.getByRole('dialog', { name: '取消抖音点赞', exact: true })
+  await unlike.click()
+  await modal.getByRole('checkbox', { name: '下次不再提示', exact: true }).check()
+  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  expect((await invoke('snapshot')).data.playbackPreferences.confirmUnlike).toBe(true)
+  expect((await invoke('snapshot')).data.unlike).toBeNull()
+  await unlike.click()
+  await expect(modal.getByRole('checkbox', { name: '下次不再提示', exact: true })).not.toBeChecked()
+  await modal.getByRole('checkbox', { name: '下次不再提示', exact: true }).check()
+  await screenshot(info.outputPath('single-unlike-remember.png'))
+  await modal.getByRole('button', { name: '确认取消抖音点赞', exact: true }).click()
+  await expect.poll(async () => (await invoke('snapshot')).data.playbackPreferences.confirmUnlike).toBe(false)
+  await expect.poll(async () => (await invoke('query', { accountId })).data.total).toBe(3)
+  await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('completed')
+  await page.getByRole('button', { name: '下一条', exact: true }).click()
+  await readyVideo(1)
+  await unlike.click()
+  await expect(modal).toHaveCount(0)
+  await expect.poll(async () => (await invoke('query', { accountId })).data.total).toBe(2)
+  await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('completed')
+  await terminateApp(app, profile)
+  await launch()
+  unlike = page.getByRole('button', { name: '取消当前点赞', exact: true })
+  modal = page.getByRole('dialog', { name: '取消抖音点赞', exact: true })
+  expect((await invoke('snapshot')).data.playbackPreferences.confirmUnlike).toBe(false)
+  await installPlatform(accountId)
+  await installMedia()
+  await page.getByRole('button', { name: '批量选择', exact: true }).click()
+  await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
+  await page.getByRole('button', { name: '取消抖音点赞', exact: true }).click()
+  await expect(modal).toBeVisible()
+  await expect(modal.getByRole('checkbox', { name: '下次不再提示', exact: true })).toHaveCount(0)
+  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('button', { name: '退出选择', exact: true }).click()
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  await unlike.click()
+  await expect(modal).toHaveCount(0)
+  await expect.poll(async () => (await invoke('query', { accountId })).data.total).toBe(1)
+  await expect.poll(async () => (await invoke('snapshot')).data.unlike?.status).toBe('completed')
+  await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('checkbox', { name: '取消单条点赞前确认', exact: true }).check()
+  await expect.poll(async () => (await invoke('snapshot')).data.playbackPreferences.confirmUnlike).toBe(true)
+  await page.getByRole('button', { name: '喜欢', exact: true }).click()
+  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await readyVideo()
+  await unlike.click()
+  await expect(modal).toBeVisible()
+  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  expect((await invoke('query', { accountId })).data.total).toBe(1)
 })
 
 test('fills the app with media, collapses navigation without reloading video, and keeps controls below it at small window sizes', async ({}, info) => {
@@ -3686,6 +3752,144 @@ test('auto-skips confirmed unavailable works but waits for a decision on ambiguo
   expect((await invoke('snapshot')).data.playback.index).toBe(1)
   await failure.getByRole('button', { name: '下一条', exact: true }).click()
   await expect.poll(async () => (await invoke('snapshot')).data.playback.index).toBe(2)
+})
+
+for (const [label, gallery, source] of [
+  ['video likes', false, 'likes'],
+  ['live-photo favorites', true, 'favorites']
+] as const) {
+  test('updates covers only from playback details: ' + label, async () => {
+    const { accountId, ids } = await prepareQueue(45, gallery)
+    const currentId = ids.at(-1)!
+    const fresh = 'https://fixture.douyinpic.com/played.svg'
+    await app.evaluate(
+      ({ app }, { accountId, currentId, fresh, source }) => {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
+        const { join } = process.getBuiltinModule('node:path') as typeof import('node:path')
+        const db = new DatabaseSync(join(app.getPath('userData'), 'mylike.sqlite'))
+        try {
+          db.prepare(
+            "UPDATE works SET coverUrl='https://fixture.douyinpic.com/expired-cover-' || id || '.svg'"
+          ).run()
+          if (source === 'favorites')
+            db.prepare(
+              'INSERT INTO saved_items SELECT accountId,workId,firstSeen FROM account_items WHERE accountId=?'
+            ).run(accountId)
+        } finally {
+          db.close()
+        }
+        ;(globalThis as any).__mylikeCoverUrls = { [currentId]: fresh }
+        ;(globalThis as any).__mylikeTestCalls.length = 0
+      },
+      { accountId, currentId, fresh, source }
+    )
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.getURL().startsWith('mylike://ui/'))!
+        .showInactive()
+    })
+    await page.reload()
+    if (source === 'favorites') await page.getByRole('button', { name: '收藏', exact: true }).click()
+    await expect(page.locator('.list-caption')).toContainText('45 条内容')
+    await expect(page.locator(`[data-work-id="${currentId}"] .cover img`)).toHaveCount(0)
+    await scrollLibraryToEnd()
+    await page.waitForTimeout(1200)
+    await page.locator('.library-scroll').evaluate((node) => {
+      node.scrollTop = 0
+    })
+    await page.waitForTimeout(1200)
+    expect(await app.evaluate(() => (globalThis as any).__mylikeTestCalls.length)).toBe(0)
+
+    const before = (await invoke('query', { accountId, source })).data.items.find(
+      (item: any) => item.id === currentId
+    )
+    await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+    await expect
+      .poll(
+        async () =>
+          (await invoke('query', { accountId, source })).data.items.find((item: any) => item.id === currentId)
+            .coverUrl
+      )
+      .toBe(fresh)
+    const saved = (await invoke('query', { accountId, source })).data
+    expect(saved.total).toBe(45)
+    expect(saved.items.find((item: any) => item.id === currentId)).toEqual({ ...before, coverUrl: fresh })
+    await page.getByRole('button', { name: '返回内容库', exact: true }).click()
+    const cover = page.locator(`[data-work-id="${currentId}"] .cover img`)
+    await expect(cover).toHaveAttribute('src', fresh)
+    await expect(cover).toHaveJSProperty('naturalWidth', 640)
+    const calls: string[] = await app.evaluate(() => (globalThis as any).__mylikeTestCalls)
+    expect(calls.filter((value) => new URL(value).pathname.includes('/multi/'))).toEqual([])
+    expect(
+      calls.filter((value) => {
+        const url = new URL(value)
+        return (
+          url.pathname === '/aweme/v1/web/aweme/detail/' && url.searchParams.get('aweme_id') === currentId
+        )
+      })
+    ).toHaveLength(1)
+  })
+}
+
+test('inverts the full filtered selection across pages in likes and a favorite folder', async ({}, info) => {
+  test.setTimeout(testTimeout(60000))
+  const { accountId, ids } = await prepareQueue(205)
+  await app.evaluate(
+    ({ app }, { accountId, ids }) => {
+      const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
+      const { join } = process.getBuiltinModule('node:path') as typeof import('node:path')
+      const db = new DatabaseSync(join(app.getPath('userData'), 'mylike.sqlite'))
+      try {
+        db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE')
+        db.prepare(
+          'INSERT INTO saved_items SELECT accountId,workId,firstSeen FROM account_items WHERE accountId=?'
+        ).run(accountId)
+        db.prepare('INSERT INTO saved_folders VALUES(?,?,?,?,?)').run(
+          accountId,
+          '8',
+          '反选测试',
+          150,
+          'fixture'
+        )
+        const insert = db.prepare('INSERT INTO saved_members VALUES(?,?,?,?)')
+        ids.slice(0, 150).forEach((id) => insert.run(accountId, '8', id, 'fixture'))
+        db.exec('COMMIT')
+      } finally {
+        db.close()
+      }
+    },
+    { accountId, ids }
+  )
+  await page.reload()
+  for (const [source, total] of [
+    ['喜欢', 205],
+    ['收藏', 150]
+  ] as const) {
+    await page.getByRole('button', { name: source, exact: true }).click()
+    if (source === '收藏') await chooseOption('收藏夹筛选', '反选测试 · 150')
+    await expect(page.locator('.list-caption')).toContainText(total + ' 条内容')
+    await page.getByRole('button', { name: '批量选择', exact: true }).click()
+    const first = page.getByRole('checkbox', { name: '选择 队列作品 ' + total, exact: true })
+    await first.check()
+    await page.getByRole('button', { name: '反选', exact: true }).click()
+    await expect(page.getByLabel('批量操作')).toContainText('已选 ' + (total - 1) + ' 条')
+    await expect(first).not.toBeChecked()
+    await page.getByRole('button', { name: '下一页', exact: true }).click()
+    await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('2')
+    await expect(page.locator('.work-select').first()).toBeChecked()
+    await page.getByRole('button', { name: '反选', exact: true }).click()
+    await expect(page.getByLabel('批量操作')).toContainText('已选 1 条')
+    await page.getByRole('button', { name: '上一页', exact: true }).click()
+    await expect(first).toBeChecked()
+    if (source === '收藏') await screenshot(info.outputPath('inverse-selection.png'))
+    await page.getByRole('button', { name: '反选', exact: true }).click()
+    await expect(page.getByLabel('批量操作')).toContainText('已选 ' + (total - 1) + ' 条')
+    await page.getByRole('button', { name: '选择全部筛选结果', exact: true }).click()
+    await expect(page.getByLabel('批量操作')).toContainText('已选 ' + total + ' 条')
+    await page.getByRole('button', { name: '反选', exact: true }).click()
+    await expect(page.getByLabel('批量操作')).toContainText('已选 0 条')
+    await page.getByRole('button', { name: '退出选择', exact: true }).click()
+  }
 })
 
 test('keeps the page controls after a page error and retries the requested page', async () => {
@@ -5710,6 +5914,8 @@ async function prepareCollectedQueue(count = 3) {
 test('uncollects current favorite with star and shortcut in fullscreen, synchronizes every folder and preserves likes', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareCollectedQueue(2)
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', { preferences: { ...preferences, confirmUnlike: false } })
   await page.getByRole('button', { name: '顺序播放', exact: true }).click()
   await readyVideo(0)
   const current = (await invoke('snapshot')).data.playback as QueueState
@@ -5720,6 +5926,7 @@ test('uncollects current favorite with star and shortcut in fullscreen, synchron
   await star.click()
   const confirm = page.getByRole('dialog', { name: '取消抖音收藏', exact: true })
   await expect(confirm).toContainText('所有收藏夹')
+  await expect(confirm.getByRole('checkbox', { name: '下次不再提示', exact: true })).toHaveCount(0)
   await confirm.getByRole('button', { name: '取消', exact: true }).click()
   expect(await app.evaluate(() => (globalThis as any).__favoriteWrites)).toEqual([])
   await page.keyboard.press('s')

@@ -92,9 +92,10 @@ export interface Inputs {
     preserveCheckpoint?: boolean
   }
   query: Query
+  workCover: { accountId: string; workId: string; coverUrl: string }
   mobileLibraryExport: { accountId: string; source?: MobileLibrarySource }
   libraryOverview: { accountId: string }
-  matchingIds: Filter
+  matchingIds: Filter & { excludeIds?: string[] }
   deleteLocal: { accountId: string; workIds: string[] }
   unlikeTask: { accountId: string; taskId?: string }
   unlikeHistory: { accountId: string }
@@ -169,6 +170,7 @@ export interface Replies {
   saveCollectionPage: CollectionTask
   savePage: PageResult & { previouslyCollected: number }
   query: LibraryPage
+  workCover: { url: string | null; updated: boolean }
   mobileLibraryExport: { text: string; count: number }
   libraryOverview: Omit<LibraryOverview, 'metadataBytes'>
   matchingIds: string[]

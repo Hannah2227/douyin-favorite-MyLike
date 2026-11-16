@@ -44,7 +44,7 @@ const groups = [
     id: 'playback',
     title: '播放',
     icon: Play,
-    keywords: '播放 自动 连播 失焦 暂停 滚轮 快进 后退'
+    keywords: '播放 自动 连播 失焦 暂停 滚轮 快进 后退 点赞 取消 确认 提示'
   },
   {
     id: 'shortcuts',
@@ -273,6 +273,13 @@ export function SettingsPanel({
                 change={(pauseOnBlur) => updatePreferences({ pauseOnBlur })}
               />
             </Row>
+            <Row label="取消单条点赞前确认" description="播放时取消当前作品的点赞是否显示确认提示">
+              <Toggle
+                label="取消单条点赞前确认"
+                value={preferences.confirmUnlike}
+                change={(confirmUnlike) => updatePreferences({ confirmUnlike })}
+              />
+            </Row>
             <Row label="快进 / 后退步长">
               <Select
                 label="快进后退步长"
@@ -294,7 +301,7 @@ export function SettingsPanel({
             <p className="settings-description">
               仅播放器中生效。PageUp / PageDown 也可切换作品，左右键在图集中翻页。 Esc
               依次退出清屏、全屏或返回；清屏不显示退出按钮，可用 Esc
-              或绑定的清屏按键退出。输入框、菜单和弹窗优先，取消点赞及收藏均需确认。
+              或绑定的清屏按键退出。输入框、菜单和弹窗优先，单条点赞的确认提示可在播放偏好中调整。
             </p>
             {(
               Object.entries(shortcutActions) as [ShortcutAction, (typeof shortcutActions)[ShortcutAction]][]

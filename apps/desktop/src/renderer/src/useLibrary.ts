@@ -292,10 +292,12 @@ export function useLibrary(
   }, [visible, key, result, rowHeight])
   useEffect(() => virtual.measure(), [rowHeight, columns, virtual])
 
-  const selectAll = async () => {
+  const selectMatching = async (invert = false) => {
     if (!accountId) return
     const seq = ++selectionSequence.current
-    const ids = await call(window.mylike.invoke('matchingIds', filter))
+    const ids = await call(
+      window.mylike.invoke('matchingIds', { ...filter, ...(invert ? { excludeIds: [...selected] } : {}) })
+    )
     if (seq === selectionSequence.current && scope.current === key) {
       setSelected(new Set(ids))
       setSelecting(true)
@@ -372,7 +374,8 @@ export function useLibrary(
       enabled: selecting,
       enable: () => setSelecting(true),
       ids: selected,
-      all: selectAll,
+      all: () => selectMatching(),
+      invert: () => selectMatching(true),
       toggle,
       add: (ids: string[]) => {
         selectionSequence.current++

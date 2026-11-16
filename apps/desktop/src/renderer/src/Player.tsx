@@ -822,7 +822,7 @@ export function Player({
               <button
                 className="unlike-control"
                 aria-label="取消当前点赞"
-                title={hint('unlike', '取消当前点赞（需确认）')}
+                title={hint('unlike', preferences.confirmUnlike ? '取消当前点赞（需确认）' : '取消当前点赞')}
                 disabled={unlikeBusy}
                 onClick={() => {
                   pause()

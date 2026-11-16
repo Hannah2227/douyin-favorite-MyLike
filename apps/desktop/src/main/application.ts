@@ -1257,6 +1257,19 @@ export class Application {
               throw new AppError('INVALID_RESPONSE', '作品详情与请求目标不一致。')
             await validateQueue()
             guard()
+            if (media.work.coverUrl) {
+              try {
+                const cover = await this.database.call('workCover', {
+                  accountId: input.accountId,
+                  workId: input.workId,
+                  coverUrl: media.work.coverUrl
+                })
+                if (cover.updated) this.libraryRevision++
+              } catch {
+                console.error('[MyLike] Cover metadata could not be updated.')
+              }
+              guard()
+            }
             return media
           } finally {
             this.activeMedia = null

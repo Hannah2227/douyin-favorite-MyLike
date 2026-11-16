@@ -110,13 +110,15 @@ it('persists application and playback preferences across restart without changin
     })
   })
   expect(store.call('appPreferences', {}).libraryMode).toBe('paged')
+  expect(store.call('playbackPreferences', {}).confirmUnlike).toBe(true)
   store.call('appPreferences', { preferences: { zoom: 1.1, libraryMode: 'scroll' } })
   store.call('playbackPreferences', {
     preferences: playbackPreferencesSchema.parse({
       autoplay: false,
       seekStep: 30,
       wheelNavigation: false,
-      pauseOnBlur: true
+      pauseOnBlur: true,
+      confirmUnlike: false
     })
   })
   store.call('close', undefined)
@@ -133,7 +135,8 @@ it('persists application and playback preferences across restart without changin
     autoplay: false,
     seekStep: 30,
     wheelNavigation: false,
-    pauseOnBlur: true
+    pauseOnBlur: true,
+    confirmUnlike: false
   })
   expect(next.call('accounts', undefined)).toHaveLength(1)
   expect(next.call('checkDatabase', {})).toMatchObject({ ok: true, issues: 0 })

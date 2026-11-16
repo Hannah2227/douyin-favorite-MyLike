@@ -46,6 +46,7 @@ export const playbackPreferencesSchema = z
     autoplay: z.boolean().default(true),
     wheelNavigation: z.boolean().default(true),
     pauseOnBlur: z.boolean().default(false),
+    confirmUnlike: z.boolean().default(true),
     seekStep: z.number().int().min(1).max(60).default(10),
     shortcuts: z.object(shortcutShape).prefault({})
   })

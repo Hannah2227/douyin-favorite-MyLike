@@ -121,6 +121,32 @@ describe('SQLite transactions and account ownership', () => {
     expect(text).not.toContain('remote-a')
   })
 
+  it('updates only the cover of an owned work and skips unchanged URLs', () => {
+    const { store } = setup()
+    store.call('createAccount', { id: 'b', name: 'B' })
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      items: [item('1')],
+      cursor: '0',
+      hasMore: false
+    })
+    expect(store.call('workCover', { accountId: 'b', workId: '1', coverUrl: 'forbidden' })).toEqual({
+      url: null,
+      updated: false
+    })
+    expect(store.call('workCover', { accountId: 'a', workId: '1', coverUrl: 'first' })).toEqual({
+      url: 'first',
+      updated: true
+    })
+    expect(store.call('workCover', { accountId: 'a', workId: '1', coverUrl: 'first' })).toEqual({
+      url: 'first',
+      updated: false
+    })
+    expect(store.call('query', { ...query }).items[0]).toEqual({ ...item('1'), coverUrl: 'first' })
+    expect(store.call('query', { ...query }).total).toBe(1)
+  })
+
   it('keeps the MyLike data directory out of bounds for exported files', async () => {
     const { file } = setup()
     const target = join(dirname(file), 'export.json')
@@ -406,6 +432,51 @@ describe('SQLite transactions and account ownership', () => {
         .map((work) => work.id)
     )
     expect(store.call('matchingIds', { ...filter, folderId: '9' })).toHaveLength(100)
+    const inverse = items
+      .slice(0, 1205)
+      .reverse()
+      .slice(1000)
+      .map((work) => work.id)
+    expect(store.call('matchingIds', { ...filter, excludeIds: expected })).toEqual(inverse)
+    expect(store.call('matchingIds', { ...filter, folderId: '9', excludeIds: expected })).toHaveLength(100)
+    expect(store.call('matchingIds', { ...filter, search: '旅行', excludeIds: expected })).toEqual(
+      items
+        .slice(0, 205)
+        .filter((work) => work.title === '旅行')
+        .reverse()
+        .map((work) => work.id)
+    )
+  })
+  it('inverts the whole filtered likes set before applying the 1000 item limit', () => {
+    const { store } = setup()
+    const items = Array.from({ length: 2205 }, (_, i) => ({
+      ...item(String(9000000 + i)),
+      title: i % 2 ? '旅行' : '日常',
+      publishedAt: 1700000000 + i
+    }))
+    store.call('savePage', { accountId: 'a', remoteId: 'remote-a', items, cursor: '0', hasMore: false })
+    store.call('createAccount', { id: 'b', name: 'B' })
+    store.call('bindAccount', { accountId: 'b', remoteId: 'remote-b', nickname: 'B', avatarUrl: null })
+    store.call('savePage', {
+      accountId: 'b',
+      remoteId: 'remote-b',
+      items: [item('9999999')],
+      cursor: '0',
+      hasMore: false
+    })
+    const ordered = [...items].reverse().map((work) => work.id)
+    const selected = ordered.slice(0, 1000)
+    expect(store.call('matchingIds', { ...query, excludeIds: selected })).toEqual(ordered.slice(1000, 2000))
+    const filtered = items
+      .filter((work) => work.title === '旅行')
+      .reverse()
+      .map((work) => work.id)
+    const excluded = filtered.slice(0, 1000)
+    const inverse = store.call('matchingIds', { ...query, search: '旅行', excludeIds: excluded })
+    expect(inverse).toEqual(filtered.slice(1000))
+    expect(store.call('matchingIds', { ...query, search: '旅行', excludeIds: inverse })).toEqual(excluded)
+    expect(store.call('matchingIds', { ...query, accountId: 'b', excludeIds: selected })).toEqual(['9999999'])
+    expect(store.call('matchingIds', { ...query, excludeIds: ordered })).toEqual([])
   })
   it('rolls back a partially failing local deletion without removing another account data', () => {
     const { store, file } = setup()
@@ -561,6 +632,7 @@ it('backfills platform like order in page order, resumes after restart and moves
     hasMore: false
   })
   expect(resumed.call('matchingIds', liked)).toEqual(['8', '7', '2', '99'])
+  expect(resumed.call('matchingIds', { ...liked, excludeIds: ['8', '2'] })).toEqual(['7', '99'])
   const queue = resumed.call('queueCreate', {
     accountId: 'a',
     mode: 'sequence',

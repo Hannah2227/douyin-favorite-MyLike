@@ -21,6 +21,13 @@ import { Dashboard } from './Dashboard'
 import { useOverview } from './useOverview'
 import { HelpPage } from './HelpPage'
 
+type UnlikeTarget = {
+  accountId: string
+  ids: string[]
+  source: 'likes' | 'favorites'
+  mode: 'single' | 'batch'
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [tab, setTab] = useState<Tab>('library')
@@ -32,12 +39,8 @@ export function App() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [name, setName] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<{ accountId: string; ids: string[] } | null>(null)
-  const [unlikeTarget, setUnlikeTarget] = useState<{
-    accountId: string
-    ids: string[]
-    source: 'likes' | 'favorites'
-    mode: 'single' | 'batch'
-  } | null>(null)
+  const [unlikeTarget, setUnlikeTarget] = useState<UnlikeTarget | null>(null)
+  const [skipUnlikeConfirmation, setSkipUnlikeConfirmation] = useState(false)
   const snapshotSequence = useRef(0)
   const dataKey = useRef('')
   const startupApplied = useRef(false)
@@ -150,6 +153,24 @@ export function App() {
       setOperation('')
     }
   }
+  const startUnlike = (target: UnlikeTarget, remember = false) =>
+    void perform(target.source === 'favorites' ? '启动取消收藏任务' : '启动取消点赞任务', async () => {
+      await call(
+        window.mylike.invoke('unlikeStart', {
+          accountId: target.accountId,
+          workIds: target.ids,
+          source: target.source,
+          mode: target.mode
+        })
+      )
+      library.selection.clear()
+      setUnlikeTarget(null)
+      if (!playback.view) setTab('tasks')
+      if (remember) {
+        preferences.update({ confirmUnlike: false })
+        await preferences.flush()
+      }
+    })
   const login = () =>
     accountId &&
     void perform('打开抖音窗口', async () => {
@@ -363,8 +384,10 @@ export function App() {
             login={login}
             setAdding={setAdding}
             selectAll={() => void perform('选择筛选结果', library.selection.all)}
+            invertSelection={() => void perform('反选筛选结果', library.selection.invert)}
             unlike={() => {
               setError('')
+              setSkipUnlikeConfirmation(false)
               if (accountId)
                 setUnlikeTarget({
                   accountId,
@@ -426,13 +449,18 @@ export function App() {
             libraryRevision={snapshot?.libraryRevision ?? 0}
             unlike={() => {
               setError('')
-              if (playback.view)
-                setUnlikeTarget({
-                  accountId: playback.view.queue.accountId,
-                  ids: [playback.view.queue.work.id],
-                  source: playback.view.queue.source === 'favorites' ? 'favorites' : 'likes',
-                  mode: 'single'
-                })
+              if (!playback.view) return
+              const target: UnlikeTarget = {
+                accountId: playback.view.queue.accountId,
+                ids: [playback.view.queue.work.id],
+                source: playback.view.queue.source === 'favorites' ? 'favorites' : 'likes',
+                mode: 'single'
+              }
+              if (target.source === 'likes' && !preferences.value.confirmUnlike) startUnlike(target)
+              else {
+                setSkipUnlikeConfirmation(false)
+                setUnlikeTarget(target)
+              }
             }}
             queueOpen={queueOpen}
             setQueueOpen={setQueueOpen}
@@ -456,21 +484,9 @@ export function App() {
           cancel={() => setUnlikeTarget(null)}
           confirmLabel={unlikeTarget.source === 'favorites' ? '确认取消抖音收藏' : '确认取消抖音点赞'}
           confirm={() =>
-            void perform(
-              unlikeTarget.source === 'favorites' ? '启动取消收藏任务' : '启动取消点赞任务',
-              async () => {
-                await call(
-                  window.mylike.invoke('unlikeStart', {
-                    accountId: unlikeTarget.accountId,
-                    workIds: unlikeTarget.ids,
-                    source: unlikeTarget.source,
-                    mode: unlikeTarget.mode
-                  })
-                )
-                library.selection.clear()
-                setUnlikeTarget(null)
-                if (!playback.view) setTab('tasks')
-              }
+            startUnlike(
+              unlikeTarget,
+              unlikeTarget.mode === 'single' && unlikeTarget.source === 'likes' && skipUnlikeConfirmation
             )
           }
         >
@@ -483,6 +499,17 @@ export function App() {
             这会修改抖音账号。每条成功后移除对应本地条目；未知结果保留条目。采集将先暂停，一次最多 1000
             条，任务详情可停止后续未发送项。
           </p>
+          {unlikeTarget.mode === 'single' && unlikeTarget.source === 'likes' && (
+            <label className="confirmation-option">
+              <input
+                type="checkbox"
+                checked={skipUnlikeConfirmation}
+                disabled={!!operation}
+                onChange={(event) => setSkipUnlikeConfirmation(event.target.checked)}
+              />
+              下次不再提示
+            </label>
+          )}
           {error && (
             <p className="task-error" role="alert">
               {error}

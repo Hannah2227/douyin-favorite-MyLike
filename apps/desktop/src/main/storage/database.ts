@@ -641,6 +641,23 @@ export class Store {
             )
           return this.collection(input.accountId)!
         })
+      case 'workCover': {
+        const { accountId, workId } = input
+        this.account(accountId)
+        const row = this.db
+          .prepare(
+            `SELECT coverUrl FROM works WHERE id=? AND (
+            EXISTS(SELECT 1 FROM account_items WHERE accountId=? AND workId=works.id) OR
+            EXISTS(SELECT 1 FROM saved_items WHERE accountId=? AND workId=works.id) OR
+            EXISTS(SELECT 1 FROM playback_items p JOIN playback_queues q ON q.id=p.queueId
+              WHERE q.accountId=? AND p.workId=works.id))`
+          )
+          .get(workId, accountId, accountId, accountId) as { coverUrl: string | null } | undefined
+        if (!row) return { url: null, updated: false }
+        const updated = input.coverUrl !== row.coverUrl
+        if (updated) this.db.prepare('UPDATE works SET coverUrl=? WHERE id=?').run(input.coverUrl, workId)
+        return { url: updated ? input.coverUrl : row.coverUrl, updated }
+      }
       case 'query':
         return this.query(input)
       case 'mobileLibraryExport': {
@@ -710,7 +727,11 @@ export class Store {
       case 'matchingIds': {
         this.account(input.accountId)
         const { from, params, order } = this.filter(input)
-        const rows = this.db.prepare(`SELECT w.id ${from} ${order} LIMIT ?`).all(...params, MAX_BATCH_SIZE)
+        const exclusion = input.excludeIds?.length ? ' AND w.id NOT IN (SELECT value FROM json_each(?))' : ''
+        if (exclusion) params.push(JSON.stringify(input.excludeIds))
+        const rows = this.db
+          .prepare(`SELECT w.id ${from}${exclusion} ${order} LIMIT ?`)
+          .all(...params, MAX_BATCH_SIZE)
         return rows.map((row) => String(row.id))
       }
       case 'deleteLocal': {

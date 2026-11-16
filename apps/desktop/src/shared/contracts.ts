@@ -111,7 +111,7 @@ export const commands = {
   stopRequest: z.object({}),
   query: querySchema,
   libraryOverview: z.object({ accountId: idSchema }),
-  matchingIds: filterSchema,
+  matchingIds: filterSchema.extend({ excludeIds: z.array(workIdSchema).max(100_000).optional() }),
   deleteLocal: z.object({ accountId: idSchema, workIds: z.array(workIdSchema).min(1).max(100000) }),
   unlikeStart: z.object({
     accountId: idSchema,
