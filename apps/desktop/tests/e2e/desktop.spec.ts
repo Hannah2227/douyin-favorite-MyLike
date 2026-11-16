@@ -1151,7 +1151,7 @@ test('opens the login window when identity is missing and persists a rate-limit 
   await installPlatform(accountId)
   await invoke('collectionControl', { accountId, taskId: task.id, action: 'resume' })
   await expect
-    .poll(async () => (await invoke('snapshot')).data.collection.status, { timeout: 20000 })
+    .poll(async () => (await invoke('snapshot')).data.collection?.status, { timeout: 20000 })
     .toBe('completed')
 })
 
@@ -5290,7 +5290,7 @@ for (const shape of ['html', 'json']) {
     else expect(checks.some((item: any) => item.operation === 'likes')).toBe(false)
     await expect(card.getByRole('button', { name: '向下采集', exact: true })).toBeEnabled()
     await card.getByRole('button', { name: '向下采集', exact: true }).click()
-    await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+    await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
     if (shape === 'html') {
       await app.evaluate(() => {
         ;(globalThis as any).__mylikeChallengeResponse = 'html'
@@ -6526,7 +6526,7 @@ test('unified health checks are read-only, show real green status and keep exact
   await screenshot(info.outputPath('health-normal.png'))
   const card = page.getByRole('region', { name: '自动采集任务', exact: true })
   await card.getByRole('button', { name: '向下采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
   expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
   await expect(card.getByRole('button')).toHaveText(['更新顶部', '向下采集', '停止'])
 })
@@ -6582,9 +6582,9 @@ test('unified fixed stop preserves task progress and never resumes collection af
   await page.getByRole('button', { name: '任务', exact: true }).click()
   const card = page.getByRole('region', { name: '自动采集任务', exact: true })
   await card.getByRole('button', { name: '更新顶部', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('running')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('running')
   await card.getByRole('button', { name: '停止', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('stopped')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('stopped')
   const stopped = (await invoke('snapshot')).data.collection
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeHoldLikesAt = null
@@ -6596,7 +6596,7 @@ test('unified fixed stop preserves task progress and never resumes collection af
     .toMatchObject({ status: 'normal', checking: false })
   expect((await invoke('snapshot')).data.collection).toEqual(stopped)
   await card.getByRole('button', { name: '向下采集', exact: true }).click()
-  await expect.poll(async () => (await invoke('snapshot')).data.collection.status).toBe('completed')
+  await expect.poll(async () => (await invoke('snapshot')).data.collection?.status).toBe('completed')
   expect((await invoke('query', { accountId })).data.total).toBeGreaterThan(0)
 })
 
