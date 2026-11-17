@@ -89,7 +89,7 @@ export function LibraryView({
     typeof activeYear === 'number' && !page.years.includes(activeYear)
       ? [activeYear, ...page.years]
       : page.years
-  const filtered = !!(search || type !== 'all' || author || activeYear || month)
+  const filtered = !!(search || library.searches.length || type !== 'all' || author || activeYear || month)
   const connected = !!account?.lastVerifiedAt
   const dragSelection = useDragSelection(
     selection.enabled && !busy && !querying,

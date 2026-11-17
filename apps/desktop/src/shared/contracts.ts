@@ -20,6 +20,8 @@ export type MobileLibrarySource = 'likes' | 'favorites'
 export const filterSchema = z.object({
   accountId: idSchema,
   search: z.string().max(200).default(''),
+  /** 综合搜索：多个关键词取并集，同一作品只出现一次。 */
+  searches: z.array(z.string().trim().min(1).max(120)).max(12).optional(),
   author: z.string().min(1).max(500).optional(),
   mediaType: z.enum(['all', 'video', 'gallery']).default('all'),
   year: z

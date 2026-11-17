@@ -227,7 +227,13 @@ export function App() {
           }
         </h1>
         {(tab === 'library' || tab === 'favorites') && (
-          <LibrarySearch value={library.search} change={library.setSearch} />
+          <LibrarySearch
+            change={library.setSearch}
+            searches={library.searches}
+            add={library.addSearch}
+            remove={library.removeSearch}
+            clear={library.clearSearches}
+          />
         )}
         {tab === 'library' && (
           <div className="header-actions">

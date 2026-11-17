@@ -249,7 +249,7 @@ describe('SQLite transactions and account ownership', () => {
       live: 0
     })
   })
-  it('ranks up to six stored author names by work count and excludes missing names', () => {
+  it('ranks stored author names by work count and excludes missing names', () => {
     const { store } = setup()
     store.call('savePage', {
       accountId: 'a',
@@ -263,8 +263,27 @@ describe('SQLite transactions and account ownership', () => {
     })
     expect(store.call('libraryOverview', { accountId: 'a' }).authors).toEqual([
       { nickname: 'A', count: 2 },
-      ...['B', 'C', 'D', 'E', 'F'].map((nickname) => ({ nickname, count: 1 }))
+      ...['B', 'C', 'D', 'E', 'F', 'G'].map((nickname) => ({ nickname, count: 1 }))
     ])
+  })
+  it('unions several search terms and lists each work only once', () => {
+    const { store } = setup()
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      cursor: '0',
+      hasMore: false,
+      items: [
+        { ...item('1'), title: '英语 提分技巧' },
+        { ...item('2'), title: '数学 专项训练' },
+        { ...item('3'), title: '英语 和 数学 一起' }
+      ]
+    })
+    const unified = store.call('query', { ...query, searches: ['英语', '数学'] })
+    expect(unified.total).toBe(3)
+    expect(unified.items.map((work) => work.id).sort()).toEqual(['1', '2', '3'])
+    const single = store.call('query', { ...query, searches: ['英语'] })
+    expect(single.total).toBe(2)
   })
   it('persists page and cursor together, is idempotent, and survives reopening', () => {
     const { store, file } = setup()

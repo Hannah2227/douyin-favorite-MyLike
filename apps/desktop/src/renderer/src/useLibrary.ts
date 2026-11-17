@@ -36,7 +36,8 @@ export function useLibrary(
       filter: { ...(old?.scope === storageKey ? old.filter : stored.filter), ...patch }
     }))
   }
-  const { search, mediaType: type, year, month, sort, folderId } = raw
+  const { search, searches: rawSearches, mediaType: type, year, month, sort, folderId } = raw
+  const searches = rawSearches ?? []
   const filter = {
     ...raw,
     year: sort === 'liked' ? null : year,
@@ -62,6 +63,7 @@ export function useLibrary(
   const restored = useRef('')
   const selectionSequence = useRef(0)
   const previousSearch = useRef(search)
+  const previousSearches = useRef(JSON.stringify(searches))
   const [geometry, setGeometry] = useState({ columns: 4, cardWidth: 180, margin: 0 })
   const { columns, cardWidth, margin } = geometry
   const rowHeight = cardWidth * 1.25 + 64
@@ -131,8 +133,10 @@ export function useLibrary(
     let active = true
     setQuerying(true)
     setFailure(null)
-    const searchChanged = previousSearch.current !== search
+    const searchChanged =
+      previousSearch.current !== search || previousSearches.current !== JSON.stringify(searches)
     previousSearch.current = search
+    previousSearches.current = JSON.stringify(searches)
     const timer = setTimeout(
       async () => {
         const stillCurrent = () => active && scope.current === key
@@ -312,10 +316,18 @@ export function useLibrary(
       return next
     })
   }
-  const reset = { search: '', author: undefined, mediaType: 'all', year: null, month: null } as const
+  const reset = { search: '', searches: [] as string[], author: undefined, mediaType: 'all', year: null, month: null } as const
   return {
     search,
     setSearch: (value: string) => update({ search: value }),
+    searches,
+    addSearch: (term: string) => {
+      const value = term.trim()
+      if (!value || searches.includes(value) || searches.length >= 12) return
+      update({ searches: [...searches, value], search: '' })
+    },
+    removeSearch: (term: string) => update({ searches: searches.filter((item) => item !== term) }),
+    clearSearches: () => update({ searches: [] }),
     clearAuthor: () => update({ author: undefined }),
     type,
     setType: (value: Filter['mediaType']) => update({ mediaType: value }),
