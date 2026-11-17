@@ -719,7 +719,7 @@ export class Store {
         const authors = this.db
           .prepare(
             `SELECT trim(w.author) AS nickname,count(*) AS count ${likes}
-             AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 6`
+             AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 300`
           )
           .all(input.accountId)
         return { accountId: input.accountId, ...counts, ...sources, years, authors }

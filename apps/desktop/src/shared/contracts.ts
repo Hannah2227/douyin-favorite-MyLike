@@ -59,6 +59,12 @@ export const commands = {
   snapshot: z.object({}),
   exportMobileLibrary: z.object({ accountId: idSchema, source: z.enum(['likes', 'favorites']).optional() }),
   checkHealth: z.object({ accountId: idSchema }),
+  toolboxDiscover: z.object({}),
+  toolboxDirect: z.object({ url: z.string().min(8).max(4000) }),
+  toolboxDirectState: z.object({}),
+  toolboxProgress: z.object({}),
+  toolboxPickDir: z.object({}),
+  toolboxReveal: z.object({}),
   collectionAction: z.object({
     accountId: idSchema,
     source: z.enum(['likes', 'favorites']),
@@ -402,6 +408,12 @@ export interface Outputs {
   favoriteSave: { collected: true; foldersAdded: number }
   favoriteCreateFolder: FavoriteFolder
   checkHealth: HealthSnapshot
+  toolboxDiscover: { running: boolean; items: unknown[] }
+  toolboxDirect: ToolboxResult
+  toolboxDirectState: ToolboxDirectState
+  toolboxProgress: ToolboxProgress
+  toolboxPickDir: ToolboxResult
+  toolboxReveal: ToolboxResult
   collectionAction: null
   snapshot: Snapshot
   createAccount: Account
@@ -455,3 +467,25 @@ export interface DesktopAPI {
   onChanged(callback: () => void): () => void
   onBeforeQuit(callback: () => Promise<void>): () => void
 }
+export interface ToolboxProgress {
+  ok: boolean
+  dir: string
+  file: string
+  size: number
+  mtimeMs: number
+}
+
+export interface ToolboxDirectState {
+  running: boolean
+  exit: number | null
+  err: string
+}
+
+export interface ToolboxResult {
+  ok: boolean
+  dir?: string
+  file?: string
+  count?: number
+  msg?: string
+}
+
