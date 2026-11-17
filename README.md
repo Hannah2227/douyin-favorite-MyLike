@@ -82,3 +82,52 @@ pnpm dev
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)，第三方组件保留各自的版权和许可证，相关声明随发行包提供。
+
+---
+
+## 我的增强版（fork 说明）
+
+这个 fork 在官方 2.0.7 基础上加了三个改动，`main` 分支即为可用版本：
+
+### 1. 综合搜索
+
+「喜欢」页搜索框支持**空格分隔多个关键词**，例如 `学习 高考 数学`：
+
+- 输入里一出现空格，右侧立即显示 `综合搜索 · 继续输入`
+- 输入第二个词后标记变为 `综合搜索 · N`
+- 多个关键词取**并集**，同一作品只显示一次，顶部条数即合并去重后的结果
+
+### 2. 作者榜
+
+上限 6 → 300，图表支持滚轮横向滚动并按页面记住位置。
+
+### 3. 播放页下载按钮
+
+调用本机「视频工具箱」下载当前视频（队列、真实进度、失败弹窗）。
+需要本机存在该工具箱，否则按钮会提示找不到。
+
+## 从源码构建
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm typecheck      # 类型检查
+pnpm test           # 单元测试
+pnpm build          # 产出 out/
+pnpm package:win    # Windows 安装包（需要 Electron 二进制）
+```
+
+只想要免安装目录：
+
+```bash
+pnpm build
+npx electron-builder --dir --win --x64
+# 结果在 apps/desktop/dist/win-unpacked/
+```
+
+国内网络可加镜像：
+
+```bash
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
