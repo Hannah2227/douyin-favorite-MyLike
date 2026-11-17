@@ -312,7 +312,7 @@ export function useLibrary(
       return next
     })
   }
-  const reset = { search: '', author: undefined, mediaType: 'all', year: null, month: null } as const
+  const reset = { search: '', searches: [] as string[], author: undefined, mediaType: 'all', year: null, month: null } as const
   return {
     search,
     setSearch: (value: string) => update({ search: value }),

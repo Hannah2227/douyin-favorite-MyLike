@@ -1,0 +1,39 @@
+.toolbox-control {
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.toolbox-control:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.toolbox-status {
+  position: fixed;
+  right: 18px;
+  bottom: 76px;
+  z-index: 40;
+  max-width: 380px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  cursor: pointer;
+}
+.toolbox-status.ok {
+  border-color: #4d9d79;
+}
+.toolbox-status.err {
+  border-color: #ff4d7d;
+  color: #ffb3c4;
+}

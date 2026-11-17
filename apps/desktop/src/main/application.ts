@@ -1,4 +1,5 @@
 import { HealthMonitor } from './health'
+import { Toolbox, readProgress } from './toolbox'
 import { healthStatus, type HealthSnapshot } from '../shared/health'
 import { blockedFavoriteTask, favoriteOperation, FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
@@ -72,6 +73,7 @@ export class Application {
   private readonly favorites: FavoritesService
   private readonly favoriteActions: FavoriteActions
   private readonly collection: CollectionService
+  private readonly toolbox = new Toolbox()
   private readonly unlike: UnlikeService
   private readonly authentication: Authentication
   private admission: Promise<void> = Promise.resolve()
@@ -890,6 +892,18 @@ export class Application {
           if (this.accountAction === action) this.accountAction = null
         }
       }
+      case 'toolboxDiscover':
+        return this.toolbox.state()
+      case 'toolboxDirect':
+        return this.toolbox.direct(input.url)
+      case 'toolboxDirectState':
+        return this.toolbox.directState()
+      case 'toolboxProgress':
+        return readProgress()
+      case 'toolboxPickDir':
+        return this.toolbox.pickDir()
+      case 'toolboxReveal':
+        return this.toolbox.reveal()
       case 'checkHealth':
         return this.checkHealth(input.accountId, true)
       case 'collectionAction': {

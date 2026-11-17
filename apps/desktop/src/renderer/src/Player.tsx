@@ -30,6 +30,7 @@ import { usePlayerShortcuts } from './usePlayerShortcuts'
 import { keyLabel, type ShortcutAction } from '../../shared/preferences'
 import { FavoriteDialog } from './FavoriteDialog'
 import { call } from './api'
+import { ToolboxDownload } from './toolbox-download'
 
 type Props = {
   playback: Playback
@@ -773,6 +774,7 @@ export function Player({
             </span>
           </div>
           <div className="player-tools">
+            <ToolboxDownload />
             {musicWarning && (
               <span className="music-warning" role="status">
                 {musicWarning}

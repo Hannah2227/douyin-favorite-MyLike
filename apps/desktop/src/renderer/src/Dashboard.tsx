@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Film, Heart, ImageIcon, Database, Plus, CalendarDays, TrendingUp, Users } from 'lucide-react'
 import type { Account, Filter, LibraryOverview } from '../../shared/contracts'
 import './dashboard.css'
@@ -19,11 +20,32 @@ function DashboardBars({
   items: { label: string; count: number; open: () => void }[] | undefined
   empty: string
 }) {
+  const chart = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const node = chart.current
+    if (!node) return
+    const key = 'mylike.chartScroll'
+    const saved = Number(localStorage.getItem(key) ?? 0)
+    if (Number.isFinite(saved) && saved > 0) node.scrollLeft = saved
+    const wheel = (event: WheelEvent) => {
+      if (!event.deltaY) return
+      event.preventDefault()
+      node.scrollLeft += event.deltaY
+    }
+    const save = () => localStorage.setItem(key, String(Math.round(node.scrollLeft)))
+    node.addEventListener('wheel', wheel, { passive: false })
+    const timer = window.setInterval(save, 700)
+    return () => {
+      node.removeEventListener('wheel', wheel)
+      window.clearInterval(timer)
+      save()
+    }
+  }, [items])
   if (!items) return <div className="dashboard-empty">正在读取收录记录…</div>
   if (!items.length) return <div className="dashboard-empty">{empty}</div>
   const max = Math.max(...items.map((item) => item.count))
   return (
-    <div className="collection-chart">
+    <div className="collection-chart" ref={chart}>
       {items.map(({ label, count, open }) => (
         <button
           type="button"

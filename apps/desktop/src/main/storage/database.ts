@@ -719,7 +719,7 @@ export class Store {
         const authors = this.db
           .prepare(
             `SELECT trim(w.author) AS nickname,count(*) AS count ${likes}
-             AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 6`
+             AND trim(w.author)<>'' GROUP BY nickname ORDER BY count DESC,nickname ASC LIMIT 300`
           )
           .all(input.accountId)
         return { accountId: input.accountId, ...counts, ...sources, years, authors }
@@ -789,9 +789,25 @@ export class Store {
   } {
     const clauses = ['a.accountId=?'],
       params: (string | number)[] = [query.accountId]
-    if (query.search) {
-      clauses.push('(instr(lower(w.title),lower(?))>0 OR instr(lower(w.author),lower(?))>0)')
-      params.push(query.search, query.search)
+    const terms = [
+      ...new Set(
+        [
+          ...(query.searches ?? []),
+          // 综合搜索：输入里用空格分隔多个关键词，例如「学习 高考 数学」
+          ...(query.search ?? '').split(/\s+/)
+        ]
+          .map((term) => term.trim())
+          .filter(Boolean)
+      )
+    ]
+    if (terms.length) {
+      // 综合搜索：多个关键词各自匹配，取并集；一条 SQL 天然去重。
+      clauses.push(
+        `(${terms
+          .map(() => '(instr(lower(w.title),lower(?))>0 OR instr(lower(w.author),lower(?))>0)')
+          .join(' OR ')})`
+      )
+      for (const term of terms) params.push(term, term)
     }
     if (query.author) {
       clauses.push('trim(w.author)=?')

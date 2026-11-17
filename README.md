@@ -1,3 +1,25 @@
+> ## ⬇ 这是「增强版」，下载解压即用，不需要先装官方版
+>
+> 在官方 2.0.7 上加了：**综合搜索（空格分隔多关键词，并集去重）**、**作者榜 300 位 + 滚轮记忆**、**播放页下载按钮**。
+>
+> ### 下载（Windows x64，免安装）
+>
+> **[MyLike-2.0.7-enhanced-win-x64.zip · 166 MB](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-win-x64.zip)**
+>
+> 1. 下载上面的 zip
+> 2. 解压到任意目录，例如 `D:\MyLike`
+> 3. 双击 `MyLike.exe` 就能用
+>
+> 数据目录与官方版一致（`%LOCALAPPDATA%\DouyinShuffle`），首次运行会沿用已有数据。
+>
+> 验证方式：打开「喜欢」页，搜索框输入 `学习 高考`，右侧出现「综合搜索 · 2」即生效。
+>
+> ### 或者从源码自己构建
+>
+> 见文末「我的增强版（fork 说明）」，`pnpm build && npx electron-builder --dir` 即可。
+>
+> ---
+
 <div align="center">
 
 <img src="apps/desktop/assets/icon.svg" width="120" alt="MyLike Logo" />
@@ -8,16 +30,16 @@
 
 一个回看抖音喜欢与收藏的 Windows 桌面应用。
 
-[![Release](https://img.shields.io/github/v/release/Hannah2227/douyin-favorite-MyLike?style=flat-square&color=ff5c8a)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
-[![Windows x64](https://img.shields.io/badge/Windows-x64-5865f2?style=flat-square)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Hannah2227/douyin-favorite-MyLike?style=flat-square&color=ff5c8a)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)
+[![Windows x64](https://img.shields.io/badge/Windows-x64-5865f2?style=flat-square)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)
 [![Build](https://github.com/Hannah2227/douyin-favorite-MyLike/actions/workflows/desktop.yml/badge.svg?branch=main)](https://github.com/Hannah2227/douyin-favorite-MyLike/actions/workflows/desktop.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6bb99b?style=flat-square)](LICENSE)
 
 [![Stars](https://img.shields.io/github/stars/Hannah2227/douyin-favorite-MyLike?style=flat-square&logo=github&label=Stars&color=f5c451)](https://github.com/Hannah2227/douyin-favorite-MyLike/stargazers)
 [![Forks](https://img.shields.io/github/forks/Hannah2227/douyin-favorite-MyLike?style=flat-square&label=Forks&color=8ba6fa)](https://github.com/Hannah2227/douyin-favorite-MyLike/forks)
-[![Downloads](https://img.shields.io/github/downloads/Hannah2227/douyin-favorite-MyLike/total?style=flat-square&label=Downloads&color=ff5c8a)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases)
+[![Downloads](https://img.shields.io/github/downloads/Hannah2227/douyin-favorite-MyLike/total?style=flat-square&label=Downloads&color=ff5c8a)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases)
 
-[下载应用](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest) · [功能特性](#功能特性) · [界面预览](#界面预览) · [反馈问题](https://github.com/Hannah2227/douyin-favorite-MyLike/issues)
+[下载应用](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest) · [功能特性](#功能特性) · [界面预览](#界面预览) · [反馈问题](https://github.com/2529548492-cmd/douyin-favorite-MyLike/issues)
 
 </div>
 
@@ -29,7 +51,7 @@
 
 ## 下载
 
-**[下载最新版 · Windows x64](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)**
+**[下载最新版 · Windows x64](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)**
 
 在发布页下载 `*-win-x64-setup.exe`，可选择应用目录。
 
@@ -82,3 +104,52 @@ pnpm dev
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)，第三方组件保留各自的版权和许可证，相关声明随发行包提供。
+
+---
+
+## 我的增强版（fork 说明）
+
+这个 fork 在官方 2.0.7 基础上加了三个改动，`main` 分支即为可用版本：
+
+### 1. 综合搜索
+
+「喜欢」页搜索框支持**空格分隔多个关键词**，例如 `学习 高考 数学`：
+
+- 输入里一出现空格，右侧立即显示 `综合搜索 · 继续输入`
+- 输入第二个词后标记变为 `综合搜索 · N`
+- 多个关键词取**并集**，同一作品只显示一次，顶部条数即合并去重后的结果
+
+### 2. 作者榜
+
+上限 6 → 300，图表支持滚轮横向滚动并按页面记住位置。
+
+### 3. 播放页下载按钮
+
+调用本机「视频工具箱」下载当前视频（队列、真实进度、失败弹窗）。
+需要本机存在该工具箱，否则按钮会提示找不到。
+
+## 从源码构建
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm typecheck      # 类型检查
+pnpm test           # 单元测试
+pnpm build          # 产出 out/
+pnpm package:win    # Windows 安装包（需要 Electron 二进制）
+```
+
+只想要免安装目录：
+
+```bash
+pnpm build
+npx electron-builder --dir --win --x64
+# 结果在 apps/desktop/dist/win-unpacked/
+```
+
+国内网络可加镜像：
+
+```bash
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
