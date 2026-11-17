@@ -14,8 +14,6 @@
 >
 > 验证方式：打开「喜欢」页，搜索框输入 `学习 高考`，右侧出现「综合搜索 · 2」即生效。
 >
-> > 已经装了官方版的人，也可以用 9.9 MB 的 [补丁包](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-patch.zip) 覆盖 `resources\app`。
->
 > ### 或者从源码自己构建
 >
 > 见文末「我的增强版（fork 说明）」，`pnpm build && npx electron-builder --dir` 即可。
