@@ -1,3 +1,24 @@
+> ## ⬇ 这是「增强版」，不是官方原版
+>
+> 在官方 2.0.7 上加了：**综合搜索（空格分隔多关键词，并集去重）**、**作者榜 300 位 + 滚轮记忆**、**播放页下载按钮**。
+>
+> ### 安装（Windows x64）
+>
+> **第一步**：先装官方 2.0.7 —— [官方安装包](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
+>
+> **第二步**：完全退出 MyLike，下载并解压补丁包，把它里面的内容**覆盖**到
+> `C:\Users\<你的用户名>\AppData\Local\Programs\MyLike\resources\app\`
+>
+> - [增强版补丁包 · 9.9 MB](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-patch.zip)
+>
+> **第三步**：重新打开 MyLike。在「喜欢」页搜索框输入 `学习 高考`，右侧出现「综合搜索 · 2」就说明生效了。
+>
+> ### 或者从源码自己构建
+>
+> 见文末「我的增强版（fork 说明）」，`pnpm build && npx electron-builder --dir` 即可。
+>
+> ---
+
 <div align="center">
 
 <img src="apps/desktop/assets/icon.svg" width="120" alt="MyLike Logo" />
@@ -8,16 +29,16 @@
 
 一个回看抖音喜欢与收藏的 Windows 桌面应用。
 
-[![Release](https://img.shields.io/github/v/release/Hannah2227/douyin-favorite-MyLike?style=flat-square&color=ff5c8a)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
-[![Windows x64](https://img.shields.io/badge/Windows-x64-5865f2?style=flat-square)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Hannah2227/douyin-favorite-MyLike?style=flat-square&color=ff5c8a)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)
+[![Windows x64](https://img.shields.io/badge/Windows-x64-5865f2?style=flat-square)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)
 [![Build](https://github.com/Hannah2227/douyin-favorite-MyLike/actions/workflows/desktop.yml/badge.svg?branch=main)](https://github.com/Hannah2227/douyin-favorite-MyLike/actions/workflows/desktop.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6bb99b?style=flat-square)](LICENSE)
 
 [![Stars](https://img.shields.io/github/stars/Hannah2227/douyin-favorite-MyLike?style=flat-square&logo=github&label=Stars&color=f5c451)](https://github.com/Hannah2227/douyin-favorite-MyLike/stargazers)
 [![Forks](https://img.shields.io/github/forks/Hannah2227/douyin-favorite-MyLike?style=flat-square&label=Forks&color=8ba6fa)](https://github.com/Hannah2227/douyin-favorite-MyLike/forks)
-[![Downloads](https://img.shields.io/github/downloads/Hannah2227/douyin-favorite-MyLike/total?style=flat-square&label=Downloads&color=ff5c8a)](https://github.com/Hannah2227/douyin-favorite-MyLike/releases)
+[![Downloads](https://img.shields.io/github/downloads/Hannah2227/douyin-favorite-MyLike/total?style=flat-square&label=Downloads&color=ff5c8a)](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases)
 
-[下载应用](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest) · [功能特性](#功能特性) · [界面预览](#界面预览) · [反馈问题](https://github.com/Hannah2227/douyin-favorite-MyLike/issues)
+[下载应用](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest) · [功能特性](#功能特性) · [界面预览](#界面预览) · [反馈问题](https://github.com/2529548492-cmd/douyin-favorite-MyLike/issues)
 
 </div>
 
@@ -29,7 +50,7 @@
 
 ## 下载
 
-**[下载最新版 · Windows x64](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)**
+**[下载最新版 · Windows x64](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/latest)**
 
 在发布页下载 `*-win-x64-setup.exe`，可选择应用目录。
 
