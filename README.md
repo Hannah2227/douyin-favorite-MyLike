@@ -1,17 +1,20 @@
-> ## ⬇ 这是「增强版」，不是官方原版
+> ## ⬇ 这是「增强版」，下载解压即用，不需要先装官方版
 >
 > 在官方 2.0.7 上加了：**综合搜索（空格分隔多关键词，并集去重）**、**作者榜 300 位 + 滚轮记忆**、**播放页下载按钮**。
 >
-> ### 安装（Windows x64）
+> ### 下载（Windows x64，免安装）
 >
-> **第一步**：先装官方 2.0.7 —— [官方安装包](https://github.com/Hannah2227/douyin-favorite-MyLike/releases/latest)
+> **[MyLike-2.0.7-enhanced-win-x64.zip · 166 MB](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-win-x64.zip)**
 >
-> **第二步**：完全退出 MyLike，下载并解压补丁包，把它里面的内容**覆盖**到
-> `C:\Users\<你的用户名>\AppData\Local\Programs\MyLike\resources\app\`
+> 1. 下载上面的 zip
+> 2. 解压到任意目录，例如 `D:\MyLike`
+> 3. 双击 `MyLike.exe` 就能用
 >
-> - [增强版补丁包 · 9.9 MB](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-patch.zip)
+> 数据目录与官方版一致（`%LOCALAPPDATA%\DouyinShuffle`），首次运行会沿用已有数据。
 >
-> **第三步**：重新打开 MyLike。在「喜欢」页搜索框输入 `学习 高考`，右侧出现「综合搜索 · 2」就说明生效了。
+> 验证方式：打开「喜欢」页，搜索框输入 `学习 高考`，右侧出现「综合搜索 · 2」即生效。
+>
+> > 已经装了官方版的人，也可以用 9.9 MB 的 [补丁包](https://github.com/2529548492-cmd/douyin-favorite-MyLike/releases/download/v2.0.7-mylike/MyLike-2.0.7-enhanced-patch.zip) 覆盖 `resources\app`。
 >
 > ### 或者从源码自己构建
 >
