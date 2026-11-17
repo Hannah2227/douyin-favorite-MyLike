@@ -1326,3 +1326,16 @@ h1 {
   color: inherit;
   cursor: pointer;
 }
+
+.search-mode {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  user-select: none;
+}

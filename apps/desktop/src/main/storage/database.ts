@@ -791,7 +791,11 @@ export class Store {
       params: (string | number)[] = [query.accountId]
     const terms = [
       ...new Set(
-        [...(query.searches ?? []), ...(query.search ? [query.search] : [])]
+        [
+          ...(query.searches ?? []),
+          // 综合搜索：输入里用空格分隔多个关键词，例如「学习 高考 数学」
+          ...(query.search ?? '').split(/\s+/)
+        ]
           .map((term) => term.trim())
           .filter(Boolean)
       )
