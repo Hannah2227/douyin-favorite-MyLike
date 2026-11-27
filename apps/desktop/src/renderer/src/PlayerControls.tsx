@@ -1,4 +1,48 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { douyinWorkLink } from '../../shared/work-link'
+import { call } from './api'
+
+export function WorkLinkDialog({ workId, close }: { workId: string; close: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const heading = useId()
+  const [status, setStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
+
+  useEffect(() => {
+    dialog.current?.showModal()
+  }, [])
+
+  const copy = async () => {
+    setStatus('copying')
+    try {
+      await call(window.mylike.invoke('copyWorkLink', { workId }))
+      setStatus('copied')
+    } catch {
+      setStatus('error')
+    }
+  }
+
+  return (
+    <dialog ref={dialog} className="modal confirm-dialog" aria-labelledby={heading} onClose={close}>
+      <h2 id={heading}>抖音作品链接</h2>
+      <input
+        aria-label="抖音链接"
+        value={douyinWorkLink(workId)}
+        readOnly
+        autoFocus
+        onFocus={(event) => event.currentTarget.select()}
+      />
+      {status === 'error' && <p role="alert">复制失败，可以选中链接手动复制。</p>}
+      <div className="panel-actions">
+        <button type="button" onClick={() => dialog.current?.close()}>
+          关闭
+        </button>
+        <button type="button" className="primary" onClick={() => void copy()} disabled={status === 'copying'}>
+          {status === 'copied' ? '已复制' : '复制链接'}
+        </button>
+      </div>
+    </dialog>
+  )
+}
 
 const rates = [0.75, 1, 1.25, 1.5, 1.75, 2, 3]
 const rateLabel = (rate: number) => `${Number.isInteger(rate) ? rate.toFixed(1) : rate}x`

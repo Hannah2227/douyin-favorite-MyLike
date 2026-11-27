@@ -173,11 +173,15 @@ export function usePlayback(
         })
     }
   }
-  const start = async (source: QueueCreate['source'], mode: QueueCreate['mode'], startWorkId?: string) => {
+  const start = async (
+    source: QueueCreate['source'],
+    mode: QueueCreate['mode'],
+    options?: Pick<QueueCreate, 'startWorkId' | 'monthRange'>
+  ) => {
     if (!accountId) return
     warmup.current!.clear()
     const seq = ++intent.current
-    const queue = await call(window.mylike.invoke('queueCreate', { accountId, source, mode, startWorkId }))
+    const queue = await call(window.mylike.invoke('queueCreate', { accountId, source, mode, ...options }))
     if (seq === intent.current) await load(queue, seq)
   }
   const resume = async (queue: QueueState) => {

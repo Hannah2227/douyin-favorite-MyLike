@@ -205,7 +205,7 @@ export function activityMessage(activity?: string | null): string {
   return '正在同步内容…'
 }
 
-/** The first real read performed when resuming the main favorites task. */
+/** The first platform request when starting or resuming a favorites task. */
 export function favoriteReadOperation(
   task?: {
     status: string
@@ -213,7 +213,7 @@ export function favoriteReadOperation(
     incomplete?: number
     foldersDeferred?: number
   } | null
-): string {
+) {
   if (!task || task.status === 'completed') return 'favorites'
   if (task.status === 'partial') return task.incomplete || !task.foldersDeferred ? 'favorites' : 'folderItems'
   return task.stage === 'folder' ? 'folderItems' : task.stage === 'folders' ? 'folders' : 'favorites'

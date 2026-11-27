@@ -127,6 +127,7 @@ export interface Inputs {
   }
   unlikeResolve: { accountId: string; taskId: string; workId: string; liked: boolean }
   queueState: { accountId: string }
+  queueMonths: Pick<QueueCreate, 'accountId' | 'source'>
   queueCreate: QueueCreate
   queueResume: { accountId: string; queueId: string }
   queueMove: { accountId: string; queueId: string; target: 'next' | 'previous' | number }
@@ -186,6 +187,7 @@ export interface Replies {
   unlikeFinish: UnlikeTask
   unlikeResolve: UnlikeTask
   queueState: QueueState | null
+  queueMonths: Outputs['queueMonths']
   queueCreate: QueueState
   queueResume: QueueState
   queueMove: QueueState

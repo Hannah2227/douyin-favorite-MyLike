@@ -1,0 +1,96 @@
+.modal.shuffle-dialog {
+  width: min(426px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  padding: 0;
+  overflow: auto;
+}
+.shuffle-heading,
+.shuffle-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 22px;
+}
+.shuffle-heading {
+  padding-top: 19px;
+}
+.shuffle-dialog .shuffle-heading h2,
+.shuffle-dialog .shuffle-heading p {
+  margin: 0;
+}
+.shuffle-dialog .shuffle-heading h2 {
+  font-size: 19px;
+}
+.shuffle-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--soft);
+  color: var(--accent);
+}
+.shuffle-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 22px 15px;
+}
+.shuffle-modes {
+  display: flex;
+  gap: 7px;
+}
+.shuffle-modes button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.shuffle-modes button[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  color: var(--accent);
+  background: var(--soft);
+  font-weight: 600;
+}
+.shuffle-dates {
+  display: grid;
+  gap: 8px;
+}
+.shuffle-date-row {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  gap: 8px;
+  align-items: center;
+}
+.shuffle-date-row > span {
+  font-size: 12px;
+  font-weight: 600;
+}
+.shuffle-date-row .select-trigger {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface2);
+}
+.shuffle-footer {
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+}
+.shuffle-footer output {
+  font-size: 12px;
+  color: var(--muted);
+}
+.shuffle-footer output.is-invalid {
+  color: var(--accent);
+}
+.shuffle-footer .panel-actions {
+  margin: 0 0 0 auto;
+  gap: 7px;
+}
+.shuffle-footer .primary {
+  background: var(--accent);
+  color: #231019;
+}
+.shuffle-read-state {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}

@@ -54,6 +54,13 @@ const queueSourceSchema = z.discriminatedUnion('type', [
     sort: z.enum(['published', 'collected', 'liked']).default('published')
   })
 ])
+const publicationMonthSchema = z
+  .number()
+  .int()
+  .min(MIN_LIBRARY_YEAR * 100 + 1)
+  .max(MAX_LIBRARY_YEAR * 100 + 12)
+  .refine((value) => value % 100 >= 1 && value % 100 <= 12)
+const queueScopeSchema = z.object({ accountId: idSchema, source: queueSourceSchema })
 
 export const commands = {
   snapshot: z.object({}),
@@ -129,11 +136,14 @@ export const commands = {
   }),
   unlikeHistory: z.object({ accountId: idSchema }),
   unlikeVerify: z.object({ accountId: idSchema, taskId: idSchema, workId: workIdSchema }),
-  queueCreate: z.object({
-    accountId: idSchema,
-    source: queueSourceSchema,
+  queueMonths: queueScopeSchema,
+  queueCreate: queueScopeSchema.extend({
     mode: z.enum(['sequence', 'shuffle']),
-    startWorkId: workIdSchema.optional()
+    startWorkId: workIdSchema.optional(),
+    monthRange: z
+      .object({ from: publicationMonthSchema, to: publicationMonthSchema })
+      .refine(({ from, to }) => from <= to)
+      .optional()
   }),
   queueResume: z.object({ accountId: idSchema, queueId: idSchema }),
   queueMove: z.object({
@@ -159,6 +169,7 @@ export const commands = {
   appPreferences: z.object({ preferences: appPreferencesPatchSchema }),
   checkDatabase: z.object({}),
   copyDiagnostics: z.object({}),
+  copyWorkLink: z.object({ workId: workIdSchema }),
   openReleases: z.object({}),
   backup: z.object({}),
   dataInfo: z.object({ accountId: idSchema.nullable() }),
@@ -187,6 +198,10 @@ export type PlaybackPreferences = z.infer<typeof playbackPreferencesSchema>
 export type PlaybackPosition = z.infer<typeof playbackPositionSchema>
 export type PlaybackScope = z.infer<typeof playbackScopeSchema>
 export type QueueCreate = z.infer<typeof commands.queueCreate>
+export interface QueueMonths {
+  total: number
+  months: { key: number; count: number }[]
+}
 export interface QueueState extends PlaybackScope {
   source?: 'likes' | 'favorites' | 'all'
   mode: 'sequence' | 'shuffle'
@@ -392,6 +407,7 @@ export interface Outputs {
   appPreferences: AppPreferences
   checkDatabase: { ok: boolean; checkedAt: number; issues: number }
   copyDiagnostics: null
+  copyWorkLink: null
   openReleases: null
   favoritesStart: FavoritesTask
   favoritesProbe: { stage: string; count: number; skipped: number; hasMore: boolean }
@@ -427,6 +443,7 @@ export interface Outputs {
   unlikeHistory: UnlikeTask[]
   unlikeVerify: UnlikeTask
   queueCreate: QueueState
+  queueMonths: QueueMonths
   queueResume: QueueState
   queueMove: QueueState
   queueProgress: QueueState

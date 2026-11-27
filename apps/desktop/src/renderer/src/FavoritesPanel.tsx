@@ -112,9 +112,10 @@ export function FavoritesPanel({
             ' · 本次新增 ' +
             progress.added +
             ' 条' +
-            (progress.mode === 'update'
-              ? ' · 更新顶部'
-              : ' · 收藏夹 ' + progress.foldersDone + '/' + progress.foldersTotal)}
+            (progress.mode === 'update' ? ' · 更新顶部' : '') +
+            (progress.mode !== 'update' || progress.foldersTotal
+              ? ' · 收藏夹 ' + progress.foldersDone + '/' + progress.foldersTotal
+              : '')}
         </span>
       )}
       <div className="panel-actions">

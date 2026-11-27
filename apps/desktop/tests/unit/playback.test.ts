@@ -129,6 +129,50 @@ describe('persistent playback queues', () => {
     ).toThrow(/队列已变化/)
     expect(store.call('queueState', { accountId: 'b' })).toBeNull()
   })
+  it('counts scoped publication months and shuffles an inclusive range without duplicating works', () => {
+    const { store } = setup(1)
+    store.call('savePage', {
+      accountId: 'a',
+      remoteId: 'remote-a',
+      items: [
+        { ...item(2), publishedAt: +new Date(2024, 0, 1) / 1000 },
+        { ...item(3), publishedAt: +new Date(2024, 3, 1) / 1000 },
+        { ...item(4), publishedAt: +new Date(2025, 0, 1) / 1000 },
+        { ...item(5), publishedAt: 0 }
+      ],
+      cursor: '0',
+      hasMore: false
+    })
+    const source = { type: 'ids' as const, ids: ['2', '3', '4', '5', '2'], sort: 'published' as const }
+    const details = store.call('queueMonths', { accountId: 'a', source })
+    expect(details.total).toBe(4)
+    expect(details.months).toEqual(
+      expect.arrayContaining([
+        { key: 202401, count: 1 },
+        { key: 202404, count: 1 },
+        { key: 202501, count: 1 }
+      ])
+    )
+    expect(details.months).toHaveLength(3)
+    const queue = store.call('queueCreate', {
+      accountId: 'a',
+      source,
+      mode: 'shuffle',
+      monthRange: { from: 202404, to: 202501 }
+    })
+    expect(queue).toMatchObject({ total: 2, mode: 'shuffle' })
+    const items = store.call('queueItems', { accountId: 'a', queueId: queue.queueId, offset: 0, limit: 10 })
+    expect(items.items.map((entry) => entry.work.id).sort()).toEqual(['3', '4'])
+    const single = store.call('queueCreate', {
+      accountId: 'a',
+      source,
+      mode: 'shuffle',
+      monthRange: { from: 202404, to: 202404 }
+    })
+    expect(single).toMatchObject({ total: 1, work: { id: '3' } })
+    const all = store.call('queueCreate', { accountId: 'a', source, mode: 'shuffle' })
+    expect(all.total).toBe(4)
+  })
   it('rejects old positions after a move and does not regress on an out-of-order progress update', () => {
     const { store } = setup(),
       queue = create(store)

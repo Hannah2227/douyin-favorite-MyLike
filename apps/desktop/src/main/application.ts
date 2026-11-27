@@ -1,4 +1,6 @@
 import { HealthMonitor } from './health'
+import { favoriteReadOperation } from '../shared/task-presentation'
+import { douyinWorkLink } from '../shared/work-link'
 import { healthStatus, type HealthSnapshot } from '../shared/health'
 import { blockedFavoriteTask, favoriteOperation, FavoritesService } from './favorites'
 import { FavoriteActions } from './favorite-actions'
@@ -678,11 +680,7 @@ export class Application {
     probe = false
   ): Promise<Operation> {
     const task = await this.database.call('favoritesTask', { accountId, mode })
-    if (mode === 'update' || !task || task.status === 'completed' || (probe && task.status === 'partial'))
-      return 'favorites'
-    if (task.status === 'partial')
-      return task.incomplete || !task.foldersDeferred ? 'favorites' : 'folderItems'
-    return task.stage === 'all' ? 'favorites' : task.stage === 'folders' ? 'folders' : 'folderItems'
+    return probe && task?.status === 'partial' ? 'favorites' : favoriteReadOperation(task)
   }
   private async quiesce(): Promise<void> {
     await this.unlike.stop()
@@ -807,6 +805,9 @@ export class Application {
         )
         return null
       }
+      case 'copyWorkLink':
+        await clipboard.writeText(douyinWorkLink(input.workId))
+        return null
       case 'openReleases':
         try {
           await shell.openExternal('https://github.com/Hannah2227/douyin-favorite-MyLike/releases')
@@ -1123,6 +1124,9 @@ export class Application {
         }
       case 'matchingIds':
         return this.database.call('matchingIds', input)
+      case 'queueMonths':
+        await this.active(input.accountId)
+        return this.database.call('queueMonths', input)
       case 'deleteLocal': {
         return this.exclusive(async () => {
           await this.active(input.accountId)

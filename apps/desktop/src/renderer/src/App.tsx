@@ -2,7 +2,7 @@ import { CollectionActions } from './CollectionActions'
 import { FavoritesPanel, useFavoriteFolders } from './FavoritesPanel'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { Snapshot, Work } from '../../shared/contracts'
+import type { QueueCreate, Snapshot, Work } from '../../shared/contracts'
 import { Player } from './Player'
 
 import { call, type Tab } from './api'
@@ -13,6 +13,7 @@ import { ConnectionPanel } from './ConnectionPanel'
 import { SettingsPanel } from './SettingsPanel'
 import { AccountDialog } from './AccountDialog'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ShuffleDialog } from './ShuffleDialog'
 import { useLibrary } from './useLibrary'
 import { usePlayback } from './usePlayback'
 import { usePlayerPresentation } from './usePlayerPresentation'
@@ -27,6 +28,7 @@ type UnlikeTarget = {
   source: 'likes' | 'favorites'
   mode: 'single' | 'batch'
 }
+type ShuffleTarget = Pick<QueueCreate, 'accountId' | 'source'> & { tab: 'library' | 'favorites' }
 
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -41,6 +43,7 @@ export function App() {
   const [deleteTarget, setDeleteTarget] = useState<{ accountId: string; ids: string[] } | null>(null)
   const [unlikeTarget, setUnlikeTarget] = useState<UnlikeTarget | null>(null)
   const [skipUnlikeConfirmation, setSkipUnlikeConfirmation] = useState(false)
+  const [shuffleTarget, setShuffleTarget] = useState<ShuffleTarget | null>(null)
   const snapshotSequence = useRef(0)
   const dataKey = useRef('')
   const startupApplied = useRef(false)
@@ -190,23 +193,31 @@ export function App() {
       call(window.mylike.invoke('collectionAction', { accountId, source: 'likes', action: 'down' }))
     )
   const back = presentation.exit
-  const startQueue = (mode: 'sequence' | 'shuffle', work?: Work) => {
+  const playWork = (work: Work) => {
     presentation.rememberFocus()
     void perform('准备播放队列', () =>
-      playback.start(
-        !work && library.selection.ids.size
-          ? {
-              type: 'ids',
-              ids: [...library.selection.ids],
-              sort: library.sort,
-              source: tab === 'favorites' ? 'favorites' : 'likes'
-            }
-          : { type: 'filter', filter: library.filter },
-        mode,
-        work?.id
-      )
+      playback.start({ type: 'filter', filter: library.filter }, 'sequence', { startWorkId: work.id })
     )
   }
+  const openShuffle = () => {
+    if (!accountId || (tab !== 'library' && tab !== 'favorites')) return
+    presentation.rememberFocus()
+    setShuffleTarget({
+      accountId,
+      tab,
+      source: library.selection.ids.size
+        ? {
+            type: 'ids',
+            ids: [...library.selection.ids],
+            sort: library.sort,
+            source: tab === 'favorites' ? 'favorites' : 'likes'
+          }
+        : { type: 'filter', filter: library.filter }
+    })
+  }
+  useEffect(() => {
+    setShuffleTarget((target) => (target?.accountId === accountId && target.tab === tab ? target : null))
+  }, [accountId, tab])
   const resumePlayback = () => {
     presentation.rememberFocus()
     if (snapshot?.playback) void perform('恢复播放', () => playback.resume(snapshot.playback!))
@@ -365,8 +376,8 @@ export function App() {
                   : snapshot?.collection?.status === 'running' || !!snapshot?.collectionActivity,
               busy: busy || !!snapshot?.authentication
             }}
-            play={(work) => startQueue('sequence', work)}
-            playRange={startQueue}
+            play={playWork}
+            shuffle={openShuffle}
             resume={snapshot?.playback && !snapshot.playback.completed ? snapshot.playback : null}
             continuePlayback={resumePlayback}
             dismissPlayback={() =>
@@ -467,6 +478,19 @@ export function App() {
           />
         )}
       </div>
+      {shuffleTarget && shuffleTarget.accountId === accountId && shuffleTarget.tab === tab && (
+        <ShuffleDialog
+          accountId={shuffleTarget.accountId}
+          source={shuffleTarget.source}
+          close={() => setShuffleTarget(null)}
+          start={(monthRange) => {
+            setShuffleTarget(null)
+            void perform('准备播放队列', () =>
+              playback.start(shuffleTarget.source, 'shuffle', { monthRange })
+            )
+          }}
+        />
+      )}
       {adding && (
         <AccountDialog
           busy={busy}

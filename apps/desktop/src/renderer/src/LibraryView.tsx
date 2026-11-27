@@ -39,7 +39,7 @@ type Props = {
   invertSelection: () => void
   remove: () => void
   unlike: () => void
-  playRange: (mode: 'sequence' | 'shuffle') => void
+  shuffle: () => void
   resume: QueueState | null
   continuePlayback: () => void
   dismissPlayback: () => void
@@ -62,7 +62,7 @@ export function LibraryView({
   invertSelection,
   remove,
   unlike,
-  playRange,
+  shuffle,
   resume,
   continuePlayback,
   dismissPlayback
@@ -143,11 +143,7 @@ export function LibraryView({
               </button>
             )}
             <div className="range-play-actions">
-              <button disabled={!page.total || querying || busy} onClick={() => playRange('sequence')}>
-                <Play size={14} />
-                {selection.ids.size ? '播放所选' : '顺序播放'}
-              </button>
-              <button disabled={!page.total || querying || busy} onClick={() => playRange('shuffle')}>
+              <button disabled={!page.total || querying || busy} onClick={shuffle}>
                 <Shuffle size={14} />
                 {selection.ids.size ? '洗牌所选' : '洗牌播放'}
               </button>

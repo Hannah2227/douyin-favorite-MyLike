@@ -146,10 +146,7 @@ void (async () => {
   await until(async () => (await invoke('snapshot')).collection?.status === 'completed', 90000)
   await invoke('releaseEngine')
   await pause(3000)
-  await ui.webContents.executeJavaScript(
-    'Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "顺序播放").click()',
-    true
-  )
+  await ui.webContents.executeJavaScript('document.querySelector(".work-card").click()', true)
   await until(() =>
     ui.webContents
       .executeJavaScript('Boolean(document.querySelector("video")?.readyState >= 2)')

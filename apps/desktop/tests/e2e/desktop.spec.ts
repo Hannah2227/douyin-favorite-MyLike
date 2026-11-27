@@ -445,6 +445,13 @@ async function installPlatform(accountId: string, slow?: 'identity' | 'page') {
               cursor: first && cursor === '0' ? '9007199254740993977' : '0',
               has_more: first && cursor === '0' ? 1 : 0
             }
+            if (globals.__favoriteNestedNew) {
+              if (first && cursor === '0')
+                (body as any).aweme_list.unshift({ aweme_id: '7381234567890999999', desc: '新增收藏' })
+              if (!first)
+                // A work already in All Favorites was added to another folder from Douyin.
+                (body as any).aweme_list = items([0])
+            }
             if (globals.__favoriteBrokenFolder && first) body = { status_code: 0, cursor: '9', has_more: 1 }
             if (globals.__favoriteBadRows && first && cursor !== '0') (body as any).aweme_list.push(null)
             if (globals.__favoriteNullTerminals && !first)
@@ -676,6 +683,12 @@ async function prepareQueue(count = 3, gallery = false, portrait = false, captio
   expect((await invoke('collectPage', { accountId, continue: false })).ok).toBe(true)
   await expect(page.locator('.list-caption')).toContainText(`${count} 条内容`)
   return { accountId, ids }
+}
+
+async function startSelectedShuffle() {
+  await page.getByRole('button', { name: '洗牌所选', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '洗牌播放', exact: true })
+  await dialog.getByRole('button', { name: '开始洗牌', exact: true }).click()
 }
 async function readyVideo(expectedIndex?: number) {
   // A click can finish before queue IPC does. Match the intended track, rendered
@@ -1383,7 +1396,7 @@ test('keeps a 50k library virtualized and deletes exactly the selected snapshot 
   )
   await screenshot(info.outputPath('library-selection-50k.png'))
   await installMedia()
-  await page.getByRole('button', { name: '播放所选', exact: true }).click()
+  await startSelectedShuffle()
   await expect.poll(async () => (await invoke('snapshot')).data.playback?.total).toBe(1000)
   await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
   await expect(page.getByRole('button', { name: '播放队列第 1 条', exact: true })).toBeVisible()
@@ -1444,7 +1457,7 @@ test('persists playback position and preferences across restart and suppresses r
     .poll(async () => (await invoke('snapshot')).data.playbackPreferences.shortcuts.playPause)
     .toBe('KeyK')
   await page.getByRole('button', { name: '喜欢', exact: true }).click()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.keyboard.press('k')
   await expect
@@ -1518,7 +1531,7 @@ test('promotes the pending next-item prefetch without cancelling or repeating it
   await app.evaluate((_electron, id) => {
     ;(globalThis as any).__mylikeHoldDetailOnce = id
   }, ids[1]!)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const count = () =>
     app.evaluate(
@@ -1583,7 +1596,7 @@ test('reuses the decoded next video without a second CDN request and releases de
       return node
     }
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   const source = `https://fixture.douyinvod.com/video-${ids[1]}.mp4`
@@ -1665,13 +1678,128 @@ test('reuses the decoded next video without a second CDN request and releases de
     .toBe(true)
 })
 
+test('shuffles an inclusive publication month range from the active library', async ({}, info) => {
+  const { accountId, ids } = await prepareQueue(27)
+  await app.evaluate(({ app }, ids) => {
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite')
+    const { join } = process.getBuiltinModule('node:path') as typeof import('node:path')
+    const db = new DatabaseSync(join(app.getPath('userData'), 'mylike.sqlite'))
+    try {
+      const update = db.prepare('UPDATE works SET publishedAt=? WHERE id=?')
+      const dates = [
+        new Date(2000, 0, 10),
+        new Date(2000, 3, 10),
+        new Date(2024, 7, 10),
+        new Date(2024, 11, 10),
+        ...Array.from({ length: 22 }, (_, index) => new Date(2002 + index, 0, 10))
+      ]
+      for (const [index, id] of ids.entries()) update.run((dates[index]?.getTime() ?? 0) / 1000, id)
+    } finally {
+      db.close()
+    }
+  }, ids)
+  await page.reload()
+  await expect(page.locator('.list-caption')).toContainText('27 条内容')
+  const trigger = page.getByRole('button', { name: '洗牌播放', exact: true })
+  const dialog = page.getByRole('dialog', { name: '洗牌播放', exact: true })
+  const start = dialog.getByRole('button', { name: '开始洗牌', exact: true })
+  const button = (name: string) => dialog.getByRole('button', { name, exact: true })
+  await expect(page.getByRole('button', { name: '顺序播放', exact: true })).toHaveCount(0)
+  await trigger.click()
+  const total = dialog.locator('output')
+  await expect(button('全部时间')).toHaveAttribute('aria-pressed', 'true')
+  await expect(total).toHaveText('范围内 27 条作品')
+  await expect(dialog.getByRole('combobox')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  expect((await invoke('snapshot')).data.playback).toBeNull()
+
+  await trigger.click()
+  await button('指定年月').click()
+  await expect(total).toHaveText('范围内 26 条作品')
+  await dialog.getByRole('combobox', { name: '开始年份' }).click()
+  const years = page.getByRole('listbox', { name: '开始年份' })
+  await expect(years.getByRole('option')).toHaveCount(24)
+  await expect(years.getByRole('option', { name: '2000 年', exact: true })).toHaveCount(1)
+  await years.getByRole('option', { name: '2024 年', exact: true }).click()
+  await chooseOption('开始月份', '9 月')
+  await chooseOption('结束月份', '8 月')
+  await expect(total).toHaveText('结束年月不能早于开始年月')
+  await expect(start).toBeDisabled()
+  await button('全部时间').click()
+  await expect(total).toHaveText('范围内 27 条作品')
+  await button('指定年月').click()
+  await expect(total).toHaveText('结束年月不能早于开始年月')
+  await chooseOption('开始年份', '2023 年')
+  await chooseOption('开始月份', '1 月')
+  await expect(total).toHaveText('范围内 2 条作品')
+  expect((await dialog.boundingBox())!.width).toBeLessThan(460)
+  await screenshot(info.outputPath('shuffle-months.png'))
+  await start.click()
+  await readyVideo(0)
+  const queue = (await invoke('snapshot')).data.playback as QueueState
+  expect(queue).toMatchObject({ total: 2, source: 'likes', mode: 'shuffle' })
+  const result = (await invoke('queueItems', { accountId, queueId: queue.queueId, offset: 0 })).data
+  expect(result.items.map(({ work }: { work: { id: string } }) => work.id).sort()).toEqual(
+    [ids[25], ids[2]].sort()
+  )
+  expect(
+    await invoke('queueCreate', {
+      accountId,
+      source: { type: 'filter', filter: {} },
+      mode: 'shuffle',
+      monthRange: { from: 201401, to: 202412 }
+    })
+  ).toMatchObject({ ok: true, data: { total: 12 } })
+})
+
+test('shows and copies the current local work link from the player', async () => {
+  await prepareQueue(2)
+  const preferences = (await invoke('snapshot')).data.playbackPreferences
+  await invoke('playbackPreferences', { preferences: { ...preferences, autoplay: false } })
+  await app.evaluate(({ clipboard }) => {
+    clipboard.writeText = async (value) => {
+      ;(globalThis as any).__copiedWorkLink = value
+    }
+  })
+  await page.locator('.work-card').first().click()
+  await readyVideo(0)
+  const trigger = page.getByRole('button', { name: '抖音作品链接', exact: true })
+  await expect(page.locator('.clean-control + button + .favorite-control')).toHaveCount(1)
+  await expect(page.locator('.clean-control + button')).toHaveAccessibleName('抖音作品链接')
+  const dialog = page.getByRole('dialog', { name: '抖音作品链接', exact: true })
+  const field = dialog.getByRole('textbox', { name: '抖音链接', exact: true })
+  const expectedLink = async () => {
+    const current = (await invoke('snapshot')).data.playback.work.id
+    return 'https://www.douyin.com/video/' + current
+  }
+  const firstLink = await expectedLink()
+  await trigger.click()
+  await expect(field).toHaveValue(firstLink)
+  await dialog.getByRole('button', { name: '复制链接', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '已复制', exact: true })).toBeVisible()
+  expect(await app.evaluate(() => (globalThis as any).__copiedWorkLink)).toBe(firstLink)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('region', { name: '播放器', exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '下一条', exact: true }).click()
+  await readyVideo(1)
+  const nextLink = await expectedLink()
+  expect(nextLink).not.toBe(firstLink)
+  await trigger.click()
+  await expect(field).toHaveValue(nextLink)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+})
+
 test('keeps clean screen across tracks and restores the queue, layout and fullscreen without resizing controls', async ({}, info) => {
   await prepareQueue(3)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', {
     preferences: { ...preferences, continuous: false, shortcuts: { ...preferences.shortcuts, clean: 'KeyB' } }
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
@@ -1718,7 +1846,7 @@ test('mixes live original audio with gallery music and controls both through pau
   await prepareQueue(2, true)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   const sound = () =>
     page.evaluate(() =>
@@ -1753,7 +1881,7 @@ test('keeps the latest track and reads comment pages and replies in-app without 
   await app.evaluate((_electron, id) => {
     ;(globalThis as any).__mylikeDelayDetail = id
   }, ids[3]!)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '下一条', exact: true }).click()
   await page.getByRole('button', { name: '下一条', exact: true }).click()
@@ -1889,7 +2017,7 @@ test('keeps the latest track and reads comment pages and replies in-app without 
 test('resumes a gallery slide and music position, then automatically advances without restarting music between slides', async () => {
   test.setTimeout(testTimeout(60000))
   await prepareQueue(2, true)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.evaluate(() => {
     ;(window as any).__galleryMusic = document.querySelector('audio')
@@ -1916,7 +2044,7 @@ test('loops the current video and keeps the queue open across next, jump, wheel 
   test.setTimeout(testTimeout(60000))
   await prepareQueue(6)
   await delayPlaybackTransitions()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   await page.getByRole('checkbox', { name: '连播', exact: true }).uncheck()
   const before = (await invoke('snapshot')).data.playback
@@ -1959,7 +2087,7 @@ test('keeps the same fullscreen container through buttons, queue jumps, wheel, a
   await delayPlaybackTransitions()
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   const id = await app.evaluate(
     ({ BrowserWindow }) =>
@@ -2024,10 +2152,10 @@ test('puts search above playback actions, removes decorative copy and returns sm
   await expect(page.locator('.list-caption')).toContainText('80 条内容')
   await expect(page.getByRole('combobox', { name: '排序方式' })).toHaveText('按发布时间')
   expect(await page.getByLabel('搜索内容').evaluate((node) => !!node.closest('.page-header'))).toBe(true)
-  for (const name of ['顺序播放', '洗牌播放'])
-    expect(
-      await page.getByRole('button', { name, exact: true }).evaluate((node) => !!node.closest('.filter-bar'))
-    ).toBe(true)
+  await expect(page.getByRole('button', { name: '顺序播放', exact: true })).toHaveCount(0)
+  await expect(
+    page.locator('.filter-bar').getByRole('button', { name: '洗牌播放', exact: true })
+  ).toBeVisible()
   await expect(page.locator('main')).not.toContainText(
     /YOUR COLLECTION|把喜欢整理好|重新遇见|个人喜欢内容管理|本地数据就绪/
   )
@@ -2101,7 +2229,7 @@ test('cycles galleries with live holds and three-second static images, looping m
   await prepareQueue(2, true)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false, speed: 2 } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const first = Date.now()
   await expect(page.getByAltText('图集第 2 张')).toBeVisible()
@@ -2132,7 +2260,7 @@ test('shows the matching still photo for two seconds after a live clip, pauses t
   await prepareQueue(2, true, true)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false, speed: 2 } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.locator('video').evaluate((node) => {
     const timing = { ended: 0, changed: 0 }
@@ -2232,7 +2360,7 @@ test('uses the first motion frame when the still photo fails, keeping the live r
   })
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, continuous: false, speed: 2 } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '下一张', exact: true }).click()
   await page.getByRole('button', { name: '上一张', exact: true }).click()
@@ -2275,7 +2403,7 @@ test('uses the first motion frame when the still photo fails, keeping the live r
 test('overlays expandable captions, selects speeds with a popup and highlights the seek rail without moving the layout', async ({}, info) => {
   test.setTimeout(testTimeout(60000))
   await prepareQueue(2, false, false, '这是用于验证超长文案展开和滚动的测试内容。'.repeat(130))
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   const geometry = await page.evaluate(() => {
@@ -2375,7 +2503,7 @@ test('overlays expandable captions, selects speeds with a popup and highlights t
 
 test('confirms a single unlike from playback, pauses media and retains the fixed queue metadata', async ({}, info) => {
   const { accountId } = await prepareQueue()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '取消当前点赞', exact: true }).click()
   expect(await page.locator('video').evaluate((node) => (node as HTMLVideoElement).paused)).toBe(true)
@@ -2405,7 +2533,7 @@ test('confirms a single unlike from playback, pauses media and retains the fixed
 test('remembers only confirmed single-unlike choices and restores confirmation from settings', async ({}, info) => {
   test.setTimeout(testTimeout(90000))
   const { accountId } = await prepareQueue(4)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   let unlike = page.getByRole('button', { name: '取消当前点赞', exact: true })
   let modal = page.getByRole('dialog', { name: '取消抖音点赞', exact: true })
@@ -2442,7 +2570,7 @@ test('remembers only confirmed single-unlike choices and restores confirmation f
   await expect(modal.getByRole('checkbox', { name: '下次不再提示', exact: true })).toHaveCount(0)
   await modal.getByRole('button', { name: '取消', exact: true }).click()
   await page.getByRole('button', { name: '退出选择', exact: true }).click()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await unlike.click()
   await expect(modal).toHaveCount(0)
@@ -2453,7 +2581,7 @@ test('remembers only confirmed single-unlike choices and restores confirmation f
   await page.getByRole('checkbox', { name: '取消单条点赞前确认', exact: true }).check()
   await expect.poll(async () => (await invoke('snapshot')).data.playbackPreferences.confirmUnlike).toBe(true)
   await page.getByRole('button', { name: '喜欢', exact: true }).click()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await unlike.click()
   await expect(modal).toBeVisible()
@@ -2465,7 +2593,7 @@ test('fills the app with media, collapses navigation without reloading video, an
   await prepareQueue(6)
   const prefs = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...prefs, continuous: false } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await expect
     .poll(() => page.locator('.sidebar-region').evaluate((node) => node.getBoundingClientRect().width))
@@ -2553,7 +2681,7 @@ for (const kind of ['video', 'image', 'live'] as const) {
   test(`contains portrait ${kind} within the viewport while resizing, opening navigation and zooming`, async ({}, info) => {
     test.setTimeout(testTimeout(60000))
     await prepareQueue(1, kind !== 'video', true)
-    await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+    await page.locator('.work-card').first().click()
     if (kind === 'image') {
       await readyVideo()
       await page.getByRole('button', { name: '下一张', exact: true }).click()
@@ -2680,8 +2808,8 @@ test('allows starting and changing playback during a background unlike without c
   })
   expect((await invoke('unlikeStart', { accountId, workIds: ids.slice(0, 2), mode: 'batch' })).ok).toBe(true)
   await expect.poll(() => app.evaluate(() => (globalThis as any).__mylikeUnlikeCount)).toBe(1)
-  await expect(page.getByRole('button', { name: '顺序播放', exact: true })).toBeEnabled()
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await expect(page.locator('.work-card').first()).toBeEnabled()
+  await page.locator('.work-card').first().click()
   await expect(page.getByRole('region', { name: '播放器', exact: true })).toBeVisible()
   await app.evaluate(() => {
     ;(globalThis as any).__mylikeReleaseUnlike()
@@ -2711,7 +2839,7 @@ test('cancels an unfinished media request when leaving playback without waiting 
     ;(globalThis as any).__mylikeDelayDetail = id
     ;(globalThis as any).__mylikeDetailDelayMs = 25000
   }, ids[2]!)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await expect
     .poll(() =>
       app.evaluate(() =>
@@ -2833,7 +2961,7 @@ test('matches native caption colors across themes and playback, scopes collectio
   await page.getByRole('button', { name: '喜欢', exact: true }).click()
   await expect(page.locator('.page-header .collection-controls')).toBeVisible()
   await screenshot(info.outputPath('library-classic.png'))
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await expect.poll(caption).toMatchObject({ color: '#111113', symbolColor: '#ececf2' })
   await page.mouse.move(400, 150)
@@ -2936,7 +3064,7 @@ test('uses themed dropdowns with keyboard selection, disabled options and bounde
 test('keeps the playlist clear of native window controls while resizing, maximizing, zooming and fullscreen', async ({}, info) => {
   test.setTimeout(testTimeout(75000))
   await prepareQueue(6)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '显示播放队列', exact: true }).click()
   const windowId = await app.evaluate(
@@ -3010,7 +3138,7 @@ test('provides readable collection actions and resume banner, unified help links
   const box = await collect.boundingBox()
   expect(box!.width).toBeGreaterThanOrEqual(160)
   expect(box!.height).toBeGreaterThanOrEqual(32)
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '返回内容库', exact: true }).click()
   expect(
@@ -3130,7 +3258,7 @@ test('synchronizes favorite folders through the page SDK, restores folder cursor
   await chooseOption('收藏夹筛选', '旅行 · 2')
   await expect(page.locator('.list-caption')).toContainText('2 条内容')
   await screenshot(info.outputPath('favorite-folder.png'))
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   expect((await invoke('snapshot')).data.playback).toMatchObject({ source: 'favorites', total: 2 })
   await expect(page.getByRole('button', { name: '取消当前点赞', exact: true })).toHaveCount(0)
@@ -3279,7 +3407,7 @@ test('uses focused player shortcuts and keeps inputs and unlike confirmation pro
       shortcuts: { ...preferences.shortcuts, rateCycle: 'KeyV', original: 'KeyC' }
     }
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await page.getByRole('button', { name: '暂停播放', exact: true }).click()
   for (const name of ['复制作品链接', '播放器快捷键帮助', '展开左栏'])
@@ -3360,7 +3488,7 @@ test('uses gallery shortcuts to pin and resume slides while disabling wheel navi
   await expect
     .poll(async () => page.evaluate(() => window.mylike.invoke('snapshot', {})))
     .toMatchObject({ ok: true, data: { playbackPreferences: { autoplay: false } } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await expect(page.getByRole('button', { name: '开始播放', exact: true })).toBeVisible()
   await expect(page.locator('.gallery-status')).toContainText('1 / 2')
   await page.keyboard.press('ArrowRight')
@@ -3743,7 +3871,7 @@ test('auto-skips confirmed unavailable works but waits for a decision on ambiguo
     },
     [ids[2], ids[1]]
   )
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await expect(page.getByRole('heading', { name: '作品当前不可访问' })).toBeVisible()
   const failure = page.locator('.stage-message').filter({ hasText: '暂时无法播放' })
   await expect(failure).toBeVisible()
@@ -3803,7 +3931,7 @@ for (const [label, gallery, source] of [
     const before = (await invoke('query', { accountId, source })).data.items.find(
       (item: any) => item.id === currentId
     )
-    await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+    await page.locator('.work-card').first().click()
     await expect
       .poll(
         async () =>
@@ -3976,7 +4104,7 @@ test('marks safe title and sidebar drag regions while keeping controls interacti
   })
   await page.getByRole('searchbox', { name: '搜索内容', exact: true }).fill('队列')
   await expect(page.locator('.list-caption')).toContainText('1 条内容')
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await expect
     .poll(() =>
@@ -5490,7 +5618,7 @@ test('adds liked work to multiple favorite folders through the page SDK and pres
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteWriteFixture = true
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const current = (await invoke('snapshot')).data.playback as QueueState
   await page.keyboard.press('f')
@@ -5531,7 +5659,7 @@ test('adds liked work to multiple favorite folders through the page SDK and pres
   await expect(page.locator('.list-caption')).toContainText('1 条内容')
   await chooseOption('收藏夹筛选', '旅行 · 1')
   await expect(page.locator('.list-caption')).toContainText('1 条内容')
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   await expect(page.getByRole('button', { name: '收藏当前作品', exact: true })).toHaveCount(0)
 })
@@ -5545,7 +5673,7 @@ test('creates private favorite folders, protects modal inputs and persists a cus
   await invoke('playbackPreferences', {
     preferences: { ...preferences, shortcuts: { ...preferences.shortcuts, favorite: 'KeyB' } }
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const work = (await invoke('snapshot')).data.playback.work
   await expect(page.getByRole('button', { name: '收藏当前作品', exact: true })).toHaveAttribute('title', /B/)
@@ -5586,7 +5714,7 @@ test('keeps confirmed favorite progress after an empty write response and requir
     ;(globalThis as any).__favoriteWriteFixture = true
     ;(globalThis as any).__favoriteWriteFailure = 'favoriteFolderAdd'
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const work = (await invoke('snapshot')).data.playback.work
   await page.keyboard.press('s')
@@ -5626,7 +5754,7 @@ test('preserves an already sent favorite when a slider appears and never uses wr
     ;(globalThis as any).__favoriteWriteFixture = true
     ;(globalThis as any).__favoriteWriteHold = 'favoriteAdd'
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const work = (await invoke('snapshot')).data.playback.work
   await page.keyboard.press('s')
@@ -5655,7 +5783,7 @@ test('waits for the current favorite write on close, skips remaining folders and
     ;(globalThis as any).__favoriteWriteFixture = true
     ;(globalThis as any).__favoriteWriteHold = 'favoriteAdd'
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo()
   const work = (await invoke('snapshot')).data.playback.work
   await page.keyboard.press('s')
@@ -5732,7 +5860,7 @@ for (const kind of ['video', 'live'] as const) {
       win.setSize(1340, 900)
       win.showInactive()
     })
-    await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+    await page.locator('.work-card').first().click()
     await readyVideo(0)
     const media = page.locator('video')
     // RPC preference changes reach the renderer asynchronously. Pause through
@@ -5880,7 +6008,7 @@ async function prepareCollectedQueue(count = 3) {
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteWriteFixture = true
   })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   for (let index = 0; index < count; index++) {
     await readyVideo(index)
     const queue = (await invoke('snapshot')).data.playback as QueueState
@@ -5916,7 +6044,7 @@ test('uncollects current favorite with star and shortcut in fullscreen, synchron
   const { accountId } = await prepareCollectedQueue(2)
   const preferences = (await invoke('snapshot')).data.playbackPreferences
   await invoke('playbackPreferences', { preferences: { ...preferences, confirmUnlike: false } })
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await readyVideo(0)
   const current = (await invoke('snapshot')).data.playback as QueueState
   await page.keyboard.press('f')
@@ -5966,7 +6094,7 @@ test('bulk uncollects the fixed favorites selection from a folder and persists r
   await expect(page.getByLabel('批量操作')).toContainText('已选 3 条')
   await expect(page.getByRole('button', { name: '删除本地条目', exact: true })).toHaveCount(0)
   // A selected favorites queue must retain its source, rather than become a likes queue.
-  await page.getByRole('button', { name: '播放所选', exact: true }).click()
+  await startSelectedShuffle()
   await readyVideo(0)
   expect((await invoke('snapshot')).data.playback.source).toBe('favorites')
   await expect(page.getByRole('button', { name: '取消当前收藏', exact: true })).toBeVisible()
@@ -6120,14 +6248,49 @@ test('updates head favorites from the UI while preserving a paused folder cursor
   await page.getByRole('button', { name: '收藏', exact: true }).click()
   await page.getByRole('button', { name: '更新顶部', exact: true }).click()
   await expect
-    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 20000 })
-    .toMatchObject({ status: 'completed', added: 1, mode: 'update' })
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 40000 })
+    .toMatchObject({ status: 'completed', added: 1, mode: 'update', foldersDone: 2, foldersTotal: 2 })
   expect((await invoke('snapshot')).data.favorites).toEqual(before)
   await expect(page.locator('.list-caption')).toContainText('4 条内容')
   await app.close()
   await launch()
   expect((await invoke('snapshot')).data.favorites).toEqual(before)
   expect((await invoke('snapshot')).data.favoritesUpdate).toMatchObject({ status: 'completed', added: 1 })
+})
+
+test('updates the membership of multiple favorite folders after an earlier complete sync', async () => {
+  test.setTimeout(testTimeout(90000))
+  const { accountId } = await prepareQueue(2)
+  const firstFolder = '9007199254740993999'
+  const secondFolder = '8'
+  const newWork = '7381234567890999999'
+  const folderIds = async (folderId: string) =>
+    (await invoke('query', { accountId, source: 'favorites', folderId })).data.items.map(
+      (item: { id: string }) => item.id
+    )
+  await invoke('favoritesStart', { accountId })
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 40000 })
+    .toMatchObject({ status: 'completed', foldersDone: 2 })
+  const prior = (await invoke('snapshot')).data.favorites
+  expect(await folderIds(firstFolder)).toContain(workId)
+  expect(await folderIds(firstFolder)).not.toContain(newWork)
+  expect(await folderIds(secondFolder)).not.toContain(workId)
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteHeadNew = true
+    ;(globalThis as any).__favoriteNestedNew = true
+  })
+
+  await page.getByRole('button', { name: '收藏', exact: true }).click()
+  await page.getByRole('button', { name: '更新顶部', exact: true }).click()
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 40000 })
+    .toMatchObject({ status: 'completed', foldersDone: 2, foldersTotal: 2, added: 1 })
+  expect(await folderIds(firstFolder)).toContain(newWork)
+  expect(await folderIds(secondFolder)).toContain(workId)
+  expect((await invoke('snapshot')).data.favorites).toEqual(prior)
+  await chooseOption('收藏夹筛选', '旅行 · 3')
+  await expect(page.locator(`[data-work-id="${newWork}"]`)).toBeVisible()
 })
 
 test('skips an explicitly unavailable favorite during bulk uncollect and exposes it directly in filtered task results', async ({}, info) => {
@@ -6445,10 +6608,13 @@ test('keeps a folder wait scoped to that read while allowing new favorites to up
     ok: false,
     error: { code: 'RATE_LIMITED', retryAt: wait.retryAt }
   })
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteHeadNew = true
+  })
   expect((await invoke('favoritesStart', { accountId, mode: 'update' })).ok).toBe(true)
   await expect
-    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 20000 })
-    .toMatchObject({ status: 'completed' })
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 30000 })
+    .toMatchObject({ status: 'paused', stage: 'folder', added: 1, errorCode: 'RATE_LIMITED' })
   const after = (await invoke('snapshot')).data
   expect(after.favorites).toEqual(task)
   expect(after.recovery.find((state: any) => state.operation === 'folderItems')).toEqual(wait)
@@ -6461,6 +6627,18 @@ test('keeps a folder wait scoped to that read while allowing new favorites to up
     )
   ).toBe(folderReads)
   expect((await invoke('media', { accountId, workId })).ok).toBe(true)
+  expect(await invoke('favoritesStart', { accountId, mode: 'update' })).toMatchObject({
+    ok: false,
+    error: { code: 'RATE_LIMITED', retryAt: wait.retryAt }
+  })
+  await app.evaluate(() => {
+    ;(globalThis as any).__favoriteRateLimitedScope = null
+  })
+  await advanceRecovery(accountId, ['folderItems'])
+  expect((await invoke('favoritesStart', { accountId, mode: 'update' })).ok).toBe(true)
+  await expect
+    .poll(async () => (await invoke('snapshot')).data.favoritesUpdate, { timeout: 30000 })
+    .toMatchObject({ id: after.favoritesUpdate.id, status: 'completed', foldersDone: 2, added: 1 })
   await app.evaluate(() => {
     ;(globalThis as any).__favoriteMalformedList = true
   })
@@ -6478,7 +6656,6 @@ test('keeps a folder wait scoped to that read while allowing new favorites to up
     ;(globalThis as any).__favoriteMalformedList = false
     ;(globalThis as any).__favoriteRateLimitedScope = null
   })
-  await advanceRecovery(accountId, ['folderItems'])
   expect((await invoke('favoritesControl', { accountId, taskId: task.id, action: 'resume' })).ok).toBe(true)
   await expect
     .poll(async () => (await invoke('snapshot')).data.favorites, { timeout: 40000 })
@@ -6792,7 +6969,7 @@ test('fills missing like order from Douyin and uses it for sequential playback',
     .toMatchObject({ status: 'completed' })
   await expect(page.getByText(/点赞顺序待补齐/)).toHaveCount(0)
   await expect(page.locator('.work-card h3').first()).toHaveText('队列作品 1')
-  await page.getByRole('button', { name: '顺序播放', exact: true }).click()
+  await page.locator('.work-card').first().click()
   await expect
     .poll(async () => (await invoke('snapshot')).data.playback)
     .toMatchObject({ work: { id: ids[0] }, next: { id: ids[1] }, total: 4 })

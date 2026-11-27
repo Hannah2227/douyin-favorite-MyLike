@@ -46,17 +46,22 @@ export class FavoritesStore {
   task(accountId: string, mode: 'sync' | 'update' = 'sync'): FavoritesTask | null {
     if (mode === 'update') {
       const row = this.db.prepare('SELECT * FROM saved_updates WHERE accountId=?').get(accountId)
-      return row
-        ? ({
-            ...row,
-            mode,
-            stage: 'all',
-            folderId: null,
-            foldersTotal: 0,
-            foldersDone: 0,
-            foldersDeferred: 0
-          } as unknown as FavoritesTask)
-        : null
+      if (!row) return null
+      const next = this.nextUpdateJob(String(row.id))
+      const counts = this.db
+        .prepare(
+          "SELECT count(*) AS foldersTotal,coalesce(sum(completed),0) AS foldersDone FROM saved_update_jobs WHERE taskId=? AND folderId<>''"
+        )
+        .get(row.id!)!
+      return {
+        ...row,
+        ...counts,
+        mode,
+        stage: next ? (next.folderId ? 'folder' : 'folders') : 'all',
+        folderId: next?.folderId || null,
+        cursor: next?.cursor ?? row.cursor,
+        foldersDeferred: 0
+      } as unknown as FavoritesTask
     }
     const row = this.db.prepare('SELECT * FROM saved_tasks WHERE accountId=?').get(accountId)
     if (!row) return null
@@ -80,6 +85,13 @@ export class FavoritesStore {
       mode,
       issues
     } as unknown as FavoritesTask
+  }
+  private nextUpdateJob(taskId: string): { folderId: string; cursor: string } | undefined {
+    return this.db
+      .prepare(
+        'SELECT folderId,cursor FROM saved_update_jobs WHERE taskId=? AND completed=0 ORDER BY rowid LIMIT 1'
+      )
+      .get(taskId) as { folderId: string; cursor: string } | undefined
   }
   private memberRun(accountId: string, folderId: string): string {
     return String(
@@ -195,6 +207,7 @@ export class FavoritesStore {
         if (mode === 'update') {
           this.db.prepare("UPDATE saved_updates SET cursor='0',incomplete=0,skipped=0 WHERE id=?").run(taskId)
           this.db.prepare('DELETE FROM saved_update_cursors WHERE taskId=?').run(taskId)
+          this.db.prepare('DELETE FROM saved_update_jobs WHERE taskId=?').run(taskId)
         } else {
           const jobs = this.db
             .prepare('SELECT folderId FROM saved_job_meta WHERE taskId=? AND deferred=1')
@@ -316,6 +329,13 @@ export class FavoritesStore {
       return this.task(input.accountId)!
     })
   }
+  private writeFolder(accountId: string, folder: Omit<FavoriteFolder, 'localCount'>, seenRun: string): void {
+    this.db
+      .prepare(
+        'INSERT INTO saved_folders VALUES(?,?,?,?,?) ON CONFLICT(accountId,id) DO UPDATE SET title=excluded.title,remoteCount=excluded.remoteCount,seenRun=excluded.seenRun'
+      )
+      .run(accountId, folder.id, folder.title, folder.remoteCount, seenRun)
+  }
   private writeWork(accountId: string, work: Work): number {
     this.db
       .prepare(
@@ -334,11 +354,14 @@ export class FavoritesStore {
         !task ||
         task.id !== input.taskId ||
         !this.canSave(task, input) ||
+        task.stage !== input.stage ||
+        task.folderId !== input.folderId ||
         task.cursor !== (input.checkpointCursor ?? input.requestCursor)
       )
-        throw new AppError('TASK_CHANGED', '收藏更新断点已变化，本页未保存。')
+        throw new AppError('TASK_CHANGED', '收藏更新范围或断点已变化，本页未保存。')
       this.verifyIdentity(input.accountId, input.remoteId)
       const known =
+        task.stage === 'all' &&
         !!input.items?.length &&
         !input.skipped?.length &&
         input.items.every(
@@ -347,6 +370,9 @@ export class FavoritesStore {
               .prepare('SELECT 1 FROM saved_items WHERE accountId=? AND workId=?')
               .get(input.accountId, item.id)
         )
+      const cursorKey = (cursor: string) =>
+        task.stage === 'all' ? cursor : `${task.stage}:${task.folderId ?? ''}:${cursor}`
+      const visited = this.db.prepare('SELECT 1 FROM saved_update_cursors WHERE taskId=? AND cursor=?')
       const traversed = input.traversedCursors ?? [input.requestCursor]
       if (
         !traversed.length ||
@@ -355,34 +381,56 @@ export class FavoritesStore {
         traversed.at(-1) !== input.requestCursor ||
         new Set(traversed).size !== traversed.length ||
         (input.resumePausedAt !== undefined &&
-          traversed
-            .slice(1)
-            .some((cursor) =>
-              this.db
-                .prepare('SELECT 1 FROM saved_update_cursors WHERE taskId=? AND cursor=?')
-                .get(task.id, cursor)
-            )) ||
-        (input.hasMore &&
-          (traversed.includes(input.cursor) ||
-            this.db
-              .prepare('SELECT 1 FROM saved_update_cursors WHERE taskId=? AND cursor=?')
-              .get(task.id, input.cursor)))
+          traversed.slice(1).some((cursor) => visited.get(task.id, cursorKey(cursor)))) ||
+        (input.hasMore && (traversed.includes(input.cursor) || visited.get(task.id, cursorKey(input.cursor))))
       )
         throw new AppError('CURSOR_STALLED', '收藏更新游标重复或探查范围无效。')
-      if (input.hasMore && !input.items?.length && !input.skipped?.length)
+      if (input.hasMore && !(input.items?.length || input.folders?.length || input.skipped?.length))
         throw new AppError('EMPTY_PAGE', '收藏更新返回异常空页，断点未推进。')
       for (const cursor of traversed)
-        this.db.prepare('INSERT OR IGNORE INTO saved_update_cursors VALUES(?,?)').run(task.id, cursor)
+        this.db
+          .prepare('INSERT OR IGNORE INTO saved_update_cursors VALUES(?,?)')
+          .run(task.id, cursorKey(cursor))
+
+      const scan = task.stage === 'all' ? null : this.task(input.accountId)
+      const scanId = scan && scan.status !== 'completed' ? scan.id : 'manual'
       let added = 0
-      for (const item of input.items ?? []) added += this.writeWork(input.accountId, item)
+      for (const item of input.items ?? []) {
+        added += this.writeWork(input.accountId, item)
+        if (task.stage === 'folder') {
+          const member = this.db
+            .prepare(
+              'INSERT OR IGNORE INTO saved_members SELECT accountId,id,?,? FROM saved_folders WHERE accountId=? AND id=?'
+            )
+            .run(item.id, scanId, input.accountId, task.folderId)
+          // An older paused full sync can later prune its unvisited members.
+          if (member.changes && scanId !== 'manual')
+            this.state.seen(scanId, input.accountId, task.folderId!, item.id, '', true)
+        }
+      }
+      for (const folder of input.folders ?? []) {
+        this.writeFolder(input.accountId, folder, scanId)
+        this.db
+          .prepare('INSERT OR IGNORE INTO saved_update_jobs(taskId,folderId) VALUES(?,?)')
+          .run(task.id, folder.id)
+      }
       const incomplete = task.incomplete || input.skipped?.length || input.incomplete ? 1 : 0
-      const done = !input.hasMore || known
+      if (task.stage === 'all') {
+        // The empty folder ID represents the folder-list job, queued before any folder's items.
+        if (!input.hasMore || known)
+          this.db.prepare("INSERT INTO saved_update_jobs(taskId,folderId) VALUES(?,'')").run(task.id)
+      } else {
+        this.db
+          .prepare('UPDATE saved_update_jobs SET cursor=?,completed=? WHERE taskId=? AND folderId=?')
+          .run(input.cursor, +!input.hasMore, task.id, task.folderId ?? '')
+      }
+      const done = task.stage !== 'all' && !this.nextUpdateJob(task.id)
       this.db
         .prepare(
           'UPDATE saved_updates SET cursor=?,status=?,pages=pages+1,received=received+?,added=added+?,incomplete=?,skipped=skipped+?,reason=?,errorCode=?,updatedAt=? WHERE id=?'
         )
         .run(
-          input.cursor,
+          task.stage === 'all' ? input.cursor : '0',
           done ? (incomplete ? 'partial' : 'completed') : 'running',
           input.received ?? input.items?.length ?? 0,
           added,
@@ -390,8 +438,8 @@ export class FavoritesStore {
           input.skipped?.length ?? 0,
           done
             ? incomplete
-              ? '收藏新增已更新，部分异常条目待复查。'
-              : '收藏新增已更新，历史同步断点保留。'
+              ? '收藏与收藏夹已更新，部分异常条目待复查。'
+              : '收藏与收藏夹已更新，历史同步断点保留。'
             : null,
           done && incomplete ? 'PARTIAL_SYNC' : null,
           Date.now(),
@@ -483,11 +531,7 @@ export class FavoritesStore {
           this.state.seen(task.id, input.accountId, task.folderId!, work.id, memberRun)
       }
       for (const folder of input.folders ?? []) {
-        this.db
-          .prepare(
-            'INSERT INTO saved_folders VALUES(?,?,?,?,?) ON CONFLICT(accountId,id) DO UPDATE SET title=excluded.title,remoteCount=excluded.remoteCount,seenRun=excluded.seenRun'
-          )
-          .run(input.accountId, folder.id, folder.title, folder.remoteCount, task.id)
+        this.writeFolder(input.accountId, folder, task.id)
         this.db
           .prepare(
             'INSERT OR IGNORE INTO saved_jobs(taskId,folderId,position) VALUES(?,?,(SELECT count(*) FROM saved_jobs WHERE taskId=?))'

@@ -23,7 +23,7 @@ import type { PlaybackPosition, PlaybackPreferences } from '../../shared/contrac
 import type { Playback } from './usePlayback'
 import { QueuePanel } from './QueuePanel'
 import { CommentsPanel } from './CommentsPanel'
-import { MediaCaption, SeekBar, SpeedMenu } from './PlayerControls'
+import { MediaCaption, SeekBar, SpeedMenu, WorkLinkDialog } from './PlayerControls'
 import { PreparedVideo } from './PreparedVideo'
 import './player.css'
 import { usePlayerShortcuts } from './usePlayerShortcuts'
@@ -91,6 +91,7 @@ export function Player({
     [musicWarning, setMusicWarning] = useState('')
   const [captionExpanded, setCaptionExpanded] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
+  const [workLinkOpen, setWorkLinkOpen] = useState(false)
   const commentsButton = useRef<HTMLButtonElement>(null)
   const [favoriteOpen, setFavoriteOpen] = useState(false),
     [collected, setCollected] = useState(false)
@@ -767,7 +768,7 @@ export function Player({
             </span>
             <span
               className="player-queue-position"
-              title={queue.mode === 'shuffle' ? '洗牌播放' : '顺序播放'}
+              title={queue.mode === 'shuffle' ? '洗牌播放' : '播放位置'}
             >
               {queue.index + 1} / {queue.total}
             </span>
@@ -797,6 +798,17 @@ export function Player({
               />
               清屏
             </label>
+            <button
+              type="button"
+              aria-label="抖音作品链接"
+              aria-haspopup="dialog"
+              title="抖音作品链接"
+              onClick={() => setWorkLinkOpen(true)}
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M13 4.5a1 1 0 0 1 1.7-.7l7.1 7.1a1 1 0 0 1 0 1.4l-7.1 7.1a1 1 0 0 1-1.7-.7v-3.2c-4.7.1-7.7 1.4-10.5 4.1-.5.5-1.3.1-1.2-.6C2.5 13 6.2 8.6 13 8.1V4.5Z" />
+              </svg>
+            </button>
             {(!queue.source || queue.source === 'likes' || queue.source === 'favorites') && (
               <button
                 className={`favorite-control${collected ? ' is-collected' : ''}`}
@@ -882,6 +894,7 @@ export function Player({
           </div>
         </div>
       </footer>
+      {workLinkOpen && <WorkLinkDialog workId={work.id} close={() => setWorkLinkOpen(false)} />}
       {favoriteOpen && (
         <FavoriteDialog
           scope={{

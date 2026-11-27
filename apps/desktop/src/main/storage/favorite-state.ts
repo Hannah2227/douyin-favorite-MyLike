@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS saved_updates(
  added INTEGER NOT NULL DEFAULT 0,incomplete INTEGER NOT NULL DEFAULT 0,skipped INTEGER NOT NULL DEFAULT 0,
  reason TEXT,errorCode TEXT,updatedAt INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS saved_update_cursors(taskId TEXT NOT NULL REFERENCES saved_updates(id) ON DELETE CASCADE,cursor TEXT NOT NULL,PRIMARY KEY(taskId,cursor));
+CREATE TABLE IF NOT EXISTS saved_update_jobs(
+ taskId TEXT NOT NULL REFERENCES saved_updates(id) ON DELETE CASCADE, folderId TEXT NOT NULL,
+ cursor TEXT NOT NULL DEFAULT '0', completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(taskId,folderId));
 `
 
 export type SyncMeta = { incomplete: number; skipped: number; partial: number; stamp: string }

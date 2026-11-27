@@ -132,6 +132,66 @@ it('isolates malformed works without accepting a malformed list or weakening lik
     parseFavoritesPage({ has_more: 1, cursor: '0', aweme_list: [] }, { allowEmpty: true })
   ).toThrow(/游标/)
 })
+it('resumes a top update at its saved folder cursor without changing the full-sync checkpoint', () => {
+  const { store, file } = setup()
+  let full = folders(store)
+  full = save(store, full, { items: [work('1')], hasMore: true, cursor: '9' })
+  full = store.call('favoritesUpdate', {
+    accountId: 'a',
+    taskId: full.id,
+    status: 'paused',
+    reason: null
+  })
+
+  let top = store.call('favoritesStart', { accountId: 'a', id: 'head', mode: 'update' })
+  top = save(store, top, { items: [work('1')], cursor: '9', hasMore: true })
+  expect(top).toMatchObject({ stage: 'folders', cursor: '0', status: 'running' })
+  top = save(store, top, {
+    folders: [
+      { id: '8', title: '夹 8', remoteCount: 2 },
+      { id: '10', title: '新夹', remoteCount: 1 }
+    ]
+  })
+  expect(top).toMatchObject({ stage: 'folder', folderId: '8', cursor: '0', foldersTotal: 2 })
+  top = save(store, top, { items: [work('1')], cursor: '9', hasMore: true })
+  expect(top).toMatchObject({ folderId: '8', cursor: '9', status: 'running' })
+  store.call('close', undefined)
+
+  const reopened = new Store(file)
+  stores.push(reopened)
+  expect(reopened.call('favoritesTask', { accountId: 'a', mode: 'update' })).toMatchObject({
+    id: 'head',
+    folderId: '8',
+    cursor: '9',
+    status: 'paused'
+  })
+  top = reopened.call('favoritesStart', { accountId: 'a', id: 'replacement', mode: 'update' })
+  expect(top).toMatchObject({ id: 'head', folderId: '8', cursor: '9', status: 'running' })
+  expect(() => save(reopened, top, { folderId: '10', items: [work('3')] })).toThrow(/范围/)
+  top = save(reopened, top, { items: [work('2')] })
+  expect(top).toMatchObject({ folderId: '10', cursor: '0', foldersDone: 1 })
+  top = save(reopened, top, { items: [work('1')] })
+  expect(top).toMatchObject({ status: 'completed', foldersDone: 2, added: 1 })
+  expect(reopened.call('favoritesTask', { accountId: 'a' })).toEqual(full)
+
+  // The running full scan started before the update learned about this member.
+  const older = reopened.call('favoritesUpdate', {
+    accountId: 'a',
+    taskId: full.id,
+    status: 'running',
+    reason: null
+  })
+  save(reopened, older, { items: [work('1')] })
+  expect(
+    reopened
+      .call('query', { ...query, folderId: '8' })
+      .items.map((item) => item.id)
+      .sort()
+  ).toEqual(['1', '2'])
+  expect(reopened.call('query', { ...query, folderId: '10' }).items.map((item) => item.id)).toEqual(['1'])
+  expect(reopened.call('favoriteFolders', { accountId: 'b' })).toEqual([])
+})
+
 it('records response shape without storing response fields or credential contents', () => {
   const result = responseSummary(
     JSON.stringify({ status_code: 0, has_more: 1, aweme_list: 'SECRET', cookie: 'TOKEN', cursor: 'PRIVATE' }),
@@ -253,7 +313,7 @@ it('only commits bounded empty traversal with content and preserves old folder c
   expect(task.status).toBe('partial')
   expect(store.call('query', { ...query, folderId: '8' }).total).toBe(2)
 })
-it('updates new favorites independently of a paused folder checkpoint and stops on an already-known page', () => {
+it('ends the all-favorites phase on a known page and refreshes folders independently of a paused full sync', () => {
   const { store } = setup()
   const sync = folders(store, 'sync', 1)
   store.call('favoritesUpdate', { accountId: 'a', taskId: sync.id, status: 'paused', reason: '保持断点' })
@@ -262,7 +322,11 @@ it('updates new favorites independently of a paused folder checkpoint and stops 
   task = save(store, task, { items: [work('2'), work('1')], cursor: '5', hasMore: true })
   expect(task).toMatchObject({ mode: 'update', status: 'running', added: 1 })
   task = save(store, task, { items: [work('1')], cursor: '6', hasMore: true })
-  expect(task).toMatchObject({ status: 'completed', added: 1 })
+  expect(task).toMatchObject({ status: 'running', stage: 'folders', cursor: '0', added: 1 })
+  task = save(store, task, { folders: [{ id: '8', title: '夹 8', remoteCount: 1 }] })
+  task = save(store, task, { items: [work('2')] })
+  expect(task).toMatchObject({ status: 'completed', added: 1, foldersDone: 1 })
+  expect(store.call('query', { ...query, folderId: '8' }).items.map((item) => item.id)).toEqual(['2'])
   expect(store.call('favoritesTask', { accountId: 'a' })).toMatchObject({
     id: sync.id,
     status: 'paused',

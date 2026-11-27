@@ -757,6 +757,7 @@ export class Store {
         this.db.close()
         return null
       case 'queueState':
+      case 'queueMonths':
       case 'queueCreate':
       case 'queueResume':
       case 'queueMove':

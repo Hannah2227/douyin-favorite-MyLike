@@ -1,13 +1,22 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { likedOrderJoin } from './liked-order'
 import { randomInt, randomUUID } from 'node:crypto'
-import { playbackPreferencesSchema, type Filter, type QueueState, type Work } from '../../shared/contracts'
+import {
+  MAX_LIBRARY_YEAR,
+  MIN_LIBRARY_YEAR,
+  playbackPreferencesSchema,
+  type Filter,
+  type QueueCreate,
+  type QueueMonths,
+  type QueueState,
+  type Work
+} from '../../shared/contracts'
 import { readPlaybackPreferences } from '../../shared/preferences'
 import type { Inputs, Replies } from './protocol'
 import { AppError } from '../errors'
 
 type Method =
   | 'queueState'
+  | 'queueMonths'
   | 'queueCreate'
   | 'queueResume'
   | 'queueMove'
@@ -31,6 +40,8 @@ type Row = {
   completed: number
   progressSequence: number
 }
+const publicationMonth = "CAST(strftime('%Y%m',w.publishedAt,'unixepoch','localtime') AS INTEGER)"
+
 export class PlaybackStore {
   constructor(
     private readonly db: DatabaseSync,
@@ -70,6 +81,39 @@ export class PlaybackStore {
       next: this.work(row.id, row.currentIndex + 1)
     }
   }
+  private scope(accountId: string, source: QueueCreate['source']) {
+    if (source.type === 'filter') return this.filter({ ...source.filter, accountId })
+    const scope = this.filter({
+      accountId,
+      source: source.source,
+      sort: source.sort,
+      search: '',
+      mediaType: 'all',
+      year: null,
+      month: null
+    })
+    const ids = [...new Set(source.ids)]
+    const from = `${scope.from} AND w.id IN (SELECT value FROM json_each(?))`
+    const params = [...scope.params, JSON.stringify(ids)]
+    const count = this.db.prepare(`SELECT count(*) AS n ${from}`).get(...params)
+    if (Number(count?.n) !== ids.length)
+      throw new AppError('WORK_NOT_FOUND', '部分条目已不在当前账号列表，请刷新选择。')
+    return { from, params, order: scope.order }
+  }
+  private months(input: Inputs['queueMonths']): QueueMonths {
+    const { from, params } = this.scope(input.accountId, input.source)
+    const rows = this.db
+      .prepare(`SELECT ${publicationMonth} AS key,count(*) AS count ${from} GROUP BY key`)
+      .all(...params) as unknown as { key: number | null; count: number }[]
+    return {
+      total: rows.reduce((sum, row) => sum + row.count, 0),
+      months: rows.flatMap(({ key, count }) =>
+        key !== null && key >= MIN_LIBRARY_YEAR * 100 + 1 && key <= MAX_LIBRARY_YEAR * 100 + 12
+          ? [{ key, count }]
+          : []
+      )
+    }
+  }
   call<K extends Method>(method: K, input: Inputs[K]): Replies[K] {
     return this.dispatch(method, input) as Replies[K]
   }
@@ -97,45 +141,18 @@ export class PlaybackStore {
         .get(input.accountId) as unknown as Row | undefined
       return row ? this.state(row) : null
     }
+    if (method === 'queueMonths') return this.months(input)
     if (method === 'queueCreate')
       return this.transaction(() => {
-        let ids: string[]
-        if (input.source.type === 'filter') {
-          const { from, params, order } = this.filter({ ...input.source.filter, accountId: input.accountId })
-          ids = this.db
-            .prepare(`SELECT w.id ${from} ${order} LIMIT 100001`)
-            .all(...params)
-            .map((row) => String(row.id))
-        } else {
-          const table = input.source.source === 'favorites' ? 'saved_items' : 'account_items'
-          const liked = input.source.sort === 'liked' && table === 'account_items'
-          const find = this.db.prepare(
-            `SELECT w.id,w.publishedAt,a.firstSeen${liked ? ',l.generation,l.position' : ''} FROM works w JOIN ${table} a ON a.workId=w.id ${liked ? likedOrderJoin : ''} WHERE a.accountId=? AND w.id=?`
-          )
-          const rows = [...new Set<string>(input.source.ids)].map((id) => {
-            const row = find.get(input.accountId, id)
-            if (!row) throw new AppError('WORK_NOT_FOUND', '部分条目已不在当前账号列表，请刷新选择。')
-            return row as {
-              id: string
-              publishedAt: number
-              firstSeen: number
-              generation?: number | null
-              position?: number | null
-            }
-          })
-          rows.sort(
-            (a, b) =>
-              (liked
-                ? (b.generation ?? -Infinity) - (a.generation ?? -Infinity) ||
-                  (a.position ?? 0) - (b.position ?? 0)
-                : 0) ||
-              (input.source.sort === 'collected'
-                ? b.firstSeen - a.firstSeen
-                : b.publishedAt - a.publishedAt) ||
-              (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
-          )
-          ids = rows.map((row) => row.id)
-        }
+        const request: QueueCreate = input
+        const { from, params, order } = this.scope(request.accountId, request.source)
+        const range = request.monthRange
+        const dates = range ? `AND ${publicationMonth} BETWEEN ? AND ?` : ''
+        if (range) params.push(range.from, range.to)
+        const ids = this.db
+          .prepare(`SELECT w.id ${from} ${dates} ${request.mode === 'shuffle' ? '' : order} LIMIT 100001`)
+          .all(...params)
+          .map((row) => String(row.id))
         if (!ids.length) throw new AppError('EMPTY_QUEUE', '当前范围没有可播放的条目。')
         if (ids.length > 100000)
           throw new AppError('QUEUE_TOO_LARGE', '一次最多播放 10 万条，请缩小筛选范围。')

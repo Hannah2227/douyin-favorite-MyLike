@@ -35,7 +35,7 @@ export function CollectionActions({
         source === 'likes' ? 'likes' : favoriteReadOperation(snapshot?.favorites),
         task.updatedAt
       )) ||
-    (!!top?.errorCode && !recovered('favorites', top.updatedAt)) ||
+    (!!top?.errorCode && !recovered(favoriteReadOperation(top), top.updatedAt)) ||
     (rejected && !recovered(source === 'likes' ? 'likes' : 'favorites', rejectedFor?.at ?? 0))
   const waiting = (operation: string) =>
     accountId ? recoveryUntil(accountId, ['self', operation], snapshot?.recovery) > now : false
@@ -54,7 +54,12 @@ export function CollectionActions({
         aria-label={source === 'likes' ? '喜欢采集操作' : '收藏采集操作'}
       >
         <button
-          disabled={!accountId || busy || running || waiting(source === 'likes' ? 'likes' : 'favorites')}
+          disabled={
+            !accountId ||
+            busy ||
+            running ||
+            waiting(source === 'likes' ? 'likes' : favoriteReadOperation(top))
+          }
           onClick={() => execute('top')}
         >
           更新顶部

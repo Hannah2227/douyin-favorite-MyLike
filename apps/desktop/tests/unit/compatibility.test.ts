@@ -186,13 +186,7 @@ it('recognizes a legacy manual folder addition while preserving clean-retry prun
 it('allows the legacy deletion order to cascade all new states without touching the other account', () => {
   const { store, file } = setup()
   save(store, folder(store), [work('1')], false, '0', true)
-  save(
-    store,
-    store.call('favoritesStart', { accountId: 'a', id: 'head-a', mode: 'update' }),
-    [work('3')],
-    true,
-    '9'
-  )
+  save(store, store.call('favoritesStart', { accountId: 'a', id: 'head-a', mode: 'update' }), [work('3')])
   store.call('favoritesStart', { accountId: 'b', id: 'head-b', mode: 'update' })
   store.call('close', undefined)
   inspect(file, (db) => {
@@ -211,7 +205,13 @@ it('allows the legacy deletion order to cascade all new states without touching 
       db.prepare(`DELETE FROM ${table} WHERE accountId=?`).run('a')
     db.prepare('DELETE FROM accounts WHERE id=?').run('a')
     db.exec('COMMIT')
-    for (const table of ['saved_task_meta', 'saved_job_meta', 'saved_scan_members', 'saved_update_cursors'])
+    for (const table of [
+      'saved_task_meta',
+      'saved_job_meta',
+      'saved_scan_members',
+      'saved_update_cursors',
+      'saved_update_jobs'
+    ])
       expect(db.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.n).toBe(0)
     expect(db.prepare('SELECT accountId FROM saved_updates').all()).toEqual([{ accountId: 'b' }])
     expect(db.prepare('PRAGMA foreign_key_check').all()).toHaveLength(0)

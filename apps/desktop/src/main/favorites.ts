@@ -9,6 +9,7 @@ import { PageProgress, EndConfirmation, EmptyPageTraversal } from './read-recove
 import { collectionPolicy as policy } from './collection-policy'
 import { readRecovery } from './recovery'
 import type { RuntimeEventInput } from '../shared/runtime-events'
+import { favoriteReadOperation } from '../shared/task-presentation'
 
 const definiteCheckpointErrors = new Set([
   'AUTH_REQUIRED',
@@ -76,7 +77,7 @@ export class FavoritesService {
   async start(accountId: string, mode: 'sync' | 'update' = 'sync'): Promise<FavoritesTask> {
     if (this.loop) throw new AppError('BUSY', '请先暂停现有收藏同步任务。')
     const previous = await this.db.call('favoritesTask', { accountId, mode })
-    this.engine.assertAvailable?.(accountId, this.readOperation(previous, mode))
+    this.engine.assertAvailable?.(accountId, favoriteReadOperation(previous))
     const task = await this.db.call('favoritesStart', { accountId, id: randomUUID(), mode })
     this.launch(task)
     return task
@@ -90,8 +91,7 @@ export class FavoritesService {
     if (action === 'resume' && this.loop) throw new AppError('BUSY', '收藏同步正在收口，请稍后继续。')
     if (action === 'resume') {
       const previous = await this.db.call('favoritesTask', { accountId, mode })
-      if (previous?.id === taskId)
-        this.engine.assertAvailable?.(accountId, this.readOperation(previous, mode))
+      if (previous?.id === taskId) this.engine.assertAvailable?.(accountId, favoriteReadOperation(previous))
     }
     const owns = this.current?.id === taskId && this.current.accountId === accountId
     if (owns && action !== 'resume') {
@@ -157,15 +157,6 @@ export class FavoritesService {
         hasMore: page.hasMore
       }
     })
-  }
-  private readOperation(
-    task: FavoritesTask | null,
-    mode: 'sync' | 'update'
-  ): 'favorites' | 'folders' | 'folderItems' {
-    if (mode === 'update' || !task || task.status === 'completed') return 'favorites'
-    if (task.status === 'partial')
-      return task.incomplete ? 'favorites' : task.foldersDeferred ? 'folderItems' : 'favorites'
-    return task.stage === 'folder' ? 'folderItems' : task.stage === 'folders' ? 'folders' : 'favorites'
   }
   private parameters(cursor: string, folderId: string | null) {
     return {
